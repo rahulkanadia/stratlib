@@ -1,0 +1,74 @@
+// Fellowship of the Ring Trading Indicator
+// © MiddleEarth_Strategies
+// "One does not simply walk into Mordor... but one can trade it!"
+
+//@version=5
+indicator("One Ring to Bind Them All", shorttitle="Bilbo Thief", overlay=false)
+
+// --- The Council of Elrond Decides --- 
+// "The Ring must be destroyed!"
+sams_courage = input.float(4.0, title="Help me, Sam", tooltip="Samwise's unwavering loyalty shall save the realm")
+bag_end_to_mordor = input.int(21, title="Frodo's Journey", tooltip="Longer journeys are arduous but be warned! shorter journeys go through Moria")
+
+// --- The One Ring Calculations ---
+// "I see you..." 
+// The Dark Lord's gaze pierces through the shadows of market fear
+the_lidless_eye = (ta.highest(high, 22) - close) / ta.atr(22)
+
+// The peaceful Shire where hobbits dwell in green hills
+// "The Shire... it's so quiet here" 
+hobbiton_center = ta.sma(close, 20)
+green_dragon_ale_variance = 2.0 * ta.stdev(close, 20)
+bag_end_hill = hobbiton_center + green_dragon_ale_variance
+bywater_mill = hobbiton_center - green_dragon_ale_variance
+// Where is Bilbo in this peaceful realm?
+old_tooks_wandering = (close - bywater_mill) / (bag_end_hill - bywater_mill)
+
+// The shadow that lies between the light and dark
+// "There is a fell voice on the air" 
+paths_of_the_dead = the_lidless_eye - old_tooks_wandering
+fires_of_mount_doom = ta.highest(paths_of_the_dead, bag_end_to_mordor)
+elronds_peaceful_valley = ta.lowest(paths_of_the_dead, bag_end_to_mordor)
+// The burden grows heavier with each step
+ring_bearers_burden = 100 * (paths_of_the_dead - elronds_peaceful_valley) / (fires_of_mount_doom - elronds_peaceful_valley)
+
+// "The Mirror shows many things... things that were, things that are, and some things that have not yet come to pass" - Galadriel
+galadriels_forbidden_sight = math.log(math.max(ring_bearers_burden, 0.01))
+
+// --- The War of the Ring ---
+// "The White Hand of Saruman!" 
+// "Shadow conquers!"
+// "The White Hand retreats!" 
+barcolor(galadriels_forbidden_sight > sams_courage ? color.black : color.white, title="Saruman's White Hand Falls To Shadow")
+
+// --- THE FELLOWSHIP'S CORE QUEST ---
+// "I will take the Ring to Mordor... though I do not know the way" 
+plot(galadriels_forbidden_sight, color=color.new(#ff4d00, 0), linewidth=3, title="BRB Climbing Mount Doom ")
+// "Fly, you fools!"
+plot(sams_courage, title="Fly You Fools!", color=color.black, style=plot.style_line, linewidth=3)
+
+// --- Side Quests ---
+// "No man can kill me!" 
+witch_kings_arrogance = ta.sma(galadriels_forbidden_sight, 5)
+plot(witch_kings_arrogance, color=color.new(#00ff44, 50), linewidth=1, title="No Man Can Kill Me", style=plot.style_line)
+
+// "They have a cave troll!" 
+moria_cave_troll = ta.highest(galadriels_forbidden_sight, 10) 
+plot(moria_cave_troll, color=color.new(#ff0099, 0), linewidth=1, title="They Have A Cave Troll", style=plot.style_line)
+
+// "The beacons are lit! Gondor calls for aid!"
+beacon_of_minas_tirith = ta.lowest(galadriels_forbidden_sight, 8)
+plot(beacon_of_minas_tirith, color=color.new(color.green, 60), linewidth=1, title="The Beacons Are Lit! Gondor Calls For Aid!", style=plot.style_line)
+
+// "Never thought I'd die fighting side by side with an Elf" 
+gandalfs_bridge = ta.ema(galadriels_forbidden_sight, 3)
+plot(gandalfs_bridge, color=color.new(#3300ff, 0), linewidth=2, title="Never thought I'd die fighting side by side with an Elf", style=plot.style_line)
+
+// "Tom remembers the first raindrop and the first acorn" 
+toms_ancient_memory = ta.rsi(close, 14) / 25  
+plot(toms_ancient_memory, color=color.new(color.purple, 30), linewidth=1, title="Tom Remembers The First Raindrop And The First Acorn", style=plot.style_line)
+
+// --- Gollum's Greed ---
+// "My precious... we wants it, we needs it. Must have the precious!" 
+gollums_obsession = math.sin(bar_index * 0.05) + ta.wma(close, 7) * 0.0001  
+plot(gollums_obsession, color=color.new(color.yellow, 0), linewidth=2, title="💍 My Preciousssssss 💍", style=plot.style_line)
