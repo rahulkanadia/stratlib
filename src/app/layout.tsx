@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "StratLib | Trading Script Library",
-  description: "A high-performance, searchable library for trading indicators and strategies.",
+  description: "high-performance, searchable library for trading indicators, strategies, and snippets",
   openGraph: {
     title: "StratLib",
     description: "search, fetch, and contribute to a massive library of trading scripts",
