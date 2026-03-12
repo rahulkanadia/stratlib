@@ -1,0 +1,98 @@
+
+> 策略名称
+
+1btc起fmex多头解锁策略后市看多
+
+> 策略作者
+
+gulishiduan_高频排序
+
+> 策略描述
+
+**FMex排序挖矿多头版本代码使用说明**
+
+
+
+
+
+
+**策略原理：**
+
+![](http:
+图片仅供参考
+https:
+
+盘口下单随机成交/该策略默认倾向于持有多头仓位/
+注意：先持仓long1u-1000u。
+**- 检测现有订单是否超过界限，如果超过了就立马取消该订单/
+- 检测是否成交形成了仓位，如果大于仓位xxu，则减仓到既定仓位以下
+
+function init() {    
+    if (EnableErrorFilter) {
+        SetErrorFilter("502:|503:|tcp|character|connection|unexpected|network|timeout|WSARecv|Connect|GetAddr|no such|reset|http|received|EOF|reused");
+    }
+     _CDelay(RetryInterval)
+   
+    var names = ApiList.split(',');
+    _.each(exchanges, function(e) {
+        _.each(names, function(name) {
+            if (typeof(e[name]) !== 'function') {
+                throw "尝试容错 " + name + " 失败, 请确认存在此API并且输入正确.";
+            }
+            var old = e[name];
+            e[name] = function() {
+                var r;
+                while (!(r = old.apply(this, Array.prototype.slice.call(arguments)))) {
+                    if (Debug) {
+                        Log(e.GetLabel(), name, "调用失败", RetryInterval, "毫秒后重试...");
+                    }
+                    Sleep(RetryInterval);
+                }
+                return r;
+            };
+        });
+    });
+    Log("容错机制开启", names);
+}
+function checkRisk(ticker) {
+    lastPrice = ticker[0]
+    if (lastPrice< minPrice || lastPrice > maxPrice) {
+        Log(
+        '===== 价格已超出箱体震荡区间 [',
+        minPrice,
+        ',',
+        maxPrice,
+        ']，挂单暂停 1 分钟，1分钟后重新检测 ====='
+        );
+        Sleep(1000 * 60);
+        return true;
+    }
+    return false
+}
+function main() {
+    while(true){
+        cancelAllOrder();
+        tickerInfo = getTicker(symbol);
+        ticker = tickerInfo.ticker;
+        if (!checkRisk(ticker)) {
+            marketMaker(ticker);
+            underElephant(ticker)
+        }
+        cleanPosition();
+        printfBanner()
+        Sleep(Interval * 1000) 
+    }    
+}
+function onexit() {
+    Log("已执行退出，同时取消所有订单")
+    cancelAllOrder()
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2021-12-08 13:53:31
