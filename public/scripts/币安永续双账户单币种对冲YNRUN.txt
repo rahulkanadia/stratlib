@@ -1,0 +1,1184 @@
+
+> 策略名称
+
+币安永续双账户单币种对冲YNRUN
+
+> 策略作者
+
+高吸低抛
+
+
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|Reset|false|重置历史数据|
+|MarginLevel|50|交易币种的杠杆|
+|CloseAllOnExit|false|机器人停止后取消所有仓位|
+
+
+> 源码 (javascript)
+
+``` javascript
+var Stop_loss = 0.8;
+
+var NO_TRADE = false
+var Interval =1
+
+var Log_profit_interval = 60;
+var update_profit_time = 0;
+var update_base_price_time = Date.now();
+var assets = {};
+
+var trade_info = {};
+
+var Version = '0.1.3';
+var Success = '#5cb85c'; 
+var Danger = '#ff0000'; 
+var Warning = '#f0ad4e'; 
+
+var accountAssets_0 = []; 
+var accountAssets_1 = []; 
+var Funding_0 = 0;
+var Funding_1 = 0;
+
+var Trade_ex = 0;
+
+var exLabel_0 = exchanges[0].GetLabel()
+var exLabel_1 = exchanges[1].GetLabel()
+
+var baseApiURL = ""
+
+baseApiURL = "https:
+
+function init() {
+    if (Reset) {
+        LogReset()
+        LogProfitReset()
+
+        _G('init_balance', null)
+        _G("WinRateData", null)
+        _G('init_prices', null);
+        _G("StartTime", null); 
+        _G("initialAccount_" + exchange.GetLabel(), null); 
+        _G("tradeNumber", null); 
+        _G("tradeVolume", null); 
+        _G("buyNumber", null); 
+        _G("sellNumber", null); 
+        _G("totalProfit", null); 
+        _G("profitNumber", null); 
+        _G("initialAccount_" + exLabel_0 , null);
+        _G("initialAccount_" + exLabel_1 , null);
+    }
+
+    
+    exchanges[0].IO("currency", 'BTC_USDT')
+    exchanges[1].IO("currency", 'BTC_USDT')
+
+
+    exchanges[0].SetMarginLevel(MarginLevel)
+    exchanges[1].SetMarginLevel(MarginLevel)
+
+    exchanges[0].SetContractType('swap')
+    exchanges[1].SetContractType('swap')
+
+    
+    changeToDualSidePosition(false,exchanges[0])
+    changeToDualSidePosition(false,exchanges[1])
+
+    
+    changeMarginTypeToCROSSED(false,"BTCUSDT",exchanges[0])
+    changeMarginTypeToCROSSED(false,"BTCUSDT",exchanges[1])
+
+
+    assets[exLabel_0]={}
+    assets[exLabel_0].USDT = {
+        unrealised_profit: 0,
+        margin: 0,
+        margin_balance: 0,
+        total_balance: 0,
+        leverage: 0,
+        update_time: 0,
+        margin_ratio: 0,
+        init_balance: 0,
+        stop_balance: 0,
+        short_value: 0,
+        long_value: 0,
+        profit: 0
+    };
+    assets[exLabel_0]["BTC"] = {
+        amount: 0,
+        hold_price: 0,
+        value: 0,
+        bid_price: 0,
+        ask_price: 0,
+        btc_price: 0,
+        btc_change: 1,
+        btc_diff: 0,
+        realised_profit: 0,
+        margin: 0,
+        unrealised_profit: 0,
+        leverage: 20,
+        positionInitialMargin: 0,
+        liquidationPrice: 0
+    };
+
+    updateAccount(exchanges[0])
+
+
+    assets[exLabel_1]={}
+    assets[exLabel_1].USDT = {
+        unrealised_profit: 0,
+        margin: 0,
+        margin_balance: 0,
+        total_balance: 0,
+        leverage: 0,
+        update_time: 0,
+        margin_ratio: 0,
+        init_balance: 0,
+        stop_balance: 0,
+        short_value: 0,
+        long_value: 0,
+        profit: 0
+    };
+    assets[exLabel_1]["BTC"] = {
+        amount: 0,
+        hold_price: 0,
+        value: 0,
+        bid_price: 0,
+        ask_price: 0,
+        btc_price: 0,
+        btc_change: 1,
+        btc_diff: 0,
+        realised_profit: 0,
+        margin: 0,
+        unrealised_profit: 0,
+        leverage: 20,
+        positionInitialMargin: 0,
+        liquidationPrice: 0
+    };
+    updateAccount(exchanges[1])
+
+    getExchangeInfo()
+
+
+   
+
+}
+function getExchangeInfo(){
+    var exchange_info = HttpQuery(baseApiURL + '/fapi/v1/exchangeInfo');
+    if (!exchange_info) {
+        throw '无法连接币安网络，需要海外托管者';
+    }
+    exchange_info = JSON.parse(exchange_info);
+    for (var i = 0; i < exchange_info.symbols.length; i++) {
+        if (exchange_info.symbols[i].baseAsset =="BTC") {
+            trade_info["BTC"] = {
+                minQty: parseFloat(exchange_info.symbols[i].filters[1].minQty),
+                priceSize: parseInt((Math.log10(1.1 / parseFloat(exchange_info.symbols[i].filters[0].tickSize)))),
+                amountSize: parseInt((Math.log10(1.1 / parseFloat(exchange_info.symbols[i].filters[1].stepSize))))
+            };
+        }
+    }
+}
+function onexit() {
+                updateAccount(exchanges[0])
+                updateAccount(exchanges[1]); 
+                updateTick(); 
+                
+                
+                updateStatus(); 
+    
+    if(CloseAllOnExit){
+      cancelAll("BTC",exchanges[0])
+      cancelAll("BTC",exchanges[1])
+      closeAll("BTC",exchanges[0])
+      closeAll("BTC",exchanges[1])
+    }
+
+    Log('exit')
+}
+function isEmpty(v) { 
+    let type = typeof v;
+    if (type === 'undefined') {
+        return true;
+    }
+    if (type === 'boolean') {
+        return !v;
+    }
+    if (v === null) {
+        return true;
+    }
+    if (v === undefined) {
+        return true;
+    }
+    if (v instanceof Array) {
+        if (v.length < 1) {
+            return true;
+        }
+    } else if (type === 'string') {
+        if (v.length < 1) {
+            return true;
+        }
+        if (v === '0') {
+            return true;
+        }
+    } else if (type === 'object') {
+        if (Object.keys(v).length < 1) {
+            return true;
+        }
+    } else if (type === 'number') {
+        if (v === 0) {
+            return true;
+        }
+    }
+    return false;
+}
+function changeToDualSidePosition(param = "true",ex = exchange) {
+    try {
+        if(param == false||param == true) params = "dualSidePosition="+param
+        var msg = ex.IO('api', 'GET', '/fapi/v1/positionSide/dual');
+        if (!msg) return msg
+        if (msg.dualSidePosition != param){
+
+          msg = ex.IO('api', 'POST', '/fapi/v1/positionSide/dual', params);
+
+          if (!msg) return msg
+          if (msg.code == -4059) return msg
+          if (msg.code != 200) {
+              Sleep(10)
+              msg = changeToDualSidePosition(param,ex)
+          }
+        }
+        return msg
+    } catch (err) {
+        Log('changeToDualSidePosition error:' + err);
+    }
+
+}
+function changeMarginTypeToCROSSED(cross = false,param = "BTCUSDT",ex = exchange) {
+    try {
+        if(cross == true){
+          params = "marginType=CROSSED&symbol=" + param
+        }else if(cross == false){
+          params = "marginType=ISOLATED&symbol=" + param
+        }
+
+        var msg = ex.IO('api', 'POST', '/fapi/v1/marginType', params);
+        if (!msg) return msg
+        if (msg.code == -4046) return msg
+        if (msg.code != 200) {
+            Sleep(10)
+            msg = changeMarginTypeToCROSSED(cross,param,ex)
+        }
+        return msg
+    } catch (err) {
+        Log('changeMarginTypeToCROSSED error:' + err);
+    }
+
+}
+function getPostion(symbol = "BTC",exchange = exchanges[0]) { 
+  try {
+    var exLabel=exchange.GetLabel()
+    var params =""
+    if(!isEmpty(symbol))
+        params = "symbol="+symbol+"USDT"
+    else
+        params = "symbol=BTCUSDT"
+    var pos = exchange.IO('api', 'GET', '/fapi/v2/positionRisk',params);
+    if (isEmpty(pos)) return;
+
+
+
+    
+
+    if (pos.length > 0) {
+        for (var k = 0; k < pos.length; k++) {
+            var pair = pos[k].symbol;
+            var coin = pair.slice(0, pair.length - 4);
+            if (symbol != coin) {
+                continue;
+            }
+            if (pos[k].positionSide != 'BOTH') {
+                continue;
+            }
+            assets[exLabel][coin].hold_price = parseFloat(pos[k].entryPrice);
+            assets[exLabel][coin].amount = parseFloat(pos[k].positionAmt);
+            assets[exLabel][coin].unrealised_profit = parseFloat(pos[k].unRealizedProfit);
+            assets[exLabel][coin].liquidationPrice = parseFloat(pos[k].liquidationPrice);
+            
+            assets[exLabel][coin].markPrice = parseFloat(pos[k].markPrice);
+            assets[exLabel][coin].leverage = parseFloat(pos[k].leverage);
+            assets[exLabel][coin].positionSide = pos[k].positionSide;
+            
+            assets[exLabel][coin].marginType = pos[k].marginType;
+        }
+    }
+
+    
+  } catch (err) {
+     Log('getPostion error:' + err);
+  }
+}
+function updateAccount(exchange = exchanges[0]) { 
+  try {
+    var exLabel=exchange.GetLabel()
+    
+    var account = exchange.GetAccount();
+    var pos = exchange.GetPosition();
+
+    
+    
+    
+
+
+    if (account == null || pos == null) {
+        Log(115,exchange.GetLabel(),' update account time out');
+        return;
+    }
+    if(exLabel==exLabel_0)
+       accountAssets_0 = account.Info.assets;
+    else
+       accountAssets_1 = account.Info.assets;
+
+    assets[exLabel].USDT.update_time = Date.now();
+    
+    for (var j = 0; j < account.Info.positions.length; j++) {
+        if (account.Info.positions[j].positionSide == 'BOTH') {
+            var pair = account.Info.positions[j].symbol;
+            var coin = pair.slice(0, pair.length - 4);
+            if ("BTC" != coin) {
+                continue;
+            }
+            assets[exLabel][coin].margin = parseFloat(account.Info.positions[j].initialMargin) + parseFloat(account.Info.positions[j].maintMargin);
+            assets[exLabel][coin].unrealised_profit = parseFloat(account.Info.positions[j].unrealizedProfit);
+            assets[exLabel][coin].positionInitialMargin = parseFloat(account.Info.positions[j].positionInitialMargin);
+            assets[exLabel][coin].leverage = account.Info.positions[j].leverage;
+            
+            assets[exLabel][coin].hold_price = account.Info.positions[j].entryPrice;
+            assets[exLabel][coin].positionSide = account.Info.positions[j].positionSide;
+            
+        }
+    }
+    assets[exLabel].USDT.margin = _N(parseFloat(account.Info.totalInitialMargin) + parseFloat(account.Info.totalMaintMargin), 2); 
+    assets[exLabel].USDT.margin_balance = _N(parseFloat(account.Info.totalMarginBalance), 2); 
+    assets[exLabel].USDT.total_balance = _N(parseFloat(account.Info.totalWalletBalance), 2);
+    
+
+    assets[exLabel].USDT.unrealised_profit = _N(parseFloat(account.Info.totalUnrealizedProfit), 2); 
+    assets[exLabel].USDT.margin_ratio = (account.Info.totalMaintMargin / account.Info.totalMarginBalance * 100);
+
+    if(exLabel==exLabel_0)
+        assets[exLabel].USDT.init_balance = parseFloat(FirstAccount(exchanges[0]).Info.totalWalletBalance);
+    else
+        assets[exLabel].USDT.init_balance = parseFloat(FirstAccount(exchanges[1]).Info.totalWalletBalance);
+    assets[exLabel].USDT.profit = _N(assets[exLabel].USDT.margin_balance - assets[exLabel].USDT.init_balance, 2);
+    assets[exLabel].USDT.stop_balance = _N(Stop_loss * assets[exLabel].USDT.init_balance, 2);
+    assets[exLabel].USDT.leverage = _N(assets[exLabel].USDT.margin / assets[exLabel].USDT.total_balance, 2);
+
+    pos = JSON.parse(exchange.GetRawJSON());
+
+
+    if (pos.length > 0) {
+        for (var k = 0; k < pos.length; k++) {
+            var pair = pos[k].symbol;
+            var coin = pair.slice(0, pair.length - 4);
+            if ("BTC" != coin) {
+                continue;
+            }
+            if (pos[k].positionSide != 'BOTH') {
+                continue;
+            }
+            assets[exLabel][coin].hold_price = parseFloat(pos[k].entryPrice);
+            assets[exLabel][coin].amount = parseFloat(pos[k].positionAmt);
+            assets[exLabel][coin].unrealised_profit = parseFloat(pos[k].unRealizedProfit);
+            assets[exLabel][coin].liquidationPrice = parseFloat(pos[k].liquidationPrice);
+            
+            assets[exLabel][coin].markPrice = parseFloat(pos[k].markPrice);
+            assets[exLabel][coin].leverage = parseFloat(pos[k].leverage);
+            assets[exLabel][coin].positionSide = pos[k].positionSide;
+            
+            assets[exLabel][coin].marginType = pos[k].marginType;
+        }
+    }
+    
+  } catch (err) {
+     Log('updateAccount error:' + err);
+  }
+}
+function updateTick() { 
+
+
+    var ticker = HttpQuery(baseApiURL + '/fapi/v1/ticker/bookTicker');
+    try {
+        ticker = JSON.parse(ticker);
+    } catch (e) {
+        Log('get ticker time out');
+        return;
+    }
+    
+    
+    for (var i = 0; i < ticker.length; i++) {
+        var pair = ticker[i].symbol;
+        var coin = pair.slice(0, pair.length - 4);
+        if (coin !="BTC") {
+            continue;
+        }
+        trade_info[coin].ask_price = parseFloat(ticker[i].askPrice);
+        trade_info[coin].bid_price = parseFloat(ticker[i].bidPrice);
+
+        assets[exLabel_0][coin].ask_price = parseFloat(ticker[i].askPrice);
+        assets[exLabel_0][coin].bid_price = parseFloat(ticker[i].bidPrice);
+        assets[exLabel_0][coin].ask_value = _N(assets[exLabel_0][coin].amount * assets[exLabel_0][coin].ask_price, 2);
+        assets[exLabel_0][coin].bid_value = _N(assets[exLabel_0][coin].amount * assets[exLabel_0][coin].bid_price, 2);
+
+        assets[exLabel_1][coin].ask_price = parseFloat(ticker[i].askPrice);
+        assets[exLabel_1][coin].bid_price = parseFloat(ticker[i].bidPrice);
+        assets[exLabel_1][coin].ask_value = _N(assets[exLabel_1][coin].amount * assets[exLabel_1][coin].ask_price, 2);
+        assets[exLabel_1][coin].bid_value = _N(assets[exLabel_1][coin].amount * assets[exLabel_1][coin].bid_price, 2);
+
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+    }
+    
+    
+    
+        
+        
+        
+    
+    
+    
+    
+    
+}
+function cancelAll(symbol,exchange = exchanges[0]) {
+  try {
+          
+          
+              var orders = _C(exchange.GetOrders);
+              for (var i = 0; i < orders.length; i++) {
+                if(orders[i].Info.symbol!=symbol+"USDT") continue;
+                exchange.CancelOrder(orders[i].Id)
+
+                Log(502,exchange.GetLabel()," 取消所有",symbol,"订单 orderId: ", orders[i].Id);
+
+              }
+
+  } catch (err) {
+     Log('closeAll error:' + err);
+  }
+}
+function cancelAllOrders(symbol,exchange = exchanges[0]) {
+  try {
+          
+          
+          return exchange.IO('api', 'DELETE', '/fapi/v1/allOpenOrders', 'symbol=' + symbol)
+
+  } catch (err) {
+     Log('cancelAllOrders error:' + err);
+  }
+}
+
+function closeAll(symbol,exchange = exchanges[0]) {
+  try {
+          updateAccount(exchange);
+          updateTick();
+          
+        if(assets[exchange.GetLabel()][symbol].amount!=0){
+          var dirction = assets[exchange.GetLabel()][symbol].amount < 0 ? 'buy' : 'sell';
+          var f = dirction == 'buy' ? 'Buy' : 'Sell';
+          exchange.IO("currency", symbol + '_' + 'USDT');
+          exchange.SetContractType('swap');
+          exchange.SetDirection(dirction);
+          exchange.SetMarginLevel(MarginLevel)
+          var id=exchange[f](-1, Math.abs(assets[exchange.GetLabel()][symbol].amount), symbol);
+          if (id) {
+              exchange.CancelOrder(id); 
+
+              Log(502,exchange.GetLabel()," ",symbol," 仓位已市价平仓(orderId:",id,")")
+          }
+        }
+
+        if((assets[exchange.GetLabel()][symbol].amount!=0 && id) ||
+            assets[exchange.GetLabel()][symbol].amount==0){
+              var orders = _C(exchange.GetOrders);
+              for (var i = 0; i < orders.length; i++) {
+                if(orders[i].Info.symbol!=symbol+"USDT") continue;
+                exchange.CancelOrder(orders[i].Id)
+
+                Log(502,exchange.GetLabel()," 取消所有",symbol,"止损止盈单 orderId: ", orders[i].Id);
+
+              }
+        }
+  } catch (err) {
+     Log('closeAll error:' + err);
+  }
+}
+function makeOrder(Order = [],exchange = exchanges=[0]) { 
+    try {
+        exchange.SetContractType('swap')
+        
+        var marketOrder = false
+
+        if (Array.isArray(Order)) {
+            Order = Order[0]
+        }
+        if (Object.keys(Order).length < 4) return Log("makeOrder函数下订单，订单内参数量最小为4,不能为 ", Object.keys(Order).length)
+
+        if (Order.type == "MARKET") marketOrder = true
+
+        
+
+        var theOrder = {}
+        theOrder = exchange.IO('api', 'POST', '/fapi/v1/order', "", JSON.stringify(Order)); 
+
+        Log(400,"makeOrder Order=",Order," => orderId:",theOrder.orderId)
+
+        if (Object.keys(theOrder).length == 0) return {}
+        
+        if (marketOrder) {
+            Log(389," theOrder=",theOrder)
+            theOrder = waitOrder(theOrder)
+        }
+        return theOrder 
+    } catch (err) {
+        Log('makeOrder error:' + err);
+    }
+
+}
+function waitOrder(theOrder = "",exchange =  exchanges[0]) { 
+    try {
+        if (!theOrder) return Log("waitOrder函数参数属性必须包含Id,不能为 ", theOrder)
+        if (Array.isArray(theOrder)) theOrder = theOrder[0]
+        if (typeof theOrder == "string" || typeof theOrder == "number") {
+            theOrder = exchange.GetOrder(theOrder) 
+            theOrder = theOrder.Info
+        }
+        var j = 11
+        while (--j) {
+            if (theOrder.status != "NEW") break;
+
+            
+
+            Sleep(100)
+
+            
+            
+
+            theOrder = getAllOrders("symbol=" + theOrder.symbol + "&limit=1&orderId=" + theOrder.orderId) 
+            theOrder = theOrder[0]
+
+            Log(420, " ", (11 - j), " waitOrder= OrderId:", theOrder.orderId, " (", theOrder.status, ")", " (", theOrder.timeInForce, ")")
+
+            
+
+            if (!theOrder) break;
+            
+        }
+        return theOrder 
+    } catch (err) {
+        Log(429,'waitOrder error:' + err);
+    }
+}
+function FirstAccount(exchange = exchanges[0]) {
+    var key = "initialAccount_" + exchange.GetLabel();
+    var initialAccount = _G(key);
+    if (initialAccount == null) {
+        initialAccount = exchange.GetAccount();
+        _G(key, initialAccount);
+    }
+    return initialAccount;
+}
+function StartTime() {
+    var StartTime = _G("StartTime");
+    if (StartTime == null) {
+        StartTime = _D();
+        _G("StartTime", StartTime);
+    }
+    return StartTime;
+}
+
+function RuningTime() {
+    var ret = {};
+    var dateBegin = new Date(StartTime());
+    var dateEnd = new Date(_D());
+    var dateDiff = dateEnd.getTime() - dateBegin.getTime();
+    var dayDiff = Math.floor(dateDiff / (24 * 3600 * 1000));
+    var leave1 = dateDiff % (24 * 3600 * 1000);
+    var hours = Math.floor(leave1 / (3600 * 1000));
+    var leave2 = leave1 % (3600 * 1000);
+    var minutes = Math.floor(leave2 / (60 * 1000));
+    ret.dayDiff = dayDiff;
+    ret.hours = hours;
+    ret.minutes = minutes;
+    ret.str = "运行时间: " + dayDiff + " 天 " + hours + " 小时 " + minutes + " 分钟";
+    return ret;
+}
+function AppendedStatus() {
+    var accountTable = {
+        type: "table",
+        title: "盈利统计",
+        cols: ["交易所", "初始资金", "现有资金", "保证金余额", "已用保证金", "保证金比率", "止损", "总收益", "预计年化", "预计月化", "平均日化"],
+        rows: []
+    };
+    var feeTable = {
+        type: 'table',
+        title: '交易统计',
+        cols: ["策略指数", '交易次数', '做多次数', '做空次数', '预估胜率', '预估成交额', '预估手续费', "未实现盈利", '持仓总值', '做多总值', '做空总值'],
+        rows: []
+    };
+    var runday = RunTime.dayDiff;
+    if (runday == 0) {
+        runday = 1;
+    }
+    if (Funding_0 == 0) {
+        Funding_0 = parseFloat(FirstAccount(exchanges[0]).Info.totalWalletBalance); 
+    }
+    if (Funding_1 == 0) {
+        Funding_1 = parseFloat(FirstAccount(exchanges[1]).Info.totalWalletBalance); 
+    }
+    var profitColors_0 = Danger;
+    var profitColors_1 = Danger;
+    var totalProfit_0 = assets[exLabel_0].USDT.total_balance - Funding_0; 
+    var totalProfit_1 = assets[exLabel_1].USDT.total_balance - Funding_1; 
+    if (totalProfit_0 > 0) {
+        profitColors_0 = Success;
+    }
+    if (totalProfit_1 > 0) {
+        profitColors_1 = Success;
+    }
+    var dayProfit_0 = totalProfit_0 / runday; 
+    var dayProfit_1 = totalProfit_1 / runday; 
+    var dayRate_0 = dayProfit_0 / Funding_0 * 100;
+    var dayRate_1 = dayProfit_1 / Funding_0 * 100;
+    accountTable.rows.push([
+        exLabel_0,
+        '$' + _N(Funding_0, 2), 
+        '$' + assets[exLabel_0].USDT.total_balance, 
+        '$' + assets[exLabel_0].USDT.margin_balance,
+        '$' + assets[exLabel_0].USDT.margin,
+        _N(assets[exLabel_0].USDT.margin_ratio, 2) + '%',
+        _N(assets[exLabel_0].USDT.stop_balance, 2) + Danger,
+        _N(totalProfit_0 / Funding_0 * 100, 2) + "% = $" + _N(totalProfit_0, 2) + (profitColors_0),
+        _N(dayRate_0 * 365, 2) + "% = $" + _N(dayProfit_0 * 365, 2) + (profitColors_0),
+        _N(dayRate_0 * 30, 2) + "% = $" + _N(dayProfit_0 * 30, 2) + (profitColors_0),
+        _N(dayRate_0, 2) + "% = $" + _N(dayProfit_0, 2) + (profitColors_0)
+    ]);
+    accountTable.rows.push([
+        exLabel_1,
+        '$' + _N(Funding_1, 2), 
+        '$' + assets[exLabel_1].USDT.total_balance, 
+        '$' + assets[exLabel_1].USDT.margin_balance,
+        '$' + assets[exLabel_1].USDT.margin,
+        _N(assets[exLabel_1].USDT.margin_ratio, 2) + '%',
+        _N(assets[exLabel_1].USDT.stop_balance, 2) + Danger,
+        _N(totalProfit_1 / Funding_1 * 100, 2) + "% = $" + _N(totalProfit_1, 2) + (profitColors_1),
+        _N(dayRate_1 * 365, 2) + "% = $" + _N(dayProfit_1 * 365, 2) + (profitColors_1),
+        _N(dayRate_1 * 30, 2) + "% = $" + _N(dayProfit_1 * 30, 2) + (profitColors_1),
+        _N(dayRate_1, 2) + "% = $" + _N(dayProfit_1, 2) + (profitColors_1)
+    ]);
+
+    var assetTable = {
+        type: 'table',
+        title: '账户资产信息',
+        cols: ['交易所', '资产名', '起始保证金', '维持保证金', '保证金余额', '最大可提款金额', '挂单起始保证金', '持仓起始保证金', '持仓未实现盈亏', '账户余额'],
+        rows: []
+    };
+    for (var i = 0; i < accountAssets_0.length; i++) {
+        var acc = accountAssets_0[i];
+        assetTable.rows.push([
+            exLabel_0,
+            acc.asset,
+            acc.initialMargin,
+            acc.maintMargin,
+            acc.marginBalance,
+            acc.maxWithdrawAmount,
+            acc.openOrderInitialMargin,
+            acc.positionInitialMargin,
+            acc.unrealizedProfit,
+            acc.walletBalance 
+        ]);
+    }
+    for (var i = 0; i < accountAssets_1.length; i++) {
+        var acc = accountAssets_1[i];
+        assetTable.rows.push([
+            exLabel_1,
+            acc.asset,
+            acc.initialMargin,
+            acc.maintMargin,
+            acc.marginBalance,
+            acc.maxWithdrawAmount,
+            acc.openOrderInitialMargin,
+            acc.positionInitialMargin,
+            acc.unrealizedProfit,
+            acc.walletBalance 
+        ]);
+    }
+
+    var retData = {};
+    
+    retData.upTable = RunTime.str + '\n' + "最后更新: " + _D() + '\n' + 'Version:' + Version + '\n' + '`' + JSON.stringify([accountTable, assetTable]) + '`\n' ;
+    
+    return retData;
+}
+
+function updateStatus() { 
+    
+
+    var table = {
+        type: 'table',
+        title: '交易对信息',
+        
+        cols: ['交易所', '[模式][倍数]', '币种', '方向', '数量', '持仓价', '当前价', '强平价', '强平尚需', '持仓价值', '保证金', '未实现盈亏', '投降'],
+        rows: []
+    };
+    
+    
+    
+        var symbol ="BTC"
+        var direction = '空仓';
+        var margin = direction;
+        if (assets[exLabel_0][symbol].amount != 0) {
+            direction = assets[exLabel_0][symbol].amount > 0 ? '做多' + Success : '做空' + Danger;
+            margin = (assets[exLabel_0][symbol].marginType == 'cross' ? '全仓' : '逐仓');
+        }
+
+        var price = _N((assets[exLabel_0][symbol].ask_price + assets[exLabel_0][symbol].bid_price) / 2, trade_info[symbol].priceSize);
+        var value = _N((assets[exLabel_0][symbol].ask_value + assets[exLabel_0][symbol].bid_value) / 2, 2);
+
+        
+
+        
+        
+
+        
+
+        
+        liquidationToMarkPrice = 0
+        if(assets[exLabel_0][symbol].amount < 0)
+           liquidationToMarkPrice = assets[exLabel_0][symbol].liquidationPrice == 0 ? '0' : "↑" + _N(assets[exLabel_0][symbol].liquidationPrice - assets[exLabel_0][symbol].markPrice, trade_info[symbol].priceSize) + '$' + ' ≈ ' + _N((assets[exLabel_0][symbol].liquidationPrice - assets[exLabel_0][symbol].markPrice) / assets[exLabel_0][symbol].markPrice * 100, 2) + '%' + Warning  
+
+        if(assets[exLabel_0][symbol].amount > 0)
+           liquidationToMarkPrice = assets[exLabel_0][symbol].liquidationPrice == 0 ? '0' : "↓" + _N(assets[exLabel_0][symbol].markPrice - assets[exLabel_0][symbol].liquidationPrice, trade_info[symbol].priceSize) + '$' + ' ≈ ' + _N((assets[exLabel_0][symbol].markPrice - assets[exLabel_0][symbol].liquidationPrice) / assets[exLabel_0][symbol].markPrice * 100, 2) + '%' + Warning 
+
+
+        
+        var infoList = [
+            exLabel_0,
+            "[" + margin + "] [" + assets[exLabel_0][symbol].leverage + 'x] ',
+            
+            symbol,
+            
+            
+            
+            
+            direction,
+            Math.abs(assets[exLabel_0][symbol].amount),
+            assets[exLabel_0][symbol].hold_price,
+            price,
+            assets[exLabel_0][symbol].liquidationPrice, 
+            
+            liquidationToMarkPrice,
+            Math.abs(value),
+            _N(assets[exLabel_0][symbol].positionInitialMargin, 2),
+            
+            _N(assets[exLabel_0][symbol].unrealised_profit, 3) + (assets[exLabel_0][symbol].unrealised_profit >= 0 ? Success : Danger),
+            
+            {
+                'type': 'button',
+                'cmd': '说好的没有撤退可言呢？？?:' + symbol + ':' + assets[exLabel_0][symbol].amount + ':'+ 0 + ':',
+                'name': symbol + ' 投降'
+            }
+        ];
+        table.rows.push(infoList);
+        direction = '空仓';
+        margin = direction;
+        if (assets[exLabel_1][symbol].amount != 0) {
+            direction = assets[exLabel_1][symbol].amount > 0 ? '做多' + Success : '做空' + Danger;
+            margin = (assets[exLabel_1][symbol].marginType == 'cross' ? '全仓' : '逐仓');
+        }
+
+        price = _N((assets[exLabel_1][symbol].ask_price + assets[exLabel_1][symbol].bid_price) / 2, trade_info[symbol].priceSize);
+        value = _N((assets[exLabel_1][symbol].ask_value + assets[exLabel_1][symbol].bid_value) / 2, 2);
+
+
+        
+        liquidationToMarkPrice = 0
+        if(assets[exLabel_1][symbol].amount < 0)
+           liquidationToMarkPrice = assets[exLabel_1][symbol].liquidationPrice == 0 ? '0' : "↑" + _N(assets[exLabel_1][symbol].liquidationPrice - assets[exLabel_1][symbol].markPrice, trade_info[symbol].priceSize) + '$' + ' ≈ ' + _N((assets[exLabel_1][symbol].liquidationPrice - assets[exLabel_1][symbol].markPrice) / assets[exLabel_1][symbol].markPrice * 100, 2) + '%' + Warning  
+
+        if(assets[exLabel_1][symbol].amount > 0)
+           liquidationToMarkPrice = assets[exLabel_1][symbol].liquidationPrice == 0 ? '0' : "↓" + _N(assets[exLabel_1][symbol].markPrice - assets[exLabel_1][symbol].liquidationPrice, trade_info[symbol].priceSize) + '$' + ' ≈ ' + _N((assets[exLabel_1][symbol].markPrice - assets[exLabel_1][symbol].liquidationPrice) / assets[exLabel_1][symbol].markPrice * 100, 2) + '%' + Warning 
+
+        infoList = [
+            exLabel_1,
+            "[" + margin + "] [" + assets[exLabel_1][symbol].leverage + 'x] ',
+            
+            symbol,
+            
+            
+            
+            
+            direction,
+            Math.abs(assets[exLabel_1][symbol].amount),
+            assets[exLabel_1][symbol].hold_price,
+            price,
+            assets[exLabel_1][symbol].liquidationPrice, 
+            
+            liquidationToMarkPrice,
+            Math.abs(value),
+            _N(assets[exLabel_1][symbol].positionInitialMargin, 2),
+            
+            _N(assets[exLabel_1][symbol].unrealised_profit, 3) + (assets[exLabel_1][symbol].unrealised_profit >= 0 ? Success : Danger),
+            
+            {
+                'type': 'button',
+                'cmd': '说好的没有撤退可言呢？？?:' + symbol + ':' + assets[exLabel_1][symbol].amount + ':'  + 1 + ':',
+                'name': symbol + ' 投降'
+            }
+        ];
+        table.rows.push(infoList);
+    
+    
+    var logString = JSON.stringify(assets[exLabel_0].USDT) + '\n';
+        logString = logString + JSON.stringify(assets[exLabel_1].USDT) + '\n';
+    var StatusData = AppendedStatus();
+    
+    LogStatus(StatusData.upTable + '`' + JSON.stringify([table]) + '`\n' + logString);
+
+    if (Date.now() - update_profit_time > Log_profit_interval * 1000) {
+        var balance = assets[exLabel_0].USDT.margin_balance + assets[exLabel_1].USDT.margin_balance;
+
+        LogProfit(_N(balance, 3), '&');
+        update_profit_time = Date.now();
+
+    }
+
+}
+function onTick() { 
+        var symbol = "BTC";
+        if (trade_info[symbol].ask_price == 0 || trade_info[symbol].bid_price ==0) {
+            return;
+        }
+        
+
+        
+        
+            if(assets[exLabel_0][symbol].amount == 0 &&
+               assets[exLabel_1][symbol].amount == 0 &&
+              (
+               
+               
+               assets[exLabel_0].USDT.total_balance * MarginLevel < trade_info[symbol].minQty * trade_info[symbol].bid_price  ||
+               assets[exLabel_1].USDT.total_balance * MarginLevel < trade_info[symbol].minQty * trade_info[symbol].bid_price 
+               ) 
+              ){
+              
+              
+                onexit();
+                throw '1082 对冲结束,如果需要重新运行策略，需要重新设置参数账户';
+            }
+            if ( Math.abs(assets[exLabel_0][symbol].amount) <= trade_info[symbol].minQty  &&
+                 Math.abs(assets[exLabel_1][symbol].amount) <= trade_info[symbol].minQty  &&
+                 assets[exLabel_0].USDT.total_balance * MarginLevel  >= trade_info[symbol].minQty * trade_info[symbol].bid_price  &&
+                 assets[exLabel_1].USDT.total_balance * MarginLevel  >= trade_info[symbol].minQty * trade_info[symbol].bid_price   ) { 
+
+                 exchanges[0].IO("currency", symbol + '_' + 'USDT');
+                 exchanges[0].SetContractType('swap');
+                 exchanges[0].SetMarginLevel(MarginLevel)
+
+                 exchanges[1].IO("currency", symbol + '_' + 'USDT');
+                 exchanges[1].SetContractType('swap');
+                 exchanges[1].SetMarginLevel(MarginLevel)
+
+                 var amount =0
+
+    if(assets[exLabel_1].USDT.total_balance > assets[exLabel_0].USDT.total_balance ){
+        
+        Trade_ex = 0
+
+        
+        
+        
+
+    }else{
+        Trade_ex = 1
+
+        
+        
+        
+    }
+
+                 if (NO_TRADE){
+                   
+                   
+                   
+                  
+                  
+                   Log(353,"exchanges[",Trade_ex,"] buy",symbol," amount:",_N(assets[exchanges[Trade_ex].GetLabel()].USDT.total_balance * MarginLevel  /trade_info[symbol].ask_price,trade_info[symbol].amountSize)," total_balance:",assets[exchanges[Trade_ex].GetLabel()].USDT.total_balance," ask_price:",trade_info[symbol].ask_price)
+                   Log(354,"exchanges[",1-Trade_ex,"] sell",symbol," amount:",_N(assets[exchanges[Trade_ex].GetLabel()].USDT.total_balance * MarginLevel  /trade_info[symbol].bid_price,trade_info[symbol].amountSize)," total_balance:",assets[exchanges[Trade_ex].GetLabel()].USDT.total_balance," bid_price:",trade_info[symbol].bid_price)
+                   }else{
+
+
+                   
+                   changeMarginTypeToCROSSED(true,"BTCUSDT",exchanges[Trade_ex])
+                   changeMarginTypeToCROSSED(false,"BTCUSDT",exchanges[1-Trade_ex])
+
+                   cancelAll(symbol,exchanges[Trade_ex])
+
+                   exchanges[Trade_ex].SetDirection('buy');
+
+                   
+                   
+                   
+
+                   var spread = trade_info[symbol].ask_price - trade_info[symbol].bid_price;
+                   amount = _N(assets[exchanges[Trade_ex].GetLabel()].USDT.total_balance * MarginLevel * 0.99  /(trade_info[symbol].ask_price+spread) ,trade_info[symbol].amountSize)
+
+                   
+                   Log(1052,exchanges[Trade_ex].GetLabel()," buy ",symbol," value(",MarginLevel,"x):",_N(assets[exchanges[Trade_ex].GetLabel()].USDT.total_balance * MarginLevel,2)," amount:",amount," balance:",assets[exchanges[Trade_ex].GetLabel()].USDT.total_balance," ask_price:",trade_info[symbol].ask_price)
+                   var exOrderid_01=exchanges[Trade_ex].Buy(-1, amount, symbol);
+
+                if(exOrderid_01){ 
+
+                   cancelAll(symbol,exchanges[1-Trade_ex])
+                   exchanges[1-Trade_ex].SetDirection('sell');
+                   
+
+                   Log(1094,exchanges[1-Trade_ex].GetLabel()," sell ",symbol," value(",MarginLevel,"x):",_N(assets[exchanges[Trade_ex].GetLabel()].USDT.total_balance * MarginLevel,2)," amount:",amount," balance:",assets[exchanges[Trade_ex].GetLabel()].USDT.total_balance," bid_price:",trade_info[symbol].bid_price)
+
+                 for (var i = 0; i < 10; i++) {
+                   var exOrderid_02=exchanges[1-Trade_ex].Sell(-1, amount, symbol);
+                   if(!isEmpty(exOrderid_02))break;
+                   Sleep(100)
+                 }
+
+                 if(isEmpty(exOrderid_02))return;
+
+                   
+                   var theOrder = waitOrder(exOrderid_01,exchanges[Trade_ex])
+
+                   
+
+                   
+
+                   
+                   Log(946,exchanges[Trade_ex].GetLabel()," buy ",symbol," OrderId:",theOrder.orderId ,"=>(",theOrder.status,")"," origQty:",theOrder.origQty,"=>(executed:",theOrder.executedQty,") avgPrice:",theOrder.avgPrice," USDT.balance: ",assets[exchanges[Trade_ex].GetLabel()].USDT.total_balance)
+
+                   if (theOrder.status != "NEW"){
+
+                     
+
+                     updateAccount(exchanges[Trade_ex])
+
+
+                     exchanges[Trade_ex].SetDirection('closebuy');
+                     
+
+
+                     
+                     
+
+                     if(isEmpty(assets[exchanges[Trade_ex].GetLabel()][symbol].liquidationPrice)){
+                        getPostion(symbol,exchanges[Trade_ex])
+                     }
+
+                     if(isEmpty(assets[exchanges[Trade_ex].GetLabel()][symbol].liquidationPrice)){
+                        return
+                     }
+
+                     amount = assets[exchanges[Trade_ex].GetLabel()][symbol].liquidationPrice +10
+
+
+
+                     var Order = [{
+                            "symbol": symbol + "USDT",
+                            "side": "SELL",
+                            "positionSide": "BOTH",
+                            "type": "STOP",
+                            "stopPrice": _N( amount , trade_info[symbol].priceSize ),
+                            "workingType": "MARK_PRICE",
+                            "quantity": _N( parseFloat(theOrder.executedQty) , trade_info[symbol].amountSize ),
+                            "price": _N( amount -9 , trade_info[symbol].priceSize ),
+                            "timeInForce": "GTC",
+                            "reduceOnly": true
+                        }]
+
+                     
+                     theOrder = makeOrder(Order,exchanges[Trade_ex])
+
+
+                     amount = _N((1-amount / assets[exchanges[Trade_ex].GetLabel()][symbol].hold_price) * 100, 2)
+
+                     Log(533, " 挂止损单(损失率:", amount, "%) closebuy ", symbol, " (status:", theOrder.status, ") 订单 Id:", theOrder.orderId, " price:", theOrder.price, "(stopPrice:",_N( assets[exchanges[Trade_ex].GetLabel()][symbol].liquidationPrice +10 , trade_info[symbol].priceSize ),") liquidationPrice:", _N(assets[exchanges[Trade_ex].GetLabel()][symbol].liquidationPrice, trade_info[symbol].priceSize), " amount:", theOrder.origQty, " MarginLevel:", MarginLevel, " timeInForce=", theOrder.timeInForce, " @", _D())
+
+                   }
+
+                   
+                   theOrder = waitOrder(exOrderid_02,exchanges[1-Trade_ex])
+                   
+
+                   
+
+
+                   
+
+                   Log(987,exchanges[1-Trade_ex].GetLabel()," sell ",symbol," OrderId:",theOrder.orderId ,"=>(",theOrder.status,")"," origQty:",theOrder.origQty,"=>(executed:",theOrder.executedQty,") avgPrice:",theOrder.avgPrice," USDT.balance: ",assets[exchanges[1-Trade_ex].GetLabel()].USDT.total_balance)
+
+
+                   if (theOrder.status != "NEW"){
+
+                     updateAccount(exchanges[1-Trade_ex])
+
+                     
+                     
+
+
+                     if(isEmpty(assets[exchanges[1-Trade_ex].GetLabel()][symbol].liquidationPrice)){
+                        getPostion(symbol,exchanges[1-Trade_ex])
+                     }
+
+                     if(isEmpty(assets[exchanges[1-Trade_ex].GetLabel()][symbol].liquidationPrice)){
+                        return
+                     }
+
+
+                     amount = assets[exchanges[1-Trade_ex].GetLabel()][symbol].liquidationPrice -10
+
+
+                     exchanges[Trade_ex].SetDirection('closebuy');
+                     exchanges[Trade_ex].Sell(_N( parseFloat(assets[exchanges[1-Trade_ex].GetLabel()][symbol].liquidationPrice) ,trade_info[symbol].priceSize ) ,_N( parseFloat(Math.abs(assets[exchanges[Trade_ex].GetLabel()][symbol].amount)), trade_info[symbol].amountSize), symbol);  
+
+                     exchanges[1-Trade_ex].SetDirection('closesell');
+                     exchanges[1-Trade_ex].Buy(_N( parseFloat(assets[exchanges[Trade_ex].GetLabel()][symbol].liquidationPrice),trade_info[symbol].priceSize ) , _N( parseFloat(Math.abs(assets[exchanges[1-Trade_ex].GetLabel()][symbol].amount)), trade_info[symbol].amountSize), symbol);  
+
+
+                     var Order = [{
+                            "symbol": symbol + "USDT",
+                            "side": "BUY",
+                            "positionSide": "BOTH",
+                            "type": "STOP",
+                            "stopPrice": _N( amount , trade_info[symbol].priceSize ),
+                            "workingType": "MARK_PRICE",
+                            "quantity": _N(parseFloat(theOrder.executedQty), trade_info[symbol].amountSize),
+                            "price": _N( amount +9 , trade_info[symbol].priceSize ),
+                            "timeInForce": "GTC",
+                            "reduceOnly": true
+                        }]
+                     theOrder = makeOrder(Order,exchanges[1-Trade_ex])
+
+                     amount = _N((amount / assets[exchanges[1-Trade_ex].GetLabel()][symbol].hold_price -1) * 100, 2)
+
+                     Log(571, " 挂止损单(损失率:", amount, "%) closesell ", symbol, " (status:", theOrder.status, ") 订单 Id:", theOrder.orderId, " price:", theOrder.price, "(stopPrice:",_N( assets[exchanges[1-Trade_ex].GetLabel()][symbol].liquidationPrice -10 , trade_info[symbol].priceSize ),") liquidationPrice:", _N(assets[exchanges[1-Trade_ex].GetLabel()][symbol].liquidationPrice, trade_info[symbol].priceSize), " amount:", theOrder.origQty, " MarginLevel:", MarginLevel, " timeInForce=", theOrder.timeInForce, " @", _D())
+
+                   }
+                  }
+                 }
+
+            }
+        
+            if ((Math.abs(assets[exLabel_0][symbol].amount) >= trade_info[symbol].minQty  &&
+                 Math.abs(assets[exLabel_1][symbol].amount) <= trade_info[symbol].minQty )||
+                (Math.abs(assets[exLabel_0][symbol].amount) <= trade_info[symbol].minQty &&
+                 Math.abs(assets[exLabel_1][symbol].amount) >= trade_info[symbol].minQty )) { 
+
+                if(assets[exLabel_0][symbol].amount != 0){
+                  cancelAll(symbol,exchanges[0])
+                  cancelAll(symbol,exchanges[1])
+                  closeAll(symbol,exchanges[0])
+                  Log(1022,exLabel_0," 已平仓(因另一交易所已平仓)！ exLabel_0_Amount:",assets[exLabel_0][symbol].amount,"exLabel_1_Amount:",assets[exLabel_1][symbol].amount)
+                }
+                if(assets[exLabel_1][symbol].amount != 0){
+                  cancelAll(symbol,exchanges[0])
+                  cancelAll(symbol,exchanges[1])
+                  closeAll(symbol,exchanges[1])
+                  Log(1026,exLabel_1," 已平仓(因另一交易所已平仓)！ exLabel_0_Amount:",assets[exLabel_0][symbol].amount,"exLabel_1_Amount:",assets[exLabel_1][symbol].amount)
+                }
+                onexit();
+                throw '1317 对冲结束,请检查仓位，委托单是否已经清除，并重启';
+
+            }
+        
+            if ( Math.abs(assets[exLabel_0][symbol].amount) >= trade_info[symbol].minQty  &&
+                 Math.abs(assets[exLabel_1][symbol].amount) >= trade_info[symbol].minQty ){ 
+
+                if(assets[exchanges[Trade_ex].GetLabel()][symbol].markPrice <= assets[exchanges[Trade_ex].GetLabel()][symbol].liquidationPrice +10 ||
+                   assets[exchanges[1-Trade_ex].GetLabel()][symbol].markPrice >= assets[exchanges[1-Trade_ex].GetLabel()][symbol].liquidationPrice -10 ){ 
+
+                   if(assets[exchanges[Trade_ex].GetLabel()][symbol].markPrice <= assets[exchanges[Trade_ex].GetLabel()][symbol].liquidationPrice +10)
+                      Log(1224,exchanges[Trade_ex].GetLabel(),"止损,并平仓另一交易所 markPrice",assets[exchanges[Trade_ex].GetLabel()][symbol].markPrice,"<=",assets[exchanges[Trade_ex].GetLabel()][symbol].liquidationPrice +10)
+
+                   if(assets[exchanges[1-Trade_ex].GetLabel()][symbol].markPrice >= assets[exchanges[1-Trade_ex].GetLabel()][symbol].liquidationPrice -10)
+                      Log(1225,exchanges[1-Trade_ex].GetLabel(),"止损,并平仓另一交易所 markPrice",assets[exchanges[1-Trade_ex].GetLabel()][symbol].markPrice,">=",assets[exchanges[1-Trade_ex].GetLabel()][symbol].liquidationPrice -10)
+
+                   cancelAll(symbol,exchanges[Trade_ex])
+                   cancelAll(symbol,exchanges[1-Trade_ex])
+
+                   closeAll(symbol,exchanges[Trade_ex])
+                   closeAll(symbol,exchanges[1-Trade_ex])
+                }
+
+            }
+
+
+}
+function RunCommand() {
+    var str_cmd = GetCommand();
+    if (str_cmd) {
+        var arrCmd = str_cmd.split(':');
+        var symbol = arrCmd[1];
+        var amount = parseFloat(arrCmd[2]);
+        var ex = arrCmd[3];
+        var exchange=exchanges[ex]
+        if (amount == 0) {
+            Log('亲,你还记得大明湖畔的乔碧萝吗?' + Danger);
+            return;
+        }
+        var f = amount < 0 ? 'Buy' : 'Sell';
+        var dirction = amount < 0 ? 'buy' : 'sell';
+        exchange.IO("currency", symbol + '_' + 'USDT');
+        exchange.SetContractType('swap');
+        exchange.SetDirection(dirction);
+        exchange.SetMarginLevel(MarginLevel)
+        exchange[f](-1, Math.abs(amount), symbol);
+        Log(737,exchange.GetLabel(),dirction,symbol," 投降 amount=",amount)
+    }
+}
+
+function main() {
+    while (true) {
+        RunTime = RuningTime();
+        RunCommand(); 
+        updateAccount(exchanges[0])
+        updateAccount(exchanges[1]); 
+        updateTick(); 
+        
+        onTick(); 
+        updateStatus(); 
+        Sleep(Interval * 1000);
+    }
+
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2020-09-08 19:25:12

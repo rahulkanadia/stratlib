@@ -1,0 +1,196 @@
+
+> 策略名称
+
+Convert_Record_Cycle
+
+> 策略作者
+
+jxc6698
+
+> 策略描述
+
+# 得到指定周期的蜡烛图 线数据
+
+如有BUG ，问题 欢迎留言
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|UI_NewCycleForMS|1000*60*60*2|合成周期毫秒数|
+
+
+> 源码 (javascript)
+
+``` javascript
+
+
+
+
+
+
+var cloneObj = function(obj) {                             
+    var str, newobj = obj.constructor === Array ? [] : {};
+    if (typeof obj !== 'object') {
+        return;
+    } else if (JSON) {
+        str = JSON.stringify(obj);                         
+            newobj = JSON.parse(str);                      
+    } else {
+        for (var i in obj) {
+            newobj[i] = typeof obj[i] === 'object' ?
+                cloneObj(obj[i]) : obj[i];
+        }
+    }
+    return newobj;
+};
+
+
+var DefaultN = 10
+function AssembleRecords(NewCycleForMS, n) {
+    var self = {}
+    self.NewCycleForMS = NewCycleForMS;
+    self.curBars = []       
+    n = parseInt(n)         
+    if (n*1 === n)
+        self.n = n
+    else
+        self.n = DefaultN
+    
+    self.tmp = {lasttime: 0}
+
+    self.timeAf = function (time1, time2) {
+        return time1 < time2
+    }
+    self.timeAfOrEq = function (time1, time2) {
+        return time1 <= time2
+    }
+    self.inSameKLine = function (time1, time2) {
+        if (parseInt(time1/self.NewCycleForMS) === 
+            parseInt(time2/self.NewCycleForMS)) {
+            return true
+        }
+        return false;
+    }
+    self.getKlineStartTime = function (time) {
+        return time - time%self.NewCycleForMS
+    }
+    self.newBarObj = function (time, v) {
+        var value = 0;
+        value = v
+        return {                         
+            Time: time,
+            Open: value,
+            High: value,
+            Low: value,
+            Close: value,
+            Volume: 0
+        }
+    }
+    self.updateNewBar = function(time, defaultvalue) {
+        var barobj;
+        if (self.curBars.length == 0) {
+            barobj = self.newBarObj(self.getKlineStartTime(time), 
+                defaultvalue)
+            self.curBars.push(barobj)
+        } else if(!self.inSameKLine(self.curBars[self.curBars.length-1].Time,
+            time) ) {
+            barobj = self.newBarObj(self.getKlineStartTime(time),
+                defaultvalue)
+            self.curBars.push(barobj)
+        }
+            
+        if (self.curBars.length > n+2) {
+            self.curBars.shift()
+        }
+        return self.curBars[self.curBars.length-1];
+    }
+    self.AddTicker = function (ticker) {
+        var barobj;
+
+        barobj = self.updateNewBar(ticker.Time, ticker.Last);
+
+        if (!self.timeAfOrEq(self.barobj[self.barobj.length-1].Time, 
+            cker.Time)) {
+            return;
+        }        
+        if (barobj.High < ticker.High)
+            barobj.High = ticker.High
+        if (barobj.Low > ticker.Low)
+            barobj.Low = ticker.Low
+        barobj.Close = ticker.Last
+
+    }
+    self.AddKLine = function (klinerecord) {
+        var barobj;        
+
+        
+        if (!self.timeAfOrEq(self.tmp.lasttime, 
+            klinerecord.Time)) {
+            return
+        }
+        barobj = self.updateNewBar(klinerecord.Time, klinerecord.Open)
+        self.tmp.lasttime = klinerecord.Time
+
+        if (barobj.High < klinerecord.High) {
+            barobj.High = klinerecord.High
+        }
+        if (barobj.Low > klinerecord.Low)
+            barobj.Low = klinerecord.Low
+        barobj.Close = klinerecord.Close
+        barobj.Volume += klinerecord.Volumn
+    }
+    self.GetKline = function () {
+        var len = self.curBars.length;
+        return self.curBars.slice(len-self.n);
+    }
+
+    return self;
+}
+
+
+function main() {
+    var records = exchange.GetRecords();
+    while (!records || records.length < 24) {
+        records = exchange.GetRecords();
+    }
+    
+    
+    
+    var Num_UI_NewCycleForMS = 1;
+    var arrayNum = UI_NewCycleForMS.split("*");
+    for(var indexNum = 0 ; indexNum < arrayNum.length ; indexNum++){
+        Num_UI_NewCycleForMS = Num_UI_NewCycleForMS * Number(arrayNum[indexNum]);
+    }
+    Log("自定义周期毫秒时间为：", Num_UI_NewCycleForMS);
+    
+    
+    obj = AssembleRecords(Num_UI_NewCycleForMS, 5);      
+
+
+
+    while(true){
+        records = _C(exchange.GetRecords);
+        
+        for (var i=0;i<records.length;i++) {
+            obj.AddKLine(records[i])
+        }
+
+        newrecords = obj.GetKline()
+        $.PlotRecords(newrecords, 'BTC');
+
+        
+        Sleep(1000);
+    }
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2017-03-13 16:41:10

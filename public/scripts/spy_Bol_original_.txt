@@ -1,0 +1,296 @@
+import os
+import glob
+import statistics
+import pandas as pd
+import numpy as np
+
+
+def read_csv_columns(file_path, columns=('Close', 'Open', 'Date')):
+    """
+    Reads specific columns from a CSV file and returns them as lists.
+
+    :param file_path: Path to the CSV file.
+    :param columns: Tuple or list of column names to read.
+    :return: A dictionary mapping each column name to a list of values.
+    """
+    df = pd.read_csv(file_path, usecols=columns)
+    result = {}
+    for col in columns:
+        result[col] = df[col].dropna().tolist()
+    return result
+
+
+def flatten_nested_list(nested_list):
+    """
+    Flattens a list of lists (or list of single-element lists) into a single list.
+
+    Example:
+        [[1], [2], [3]] -> [1, 2, 3]
+
+    :param nested_list: A 2D list or list of single-element lists.
+    :return: A flat list of values.
+    """
+    return [item[0] if isinstance(item, list) and len(item) == 1 else item
+            for item in nested_list]
+
+
+def get_k_day_slice(values, k):
+    """
+    Extracts the first 'k' elements from a nested list (assuming each element is also a list/tuple).
+
+    :param values: A list of lists or tuples.
+    :param k: Number of elements to extract.
+    :return: List of the first 'k' flattened elements from 'values'.
+    """
+    return [values[i][0] for i in range(k)]
+
+
+def calculate_lower_band(prices, multiplier):
+    """
+    Calculates the lower Bollinger-like band given a list of prices.
+
+    The band = mean(prices) - multiplier * population_std_dev(prices).
+
+    :param prices: List of numerical price values.
+    :param multiplier: Multiplier for the standard deviation.
+    :return: The lower band value.
+    """
+    if not prices:
+        return 0.0
+    std_dev = statistics.pstdev(prices)
+    avg = sum(prices) / len(prices)
+    return avg - (std_dev * multiplier)
+
+
+def average(values):
+    """
+    Safely computes the average of a list of numbers.
+
+    :param values: List of numerical values.
+    :return: Mean of the values or 0 if empty.
+    """
+    return sum(values) / len(values) if values else 0
+
+
+def sliding_window(values, window_size):
+    """
+    Splits 'values' into overlapping sub-lists of length 'window_size'.
+    For example, if values = [1,2,3,4,5] and window_size = 3:
+        Output = [[1,2,3], [2,3,4], [3,4,5]]
+
+    :param values: A 2D list or list of single-element lists.
+    :param window_size: Window size (integer).
+    :return: A list of sub-lists (each of size 'window_size').
+    """
+    current_values = values[:]
+    result = []
+    for _ in range(len(values) - window_size + 1):
+        window = get_k_day_slice(current_values, window_size)
+        result.append(window)
+        current_values = current_values[1:]
+    return result
+
+
+def bollinger_bands_for_windows(windows, multiplier, with_index=True):
+    """
+    Computes the "lower band" (or some statistic) for each sub-list/window.
+
+    :param windows: A list of lists, where each inner list represents a window of data.
+    :param multiplier: Multiplier for the standard deviation.
+    :param with_index: If True, return (lower_band, index). Otherwise just the lower_band value.
+    :return: A list of computed lower bands (optionally with index).
+    """
+    results = []
+    for idx, w in enumerate(windows):
+        lb = calculate_lower_band(w, multiplier)
+        results.append((lb, idx) if with_index else lb)
+    return results
+
+
+def prepend_zeros(data_list, count=9):
+    """
+    Prepends a given number of zeros to the beginning of a list.
+
+    :param data_list: The original list.
+    :param count: How many zeros to prepend.
+    :return: The new list with zeros added.
+    """
+    return [0] * count + data_list
+
+
+def analyze_historical_open_vs_band(close_values, boll_values, open_values, date_values, window_size):
+    """
+    Analyzes how often the open price is above a Bollinger band, 
+    and then checks if price goes up within 10 days.
+
+    Prints statistics about successes and failures, 
+    and returns the success ratio if there are any valid entries.
+
+    :param close_values: Flattened list of close prices.
+    :param boll_values: List of tuples (bollinger_value, index) or just bollinger_value.
+    :param open_values: Flattened list of open prices.
+    :param date_values: List of dates (strings).
+    :param window_size: The Bollinger window size (k).
+    :return: The ratio (went_up / all_opened) or 0 if no valid trades.
+    """
+    went_up = 0
+    all_opened = 0
+    successes = []
+    failures = []
+    delta_changes = []
+
+    for i in range(window_size, len(boll_values) - window_size):
+        current_boll = boll_values[i][0] if isinstance(boll_values[i], tuple) else boll_values[i]
+
+        if current_boll > open_values[i]:
+            all_opened += 1
+            for j in range(10):
+                if i + j < len(close_values) and close_values[i + j] > open_values[i]:
+                    delta_changes.append(close_values[i + j] - open_values[i])
+                    successes.append((date_values[i], i + 2))
+                    went_up += 1
+                    break
+                else:
+                    if j == 9:  # Reached the end of the 10-day window without going up
+                        failures.append((date_values[i], i + 2))
+
+    print(f"Number of successes: {len(successes)}")
+    print(f"Successes: {successes}")
+    print(f"Failures: {failures}")
+    print(f"All opened positions: {all_opened}")
+    print(f"Incidents (success + failures): {len(successes) + len(failures)}")
+    print(f"Latest stock price: {open_values[-1]}")
+    print(f"Average delta change: {average(delta_changes)}")
+    avg_close = average(close_values)
+    print(f"Overall average close price: {avg_close}")
+    if open_values[-1] != 0:
+        print(f"Average % change (from open): {(average(delta_changes) + open_values[-1]) / open_values[-1]}")
+
+    return went_up / all_opened if all_opened else 0
+
+
+def check_current_open_below_band(close_values, boll_values, open_values, window_size):
+    """
+    Checks if the current open price is below the latest Bollinger band value.
+
+    :param close_values: Flattened list of close prices (not used here, but kept for consistency).
+    :param boll_values: List of Bollinger band values (or tuples).
+    :param open_values: Flattened list of open prices.
+    :param window_size: Window size used (not used in actual logic here, but for reference).
+    :return: True if the latest Bollinger band value > latest open price, otherwise False.
+    """
+    latest_boll = boll_values[-1][0] if isinstance(boll_values[-1], tuple) else boll_values[-1]
+    return latest_boll > open_values[-1]
+
+
+def bollinger_analysis(csv_filename, window_size, multiplier, path=""):
+    """
+    A convenience function to read data, compute Bollinger values, 
+    and analyze historical performance.
+
+    :param csv_filename: Name of the CSV file (e.g. 'QQQ.csv').
+    :param window_size: Integer lookback period for Bollinger band (k).
+    :param multiplier: Multiplier for the standard deviation.
+    :param path: Optional path to the CSV file (defaults to current directory).
+    """
+    full_path = os.path.join(path, csv_filename)
+    data = read_csv_columns(full_path, columns=['Close', 'Open', 'Date'])
+
+    close_values = [[v] for v in data['Close']]
+    open_values = [[v] for v in data['Open']]
+    date_values = data['Date']  # This can remain a flat list of dates.
+
+    close_windows = sliding_window(close_values, window_size)
+
+    bollinger_vals = bollinger_bands_for_windows(close_windows, multiplier, with_index=True)
+
+    bollinger_vals_padded = prepend_zeros(bollinger_vals, count=window_size - 1)
+
+    flat_close = flatten_nested_list(close_values)
+    flat_open = flatten_nested_list(open_values)
+
+    success_ratio = analyze_historical_open_vs_band(
+        close_values=flat_close,
+        boll_values=bollinger_vals_padded,
+        open_values=flat_open,
+        date_values=date_values,
+        window_size=window_size
+    )
+    print(f"Average success ratio: {success_ratio * 100:.2f}%")
+
+
+def compute_lower_band_for_current(csv_filename, window_size, multiplier, path=""):
+    """
+    Computes the current lower band value from the last 'window_size' prices.
+
+    :param csv_filename: CSV file name (str).
+    :param window_size: Lookback period (int).
+    :param multiplier: Multiplier for standard deviation (float).
+    :param path: Optional file path (str).
+    :return: The most recent lower band value (float).
+    """
+    full_path = os.path.join(path, csv_filename)
+    data = read_csv_columns(full_path, columns=['Close'])
+    close_values = data['Close']
+
+    recent_prices = close_values[-window_size:]
+    return calculate_lower_band(recent_prices, multiplier)
+
+
+def check_if_under_bollinger(csv_filename, window_size, multiplier, path="", look_two_days=False):
+    """
+    Checks if the most recent close and/or today's open is under the computed Bollinger band.
+
+    :param csv_filename: The CSV file name (str).
+    :param window_size: Lookback period (int).
+    :param multiplier: Multiplier for standard deviation (float).
+    :param path: Optional file path (str).
+    :param look_two_days: If True, checks close from 2 days ago and today's open vs. the band.
+                          If False, checks only yesterday's close vs. the band.
+    :return: Boolean indicating if the condition is satisfied.
+    """
+    low_band = compute_lower_band_for_current(csv_filename, window_size, multiplier, path)
+
+    full_path = os.path.join(path, csv_filename)
+    data = read_csv_columns(full_path, columns=['Close', 'Open', 'Date'])
+
+    close_values = flatten_nested_list([[v] for v in data['Close']])
+    open_values = flatten_nested_list([[v] for v in data['Open']])
+
+    if look_two_days:
+        if len(close_values) < 2:
+            return False
+        return (close_values[-2] < low_band) and (open_values[-1] < low_band)
+    else:
+        return close_values[-1] < low_band
+
+
+def dataframe_from_name(stock_name, base_url):
+    """
+    Retrieves a CSV from a constructed URL (by splitting and rejoining strings),
+    then returns the data as a DataFrame.
+    NOTE: This depends on the specific format of base_url used in your project.
+
+    :param stock_name: Name of the stock (str).
+    :param base_url: Base URL pattern (str).
+    :return: A pandas DataFrame of the fetched data.
+    """
+    prefix = base_url[:53]
+    suffix = base_url[-91:]
+    url = f"{prefix}{stock_name}{suffix}"
+    return pd.read_csv(url)
+
+
+def dataframe_to_csv(data_frame, stock_name, path=""):
+    """
+    Saves a given DataFrame as a CSV with the given stock_name as its filename.
+
+    :param data_frame: pandas DataFrame to save.
+    :param stock_name: The name of the stock (used as filename).
+    :param path: Directory path (str).
+    """
+    output_file = os.path.join(path, f"{stock_name}.csv")
+    data_frame.to_csv(output_file, index=False)
+
+
+bollinger_analysis('QQQ2.csv', 10, 1.5)

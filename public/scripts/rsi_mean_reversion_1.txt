@@ -1,0 +1,189 @@
+"""
+RSI Mean Reversion Strategy
+
+Trades based on RSI (Relative Strength Index) extremes:
+- LONG when RSI < 30 (oversold)
+- SHORT when RSI > 70 (overbought)
+- Exit when RSI returns to neutral (50)
+
+Great for learning momentum indicators!
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+import os
+
+current_file = Path(os.path.abspath(__file__))
+project_root = current_file.parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from utils.base_strategy_fixed import BaseStrategy
+
+class RSIStrategy(BaseStrategy):
+    """
+    RSI-based mean reversion strategy
+    """
+    
+    def __init__(self, data_path=None, rsi_period=14, oversold=30, overbought=70):
+        super().__init__(
+            name="RSI Mean Reversion",
+            description="Trades RSI extremes expecting reversion",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close']
+        )
+        
+        self.rsi_period = rsi_period
+        self.oversold = oversold
+        self.overbought = overbought
+        self.neutral = 50
+        
+        if data_path:
+            self.load_data(data_path)
+    
+    def calculate_rsi(self):
+        """Calculate RSI indicator"""
+        df = self.data.copy()
+        
+        delta = df['Close'].diff()
+        
+        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+        
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        return df
+    
+    def calculate_signals(self):
+        """Find RSI extreme signals"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.calculate_rsi()
+        signals = []
+        
+        position = None
+        entry_info = None
+        
+        for i in range(self.rsi_period + 1, len(df)):
+            curr_day = df.iloc[i]
+            prev_day = df.iloc[i-1]
+            
+            curr_rsi = curr_day['RSI']
+            prev_rsi = prev_day['RSI']
+            
+            if pd.isna(curr_rsi):
+                continue
+            
+            if position is None:
+                if prev_rsi > self.oversold and curr_rsi <= self.oversold:
+                    position = 'LONG'
+                    entry_info = {
+                        'date': curr_day['Date'],
+                        'entry_price': curr_day['Close'],
+                        'entry_rsi': curr_rsi
+                    }
+                
+                elif prev_rsi < self.overbought and curr_rsi >= self.overbought:
+                    position = 'SHORT'
+                    entry_info = {
+                        'date': curr_day['Date'],
+                        'entry_price': curr_day['Close'],
+                        'entry_rsi': curr_rsi
+                    }
+            
+            elif position == 'LONG':
+                if curr_rsi >= self.neutral or curr_rsi >= self.overbought:
+                    signal = {
+                        'date': entry_info['date'],
+                        'direction': 'LONG',
+                        'entry_price': entry_info['entry_price'],
+                        'exit_price': curr_day['Close'],
+                        'entry_rsi': entry_info['entry_rsi'],
+                        'exit_rsi': curr_rsi,
+                        'signal_strength': (self.neutral - entry_info['entry_rsi']) / self.neutral
+                    }
+                    signals.append(signal)
+                    position = None
+                    entry_info = None
+            
+            elif position == 'SHORT':
+                if curr_rsi <= self.neutral or curr_rsi <= self.oversold:
+                    signal = {
+                        'date': entry_info['date'],
+                        'direction': 'SHORT',
+                        'entry_price': entry_info['entry_price'],
+                        'exit_price': curr_day['Close'],
+                        'entry_rsi': entry_info['entry_rsi'],
+                        'exit_rsi': curr_rsi,
+                        'signal_strength': (entry_info['entry_rsi'] - self.neutral) / (100 - self.neutral)
+                    }
+                    signals.append(signal)
+                    position = None
+                    entry_info = None
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+    
+    def get_summary_metrics(self):
+        """Get performance summary with RSI-specific metrics"""
+        if self.performance_metrics is None:
+            return None
+        
+        metrics = self.performance_metrics.copy()
+        
+        if self.signals is not None and len(self.signals) > 0:
+            avg_entry_rsi = self.signals['entry_rsi'].mean()
+            metrics['avg_entry_rsi'] = round(avg_entry_rsi, 1)
+            
+            oversold_trades = self.signals[self.signals['direction'] == 'LONG']
+            overbought_trades = self.signals[self.signals['direction'] == 'SHORT']
+            
+            if len(oversold_trades) > 0:
+                metrics['oversold_trades'] = len(oversold_trades)
+            
+            if len(overbought_trades) > 0:
+                metrics['overbought_trades'] = len(overbought_trades)
+        
+        return metrics
+
+def main():
+    """Example usage"""
+    print("=" * 60)
+    print("RSI MEAN REVERSION STRATEGY")
+    print("=" * 60)
+    print("\nBuys when RSI < 30 (oversold)")
+    print("Sells when RSI > 70 (overbought)")
+    print("=" * 60)
+    
+    data_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    
+    strategy = RSIStrategy(data_path)
+    
+    print("\nCalculating RSI and finding extremes...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} RSI extreme trades")
+    
+    print("\nRunning backtest...")
+    strategy.run_backtest(initial_capital=10000)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\n" + "=" * 60)
+    print("RESULTS")
+    print("=" * 60)
+    print(f"Total Trades: {metrics['total_trades']}")
+    print(f"Win Rate: {metrics['win_rate']:.1f}%")
+    print(f"Total Profit: ${metrics['total_profit']:.2f}")
+    print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+    
+    if 'avg_entry_rsi' in metrics:
+        print(f"\nAverage Entry RSI: {metrics['avg_entry_rsi']}")
+    if 'oversold_trades' in metrics:
+        print(f"Oversold Trades (LONG): {metrics['oversold_trades']}")
+    if 'overbought_trades' in metrics:
+        print(f"Overbought Trades (SHORT): {metrics['overbought_trades']}")
+
+if __name__ == "__main__":
+    main()

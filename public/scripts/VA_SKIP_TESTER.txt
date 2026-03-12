@@ -1,0 +1,297 @@
+import pandas as pd
+import numpy as np
+from itertools import product
+import warnings
+import os
+from multiprocessing import Pool, cpu_count
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+def load_data(file_name):
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'], dayfirst=True, errors='coerce')
+    vix_df.dropna(subset=['Date'], inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+def calculate_day_range(day):
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """
+    Returns (exit_price, gap_closed).
+    gap_closed is True if the gap was closed intraday, otherwise False.
+    """
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    number_of_shares = position_size / entry_price
+    if trade_direction == 'Long':
+        return number_of_shares * (exit_price - entry_price)
+    else:
+        return number_of_shares * (entry_price - exit_price)
+
+def precompute_trades(df, vix_df, initial_investment):
+    """
+    Returns a DataFrame of all potential gap trades:
+      Date, Trade Direction, Entry Price, Exit Price, Gap Closed,
+      VIX_Open, Profit/Loss, df_idx
+    """
+    trades = []
+    total_days = len(df)
+
+    vix_dates = set(vix_df['Date'])
+    min_vix_date = vix_df['Date'].min()
+    vix_open_dict = {}
+
+    for current_date in df['Date']:
+        prev_date = current_date - pd.Timedelta(days=1)
+        while prev_date not in vix_dates and prev_date > min_vix_date:
+            prev_date -= pd.Timedelta(days=1)
+        if prev_date in vix_dates:
+            vix_open = vix_df.loc[vix_df['Date'] == prev_date, 'OPEN'].values[0]
+            vix_open_dict[current_date] = vix_open
+        else:
+            vix_open_dict[current_date] = np.nan
+
+    for i_day in range(1, total_days):
+        prev_day = df.iloc[i_day - 1]
+        curr_day = df.iloc[i_day]
+        current_date = curr_day['Date']
+        vix_open = vix_open_dict.get(current_date, np.nan)
+
+        if pd.isna(vix_open):
+            continue
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+        entry_price = curr_day['Open']
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+
+        trades.append({
+            'Date': current_date,
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed,
+            'VIX_Open': vix_open,
+            'Profit/Loss': profit_loss,
+            'df_idx': i_day  # store day index for referencing in skip logic
+        })
+
+    trades_df = pd.DataFrame(trades)
+    return trades_df
+
+def precompute_drop_ratios(vix_df, maxY=10):
+    """
+    Builds a 2D array drop_ratios of shape (n, maxY+1),
+    where drop_ratios[i, Y] = percentage drop in VIX between day (i-Y) and day i.
+    """
+    vix_df_sorted = vix_df.sort_values('Date').reset_index(drop=True)
+    vix_open = vix_df_sorted['OPEN'].values
+    n = len(vix_open)
+
+    drop_ratios = np.full((n, maxY+1), np.nan, dtype=np.float64)
+    for i in range(n):
+        for Y in range(1, maxY+1):
+            j = i - Y
+            if j < 0:
+                continue
+            if vix_open[j] == 0:
+                continue
+            drop_ratios[i, Y] = (vix_open[j] - vix_open[i]) / vix_open[j] * 100.0
+
+    dates = vix_df_sorted['Date'].values
+    return drop_ratios, dates
+
+def build_vix_date_index_map(vix_dates):
+    """
+    Returns a dict: date -> index in the VIX array
+    """
+    return { d: i for i, d in enumerate(vix_dates) }
+
+def apply_drop_filter(trades_df, df, drop_ratios, vix_date_index, X, Y, Z):
+    """
+    Given drop filter parameters (X, Y, Z):
+      - אם אחוז הירידה ב-VIX >= X% ביום i,
+        נדלג על טריידים בימים הבאים i+1..i+Z.
+    מחזיר את הטריידים *שאינם* מדולגים.
+    """
+    n = len(df)
+    skip_days = np.zeros(n, dtype=bool)
+    df_dates = df['Date'].values
+
+    for i in range(n):
+        date_i = df_dates[i]
+        if date_i not in vix_date_index:
+            continue
+        vix_idx = vix_date_index[date_i]
+
+        if Y < drop_ratios.shape[1]:
+            drop_val = drop_ratios[vix_idx, Y]
+        else:
+            drop_val = np.nan
+
+        if not np.isnan(drop_val) and drop_val >= X:
+            start_skip = i + 1
+            end_skip = min(i + Z, n - 1)
+            skip_days[start_skip:end_skip+1] = True
+
+    filtered_trades = trades_df[~skip_days[trades_df['df_idx'].values]]
+    return filtered_trades
+
+def filter_by_vix_range(trades_df, i_val, j_val):
+    """
+    מחזיר רק את הטריידים שבהם VIX_Open גדול מ-i_val וקטן מ-j_val.
+    """
+    return trades_df[(trades_df['VIX_Open'] > i_val) & (trades_df['VIX_Open'] < j_val)]
+
+def calculate_atr(df, n):
+    """
+    Standard ATR calculation with a rolling window of size n.
+    """
+    df = df.copy()
+    df['PrevClose'] = df['Close'].shift(1)
+    df['High-Low'] = df['High'] - df['Low']
+    df['High-PrevClose'] = abs(df['High'] - df['PrevClose'])
+    df['Low-PrevClose'] = abs(df['Low'] - df['PrevClose'])
+    df['TR'] = df[['High-Low','High-PrevClose','Low-PrevClose']].max(axis=1)
+    df['ATR'] = df['TR'].rolling(n).mean()
+    return df
+
+def compute_success_and_profit(trades):
+    """
+    מחזירה (אחוז הצלחה, רווח כולל)
+    """
+    if trades.empty:
+        return 0.0, 0.0
+    total_profit = trades['Profit/Loss'].sum()
+    occurrence_count = len(trades)
+    success_count = (trades['Profit/Loss'] > 0).sum()
+    success_rate = success_count / occurrence_count if occurrence_count > 0 else 0.0
+    return success_rate, total_profit
+
+def main():
+    main_file = "D6CK32X6.csv"
+    vix_file  = "VIX_History.csv"
+    initial_investment = 16000  # אפשר לשנות לפי הצורך
+
+    if not os.path.exists(main_file) or not os.path.exists(vix_file):
+        print("לא נמצא אחד הקבצים, אנא עדכן את הנתיבים.")
+        return
+
+    print("טוען את נתוני המניה...")
+    df = load_data(main_file)
+    print("טוען את נתוני ה-VIX...")
+    vix_df = load_vix_data(vix_file)
+
+    print("מחשב טריידים פוטנציאליים (Gap Trades)...")
+    trades_df = precompute_trades(df, vix_df, initial_investment)
+    if trades_df.empty:
+        print("לא נמצאו טריידים תקפים על בסיס הגאפ. מסיים.")
+        return
+    print(f"נמצאו {len(trades_df)} טריידים פוטנציאליים.")
+
+    print("\n=== בדיקה ראשונה: Drop Filter (X, Y, Z) ===")
+    X = float(input("הכנס ערך X (אחוז הירידה ב-VIX לצורך הדילוג): "))
+    Y = int(input("הכנס ערך Y (הפער בימים אחורה לחישוב הדילוג): "))
+    Z = int(input("הכנס ערך Z (מספר הימים לדילוג לאחר ירידה ב-VIX): "))
+
+    maxY = max(Y, 10)
+    drop_ratios, vix_dates = precompute_drop_ratios(vix_df, maxY=maxY)
+    vix_date_index = build_vix_date_index_map(vix_dates)
+
+    filtered_drop = apply_drop_filter(trades_df, df, drop_ratios, vix_date_index, X, Y, Z)
+    success_rate_drop, total_profit_drop = compute_success_and_profit(filtered_drop)
+    print(f"\nתוצאות לאחר Drop Filter (X={X}, Y={Y}, Z={Z}):")
+    print(f"* טריידים שנותרו: {len(filtered_drop)}")
+    print(f"* אחוז הצלחה: {success_rate_drop:.2f}")
+    print(f"* רווח כולל: {total_profit_drop:,.2f}")
+
+    if filtered_drop.empty:
+        print("אין טריידים אחרי הסינון הראשון. מסיים.")
+        return
+
+    print("\n=== בדיקה שנייה: טווח VIX (I, J) ===")
+    i_val = float(input("הכנס ערך I (גבול תחתון של ה-VIX): "))
+    j_val = float(input("הכנס ערך J (גבול עליון של ה-VIX): "))
+
+    filtered_vix = filter_by_vix_range(filtered_drop, i_val, j_val)
+    success_rate_vix, total_profit_vix = compute_success_and_profit(filtered_vix)
+    print(f"\nתוצאות לאחר סינון VIX (I={i_val}, J={j_val}):")
+    print(f"* טריידים שנותרו: {len(filtered_vix)}")
+    print(f"* אחוז הצלחה: {success_rate_vix:.2f}")
+    print(f"* רווח כולל: {total_profit_vix:,.2f}")
+
+    if filtered_vix.empty:
+        print("אין טריידים אחרי הסינון השני. מסיים.")
+        return
+
+    print("\n=== בדיקה שלישית: סינון ATR (N, T) ===")
+    n_val = int(input("הכנס ערך N (חלון חישוב ATR): "))
+    t_val = float(input("הכנס ערך T (סף ערך ה-ATR המרבי): "))
+
+    df_with_atr = calculate_atr(df, n_val)
+    df_atr = df_with_atr[['Date','ATR']].dropna()
+    filtered_atr = filtered_vix.merge(df_atr, on='Date', how='left')
+    filtered_atr = filtered_atr.dropna(subset=['ATR'])
+    filtered_atr = filtered_atr[filtered_atr['ATR'] <= t_val]
+
+    success_rate_atr, total_profit_atr = compute_success_and_profit(filtered_atr)
+    print(f"\nתוצאות לאחר סינון ATR (N={n_val}, T={t_val}):")
+    print(f"* טריידים שנותרו: {len(filtered_atr)}")
+    print(f"* אחוז הצלחה: {success_rate_atr:.2f}")
+    print(f"* רווח כולל: {total_profit_atr:,.2f}")
+
+    if filtered_atr.empty:
+        print("אין טריידים אחרי הסינון השלישי.")
+    else:
+        print("\n=== טריידים סופיים שנותרו ===")
+        print(filtered_atr.to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()

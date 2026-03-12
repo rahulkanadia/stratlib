@@ -1,0 +1,206 @@
+
+> 策略名称
+
+SeamlessConnWS
+
+> 策略作者
+
+小小梦
+
+> 策略描述
+
+https:
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|IsUsedWebSocket|false|是否启用WebSocket|
+|Hook_GetTicker|false|Hook行情接口GetTicker|
+
+
+> 源码 (javascript)
+
+``` javascript
+function WSConnecter_Huobi (method, symbol) {
+    
+    
+    
+
+    var strSubscribe = ""
+    if (method == "GetTicker") {
+        symbol = symbol.toLowerCase()
+        symbol = symbol.replace("_", "")
+        strSubscribe = '{"sub": "market.' + symbol + '.detail"}'   
+    } else {
+        throw "未实现：" + method + "方法！"
+    }
+    
+    var self = {}
+    self.method = method
+    self.pingCount = 0
+    Log("Dial函数链接：", "wss:
+    Log("订阅信息：", strSubscribe)
+    self.client = Dial("wss:
+    self.client.write(strSubscribe)
+    
+    self.Read = function () {
+        try {
+            var ret = self.client.read()
+            var objRet = JSON.parse(ret)
+            if (objRet.ping) {
+                var pong = {"pong" : objRet.ping}
+                
+                self.client.write(JSON.stringify(pong))
+                self.pingCount++
+                return null
+            } else {
+                
+                var ticker = {}
+                if (!objRet.tick) {
+                    return null
+                }
+                
+                ticker.Info = objRet.tick
+                ticker.High = objRet.tick.high
+                ticker.Low = objRet.tick.low
+                ticker.Last = objRet.tick.close
+                ticker.Volume = objRet.tick.vol
+                ticker.Buy = objRet.tick.close
+                ticker.Sell = objRet.tick.close
+                ticker.Time = objRet.ts
+                
+                return ticker
+            }
+        } catch (e) {
+            Log("error:", e)
+            return null
+        }
+    }
+    
+    self.Close = function () {
+        self.client.close()
+        Log("method:", self.method, "断开ws链接")
+    }
+    
+    return self
+}
+
+function WSConnecter_Binance (method, symbol) {
+    
+    
+    
+    
+
+    var strSubscribe = ""
+    if (method == "GetTicker") {
+        symbol = symbol.toLowerCase()
+        symbol = symbol.replace("_", "")
+        strSubscribe = "/ws/" + symbol + "@ticker"
+    } else {
+        throw "未实现：" + method + "方法！"
+    }    
+    
+    var self = {}
+    self.pingCount = 0
+    self.method = method
+    Log("Dial函数链接：", "wss:
+    self.client = Dial("wss:
+    
+    self.Read = function () {
+        try {
+            var ret = self.client.read()
+            var objRet = JSON.parse(ret)
+            if (objRet.ping) {
+                var pong = {"pong" : objRet.ping}
+                Log("binanceConn 收到心跳包，发送pong:", JSON.stringify(pong))                
+                self.client.write(JSON.stringify(pong))
+                self.pingCount++
+                return null
+            } else {
+                
+
+                var ticker = {}
+                ticker.Info = objRet
+                ticker.Buy = objRet.b
+                ticker.Sell = objRet.a
+                ticker.High = objRet.h
+                ticker.Low = objRet.l
+                ticker.Volume = objRet.v
+                ticker.Last = objRet.c
+                ticker.Time = objRet.E
+                
+                Log("推送行情：", ticker)   
+                
+                return ticker
+            }
+        } catch (e) {
+            Log("error:", e)
+            return null
+        }
+    }
+    
+    self.Close = function () {
+        self.client.close()
+        Log("断开ws链接")
+    }
+    
+    return self
+}
+
+
+var _DictConnectCreater = {
+    "Huobi" : WSConnecter_Huobi,
+    "Binance" : WSConnecter_Binance,
+}
+
+var _ConnMap = {}
+
+function init () {
+    if (IsUsedWebSocket) {
+        var connectCreater = null
+        if (exchanges.length != 1) {
+            Log("切换为ws接口只针对 exchange 交易所对象（即第一个添加的交易所对象）")
+        }
+        var isFound = false 
+        for (var name in _DictConnectCreater) {
+            if (exchange.GetName() == name) {
+                connectCreater = _DictConnectCreater[name]
+                isFound = true
+            }
+        }
+
+        if (!isFound) {
+            throw "没有找到实现"
+        }
+        
+        if (Hook_GetTicker) {
+            var symbol = exchange.GetCurrency()
+            _ConnMap.GetTicker = connectCreater("GetTicker", symbol)
+            exchange.GetTicker = function () {
+                return _C(_ConnMap.GetTicker.Read)
+            }
+        }
+        
+        
+    }
+}
+
+
+
+
+function main () {
+
+
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2019-09-26 17:00:42

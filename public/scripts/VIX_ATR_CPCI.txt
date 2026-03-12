@@ -1,0 +1,686 @@
+import pandas as pd
+import numpy as np
+import warnings
+import os
+import sys
+from itertools import product
+from multiprocessing import Pool, cpu_count
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', 100)         # Adjust as needed
+pd.set_option('display.max_columns', None)     # Display all columns
+pd.set_option('display.width', None)           # Adjust display width to fit the console
+pd.set_option('display.max_colwidth', None)    # Display full content in each column
+
+
+def load_spy_data(file_name):
+    """
+    Loads the SPY CSV file into a DataFrame, parses the 'Date' column, sorts it, and resets the index.
+    Adjusts column names based on the actual CSV structure.
+    """
+    df = pd.read_csv(file_name)
+    
+    print(f"SPY CSV Columns: {df.columns.tolist()}")
+    
+    column_mapping = {
+        'Date': 'Date',      # Example original column name for Date
+        'Open': 'Open',      # Example original column name for Open price
+        'High': 'High',
+        'Low': 'Low',
+        'Close': 'Close'
+    }
+    
+    df.rename(columns=column_mapping, inplace=True)
+    
+    required_columns = ['Date', 'Open', 'High', 'Low', 'Close']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    
+    if missing_columns:
+        raise KeyError(f"Missing columns in SPY data after renaming: {missing_columns}. Please adjust the column_mapping accordingly.")
+    
+    df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d', errors='coerce')  
+    df.dropna(subset=['Date'], inplace=True)
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    
+    print(f"SPY Data Date Range: {df['Date'].min()} to {df['Date'].max()}")
+    
+    return df
+
+
+def load_vix_data(vix_file_name):
+    """
+    Loads the VIX CSV file into a DataFrame, parses the 'Date' column, sorts it, and resets the index.
+    Adjusts column names based on the actual CSV structure.
+    """
+    vix_df = pd.read_csv(vix_file_name)
+    
+    print(f"VIX CSV Columns: {vix_df.columns.tolist()}")
+    
+    column_mapping = {
+        'DATE': 'Date',          # Map 'DATE' to 'Date'
+        'OPEN': 'VIX_Open'       # Map 'OPEN' to 'VIX_Open'
+    }
+    
+    vix_df.rename(columns=column_mapping, inplace=True)
+    
+    required_columns = ['Date', 'VIX_Open']
+    missing_columns = [col for col in required_columns if col not in vix_df.columns]
+    
+    if missing_columns:
+        raise KeyError(f"Missing columns in VIX data after renaming: {missing_columns}. Please adjust the column_mapping accordingly.")
+    
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'], format='%Y-%m-%d', errors='coerce')  
+    vix_df.dropna(subset=['Date'], inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    
+    print(f"VIX Data Date Range: {vix_df['Date'].min()} to {vix_df['Date'].max()}")
+    
+    return vix_df
+
+
+def load_cpci_data(cpci_file_name):
+    """
+    Loads the CPCI CSV file into a DataFrame, parses the 'Date' column, sorts it, and resets the index.
+    Adjusts column names based on the actual CSV structure.
+    """
+    cpci_df = pd.read_csv(cpci_file_name)
+    
+    print(f"CPCI CSV Columns: {cpci_df.columns.tolist()}")
+    
+    column_mapping = {
+        'Date': 'Date',      # If already 'Date', this mapping is redundant but harmless
+        'Last': 'CPCI'       # Map 'Last' to 'CPCI'
+    }
+    
+    cpci_df.rename(columns=column_mapping, inplace=True)
+    
+    required_columns = ['Date', 'CPCI']
+    missing_columns = [col for col in required_columns if col not in cpci_df.columns]
+    
+    if missing_columns:
+        raise KeyError(f"Missing columns in CPCI data after renaming: {missing_columns}. Please adjust the column_mapping accordingly.")
+    
+    cpci_df['Date'] = pd.to_datetime(cpci_df['Date'], format='%m/%d/%Y', errors='coerce')  
+    cpci_df.dropna(subset=['Date'], inplace=True)
+    cpci_df.sort_values('Date', inplace=True)
+    cpci_df.reset_index(drop=True, inplace=True)
+    
+    print(f"CPCI Data Date Range: {cpci_df['Date'].min()} to {cpci_df['Date'].max()}")
+    
+    return cpci_df
+
+
+def calculate_day_range(day):
+    """
+    Calculates the trading range of a day (High - Low).
+    """
+    return day['High'] - day['Low']
+
+
+def calculate_gap(prev_close, curr_open):
+    """
+    Calculates the gap between the previous day's close and the current day's open.
+    """
+    return curr_open - prev_close
+
+
+def is_gap_valid(gap, prev_range):
+    """
+    Checks if the gap meets the specified conditions:
+    - At least $0.20
+    - Between 15% and 85% of the previous day's range
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+
+def determine_trade_direction(gap, reverse=False):
+    """
+    Determines the trade direction based on the gap and whether to reverse the standard interpretation.
+    - Standard Interpretation (reverse=False):
+        - Gap up: Short position
+        - Gap down: Long position
+    - Reversed Interpretation (reverse=True):
+        - Gap up: Long position
+        - Gap down: Short position
+    """
+    if reverse:
+        return 'Long' if gap > 0 else 'Short'
+    else:
+        return 'Short' if gap > 0 else 'Long'
+
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """
+    Checks if the gap is closed during the trading day and returns the exit price.
+    """
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long position
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    Calculates the profit or loss of a trade.
+    """
+    number_of_shares = position_size / entry_price
+
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:  # Short position
+        profit_loss = number_of_shares * (entry_price - exit_price)
+
+    return profit_loss
+
+
+def precompute_trades(df, cpci_df, vix_df, initial_investment):
+    """
+    Precomputes all valid trades and their associated CPCI and VIX values and profits for both standard and reversed interpretations.
+    Returns a DataFrame containing all trades.
+    """
+    trades = []
+    total_days = len(df)
+
+    merged_df = df.merge(cpci_df[['Date', 'CPCI']], on='Date', how='inner')
+    merged_df = merged_df.merge(vix_df[['Date', 'VIX_Open']], on='Date', how='inner')
+    
+    print(f"Merged DataFrame Rows: {len(merged_df)}")
+    print(f"Merged DataFrame Date Range: {merged_df['Date'].min()} to {merged_df['Date'].max()}")
+    print(f"Merged DataFrame Sample:\n{merged_df.head()}\n")
+    
+    if len(merged_df) <=1:
+        print("Merged DataFrame does not have enough data to process gaps.")
+        return pd.DataFrame()  # Return empty DataFrame
+    
+    total_gaps = 0
+    valid_gaps = 0
+
+    for i_day in range(1, len(merged_df)):
+        prev_day = merged_df.iloc[i_day - 1]
+        curr_day = merged_df.iloc[i_day]
+        current_date = curr_day['Date']
+
+        cpci_value = curr_day['CPCI']
+        vix_value = curr_day['VIX_Open']
+
+        if pd.isna(cpci_value) or pd.isna(vix_value):
+            continue  # Skip if no CPCI or VIX data
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue  # Avoid division by zero
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        total_gaps += 1
+
+        if is_gap_valid(gap, prev_range):
+            valid_gaps += 1
+
+            trade_direction_standard = determine_trade_direction(gap, reverse=False)
+            trade_direction_reversed = determine_trade_direction(gap, reverse=True)
+
+            entry_price = curr_day['Open']
+
+            exit_price_standard, _ = check_gap_closure(trade_direction_standard, curr_day, prev_day['Close'])
+            profit_loss_standard = calculate_profit_loss(trade_direction_standard, entry_price, exit_price_standard, initial_investment)
+
+            exit_price_reversed, _ = check_gap_closure(trade_direction_reversed, curr_day, prev_day['Close'])
+            profit_loss_reversed = calculate_profit_loss(trade_direction_reversed, entry_price, exit_price_reversed, initial_investment)
+
+            trades.append({
+                'Date': current_date,
+                'Gap': gap,
+                'Trade Direction Standard': trade_direction_standard,
+                'Trade Direction Reversed': trade_direction_reversed,
+                'Entry Price': entry_price,
+                'Exit Price Standard': exit_price_standard,
+                'Exit Price Reversed': exit_price_reversed,
+                'CPCI': cpci_value,
+                'VIX_Open': vix_value,
+                'Profit/Loss Standard': profit_loss_standard,
+                'Profit/Loss Reversed': profit_loss_reversed
+            })
+
+    trades_df = pd.DataFrame(trades)
+
+    print(f"Total Gaps Processed: {total_gaps}")
+    print(f"Total Valid Gaps Found: {valid_gaps}")
+
+    if valid_gaps > 0:
+        print(f"Percentage of Valid Gaps: { (valid_gaps / total_gaps) * 100:.2f}%")
+    else:
+        print("No valid gaps found based on the criteria.")
+
+    if not trades_df.empty:
+        print(f"\nSample Trades:\n{trades_df.head()}\n")
+
+    return trades_df
+
+
+def calculate_atr(df, n):
+    """
+    Calculates the Average True Range (ATR) over 'n' consecutive days.
+    Ensures that 'n' is an integer.
+    """
+    n = int(n)  # Ensure n is an integer
+    df['Previous Close'] = df['Close'].shift(1)
+    df['High-Low'] = df['High'] - df['Low']
+    df['High-PrevClose'] = abs(df['High'] - df['Previous Close'])
+    df['Low-PrevClose'] = abs(df['Low'] - df['Previous Close'])
+    df['TR'] = df[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+    df['ATR'] = df['TR'].rolling(window=n).mean()
+    return df
+
+
+def find_best_vix_conditions(trades_df, i_min, i_max, j_min, j_max, step=0.1):
+    """
+    Finds the best VIX conditions that maximize profit.
+    """
+    vix_values = np.round(np.arange(i_min, i_max + step, step), 2)
+    vix_pairs = [(i, j) for i in vix_values for j in vix_values if i < j]
+
+    cpci_array = trades_df['CPCI'].values
+    vix_array = trades_df['VIX_Open'].values
+    profit_loss_standard = trades_df['Profit/Loss Standard'].values
+    profit_loss_reversed = trades_df['Profit/Loss Reversed'].values
+
+    results = []
+
+    for i, j in vix_pairs:
+        mask = (vix_array > i) & (vix_array < j)
+        total_profit_standard = np.sum(profit_loss_standard[mask])
+        total_profit_reversed = np.sum(profit_loss_reversed[mask])
+
+        if total_profit_standard > total_profit_reversed:
+            total_profit = total_profit_standard
+            trade_direction = 'Standard'
+        else:
+            total_profit = total_profit_reversed
+            trade_direction = 'Reversed'
+
+        results.append({
+            'VIX_Min': i,
+            'VIX_Max': j,
+            'Total Profit': total_profit,
+            'Trade Direction': trade_direction
+        })
+
+    results_df = pd.DataFrame(results)
+
+    if results_df.empty:
+        print("No VIX parameter combinations yielded any profit.")
+        return None, None, None, None
+
+    best_idx = results_df['Total Profit'].idxmax()
+    best_vix_min = results_df.loc[best_idx, 'VIX_Min']
+    best_vix_max = results_df.loc[best_idx, 'VIX_Max']
+    best_profit = results_df.loc[best_idx, 'Total Profit']
+    best_trade_direction = results_df.loc[best_idx, 'Trade Direction']
+
+    results_df_sorted = results_df.sort_values(by='Total Profit', ascending=False).reset_index(drop=True)
+
+    print("\n=== VIX Optimization Complete ===")
+    print(f"Best VIX Conditions: {best_vix_min} < VIX < {best_vix_max}")
+    print(f"Trade Direction: {best_trade_direction}")
+    print(f"Total Profit: ${best_profit:,.2f}\n")
+
+    print("Top 10 VIX Conditions by Total Profit:")
+    print(results_df_sorted.head(10).to_string(index=False))
+
+    return best_vix_min, best_vix_max, best_trade_direction, results_df_sorted
+
+
+def compute_atr_total_profit(args):
+    """
+    Computes the total profit for a given combination of n and T.
+    """
+    trades_df, df, n, T, initial_investment = args
+    df_with_atr = calculate_atr(df.copy(), n)
+    trades_with_atr = trades_df.merge(df_with_atr[['Date', 'ATR']], on='Date', how='left')
+    trades_with_atr = trades_with_atr.dropna(subset=['ATR'])
+    trades_filtered = trades_with_atr[trades_with_atr['ATR'] <= T]
+    total_profit = trades_filtered.apply(
+        lambda row: row['Profit/Loss Standard'] if row['Trade Direction Standard'] == 'Standard' else row['Profit/Loss Reversed'],
+        axis=1
+    ).sum()
+    return (n, T, total_profit)
+
+
+def optimize_atr_parameters(trades_df, df, initial_investment, n_values, T_values):
+    """
+    Optimizes both ATR period 'n' and ATR threshold 'T' to maximize total profit.
+    """
+    param_combinations = list(product(n_values, T_values))
+
+    args_list = [(trades_df.copy(), df.copy(), n, T, initial_investment) for n, T in param_combinations]
+
+    with Pool(processes=cpu_count()) as pool:
+        results = pool.map(compute_atr_total_profit, args_list)
+
+    results_df = pd.DataFrame(results, columns=['n', 'T', 'Total Profit'])
+
+    if results_df.empty:
+        print("No ATR parameter combinations yielded any profit.")
+        return None, None, None
+
+    best_result = results_df.loc[results_df['Total Profit'].idxmax()]
+    best_n = int(best_result['n'])  # Ensure n is an integer
+    best_T = best_result['T']
+    best_total_profit_atr = best_result['Total Profit']
+
+    results_df_sorted = results_df.sort_values(by='Total Profit', ascending=False).reset_index(drop=True)
+
+    print("\n=== ATR Optimization Complete ===")
+    print(f"Best ATR Parameters: n={best_n}, T={best_T} with Total Profit: ${best_total_profit_atr:,.2f}\n")
+
+    print("Top 10 ATR Parameter Combinations by Total Profit:")
+    print(results_df_sorted.head(10).to_string(index=False))
+
+    return best_n, best_T, results_df_sorted
+
+
+def find_best_cpci_conditions(trades_df, cpci_step=0.01):
+    """
+    Finds the best CPCI conditions that maximize profit.
+    """
+    cpci_min_value = trades_df['CPCI'].min()
+    cpci_max_value = trades_df['CPCI'].max()
+
+    print(f"\nExploring CPCI values from {cpci_min_value} to {cpci_max_value} with a step of {cpci_step}")
+
+    cpci_values = np.round(np.arange(cpci_min_value, cpci_max_value + cpci_step, cpci_step), 2)
+    cpci_pairs = [(i, j) for i in cpci_values for j in cpci_values if i < j]
+
+    cpci_array = trades_df['CPCI'].values
+    profit_loss_standard = trades_df['Profit/Loss Standard'].values
+    profit_loss_reversed = trades_df['Profit/Loss Reversed'].values
+
+    results = []
+
+    for i, j in cpci_pairs:
+        mask = (cpci_array > i) & (cpci_array < j)
+        total_profit_standard = np.sum(profit_loss_standard[mask])
+        total_profit_reversed = np.sum(profit_loss_reversed[mask])
+
+        if total_profit_standard > total_profit_reversed:
+            total_profit = total_profit_standard
+            trade_direction = 'Standard'
+        else:
+            total_profit = total_profit_reversed
+            trade_direction = 'Reversed'
+
+        results.append({
+            'CPCI_Min': i,
+            'CPCI_Max': j,
+            'Total Profit': total_profit,
+            'Trade Direction': trade_direction
+        })
+
+    results_df = pd.DataFrame(results)
+
+    if results_df.empty:
+        print("No CPCI parameter combinations yielded any profit.")
+        return None, None, None, None, None
+
+    best_idx = results_df['Total Profit'].idxmax()
+    best_cpci_min = results_df.loc[best_idx, 'CPCI_Min']
+    best_cpci_max = results_df.loc[best_idx, 'CPCI_Max']
+    best_profit = results_df.loc[best_idx, 'Total Profit']
+    best_trade_direction = results_df.loc[best_idx, 'Trade Direction']
+
+    results_df_sorted = results_df.sort_values(by='Total Profit', ascending=False).reset_index(drop=True)
+
+    print("\n=== CPCI Optimization Complete ===")
+    print(f"Best CPCI Conditions: {best_cpci_min} < CPCI < {best_cpci_max}")
+    print(f"Trade Direction: {best_trade_direction}")
+    print(f"Total Profit: ${best_profit:,.2f}\n")
+
+    print("Top 10 CPCI Conditions by Total Profit:")
+    print(results_df_sorted.head(10).to_string(index=False))
+
+    return best_cpci_min, best_cpci_max, best_profit, best_trade_direction, results_df_sorted
+
+
+def count_winning_trades(trades_df, trade_direction):
+    """
+    Returns the number of trades with Profit/Loss greater than zero for the given trade direction.
+    """
+    if trade_direction == 'Standard':
+        return trades_df[trades_df['Profit/Loss Standard'] > 0].shape[0]
+    else:
+        return trades_df[trades_df['Profit/Loss Reversed'] > 0].shape[0]
+
+
+def count_losing_trades(trades_df, trade_direction):
+    """
+    Returns the number of trades with Profit/Loss less than zero for the given trade direction.
+    """
+    if trade_direction == 'Standard':
+        return trades_df[trades_df['Profit/Loss Standard'] < 0].shape[0]
+    else:
+        return trades_df[trades_df['Profit/Loss Reversed'] < 0].shape[0]
+
+
+def analyze_spy_gaps_combined(main_file, vix_file, cpci_file, initial_investment, 
+                              vix_i_min=10.0, vix_i_max=30.0, 
+                              vix_j_min=10.0, vix_j_max=30.0, vix_step=0.1,
+                              atr_n_min=2, atr_n_max=20, atr_T_min=10.0, atr_T_max=20.0, atr_T_step=0.1,
+                              cpci_step=0.01):
+    """
+    Main function that orchestrates the combined ATR, VIX, and CPCI optimization.
+    """
+    print("Loading SPY data...")
+    df = load_spy_data(main_file)
+    print("Loading VIX data...")
+    vix_df = load_vix_data(vix_file)
+    print("Loading CPCI data...")
+    cpci_df = load_cpci_data(cpci_file)
+
+    print("\nPrecomputing trades based on gap, VIX, and CPCI conditions...")
+    trades_df = precompute_trades(df, cpci_df, vix_df, initial_investment)
+
+    if trades_df.empty:
+        print("No valid trades found based on initial criteria.")
+        return None, None, None, None, None, None, None
+
+    print(f"Total Valid Trades: {len(trades_df)}")
+
+    best_i, best_j, best_trade_direction_vix, all_vix_results = find_best_vix_conditions(
+        trades_df, 
+        i_min=vix_i_min, 
+        i_max=vix_i_max, 
+        j_min=vix_j_min, 
+        j_max=vix_j_max, 
+        step=vix_step
+    )
+
+    if best_i is None or best_j is None:
+        print("VIX optimization failed to find optimal conditions.")
+        return best_i, best_j, None, None, None, None, None
+
+    if best_trade_direction_vix == 'Standard':
+        trades_best_vix = trades_df[
+            (trades_df['VIX_Open'] > best_i) & 
+            (trades_df['VIX_Open'] < best_j) & 
+            (trades_df['Trade Direction Standard'] == 'Standard')
+        ]
+    else:
+        trades_best_vix = trades_df[
+            (trades_df['VIX_Open'] > best_i) & 
+            (trades_df['VIX_Open'] < best_j) & 
+            (trades_df['Trade Direction Reversed'] == 'Reversed')
+        ]
+
+    if trades_best_vix.empty:
+        print("No trades found with the best VIX conditions.")
+        return best_i, best_j, None, None, None, None, None
+
+    print(f"Trades after VIX filtering: {len(trades_best_vix)}")
+
+    n_values = range(atr_n_min, atr_n_max + 1)          # ATR periods from atr_n_min to atr_n_max
+    T_values = np.round(np.arange(atr_T_min, atr_T_max + atr_T_step, atr_T_step), 1)  # ATR thresholds
+
+    best_n, best_T, all_atr_results = optimize_atr_parameters(
+        trades_df=trades_best_vix,
+        df=df,
+        initial_investment=initial_investment,
+        n_values=n_values,
+        T_values=T_values
+    )
+
+    if best_n is None or best_T is None:
+        print("ATR optimization failed to find optimal parameters.")
+        return best_i, best_j, best_n, best_T, None, None, None
+
+    df_with_atr = calculate_atr(df.copy(), best_n)
+    trades_final = trades_df.merge(df_with_atr[['Date', 'ATR']], on='Date', how='left')
+
+    if best_trade_direction_vix == 'Standard':
+        trades_final = trades_final[
+            (trades_final['VIX_Open'] > best_i) & 
+            (trades_final['VIX_Open'] < best_j) & 
+            (trades_final['ATR'] <= best_T) & 
+            (trades_final['Trade Direction Standard'] == 'Standard')
+        ]
+    else:
+        trades_final = trades_final[
+            (trades_final['VIX_Open'] > best_i) & 
+            (trades_final['VIX_Open'] < best_j) & 
+            (trades_final['ATR'] <= best_T) & 
+            (trades_final['Trade Direction Reversed'] == 'Reversed')
+        ]
+
+    if trades_final.empty:
+        print("No trades meet both VIX and ATR conditions.")
+        return best_i, best_j, best_n, best_T, None, None, None
+
+    print(f"Trades after ATR filtering: {len(trades_final)}")
+
+    best_cpci_min, best_cpci_max, best_cpci_profit, best_cpci_trade_direction, all_cpci_results = find_best_cpci_conditions(
+        trades_final, 
+        cpci_step=cpci_step
+    )
+
+    if best_cpci_min is None or best_cpci_max is None:
+        print("CPCI optimization failed to find optimal conditions.")
+        return best_i, best_j, best_n, best_T, best_cpci_min, best_cpci_max, best_cpci_profit
+
+    if best_cpci_trade_direction == 'Standard':
+        trades_final = trades_final[
+            (trades_final['CPCI'] > best_cpci_min) &
+            (trades_final['CPCI'] < best_cpci_max) &
+            (trades_final['Trade Direction Standard'] == 'Standard')
+        ]
+    else:
+        trades_final = trades_final[
+            (trades_final['CPCI'] > best_cpci_min) &
+            (trades_final['CPCI'] < best_cpci_max) &
+            (trades_final['Trade Direction Reversed'] == 'Reversed')
+        ]
+
+    if trades_final.empty:
+        print("No trades meet VIX, ATR, and CPCI conditions.")
+        return best_i, best_j, best_n, best_T, best_cpci_min, best_cpci_max, None
+
+    if best_cpci_trade_direction == 'Standard':
+        total_profit = trades_final['Profit/Loss Standard'].sum()
+    else:
+        total_profit = trades_final['Profit/Loss Reversed'].sum()
+
+    print(f"\nTotal Profit with optimal VIX, ATR, and CPCI conditions: ${total_profit:,.2f}")
+
+    all_vix_results.to_csv('combined_vix_atr_vix_optimization_results.csv', index=False)
+    all_atr_results.to_csv('combined_vix_atr_atr_optimization_results.csv', index=False)
+    all_cpci_results.to_csv('combined_vix_atr_cpci_optimization_results.csv', index=False)
+
+    num_winning_trades = count_winning_trades(trades_final, best_cpci_trade_direction)
+    num_losing_trades = count_losing_trades(trades_final, best_cpci_trade_direction)
+
+    print(f"\nNumber of Winning Trades: {num_winning_trades}")
+    print(f"Number of Losing Trades: {num_losing_trades}")
+
+    print("\nTrade Details:")
+    if not trades_final.empty:
+        display_cols = [
+            'Date', 
+            'Trade Direction Standard', 
+            'Trade Direction Reversed', 
+            'Entry Price', 
+            'Exit Price Standard', 
+            'Exit Price Reversed', 
+            'VIX_Open', 
+            'ATR', 
+            'CPCI', 
+            'Profit/Loss Standard', 
+            'Profit/Loss Reversed'
+        ]
+        print(trades_final[display_cols].to_string(index=False))
+    else:
+        print("No trades meet VIX, ATR, and CPCI conditions.")
+
+    print("\n=== Combined Optimization Summary ===")
+    print(f"Optimal VIX Conditions: {best_i} < VIX < {best_j}")
+    print(f"Optimal ATR Parameters: n={best_n}, T={best_T}")
+    print(f"Optimal CPCI Conditions: {best_cpci_min} < CPCI < {best_cpci_max}")
+    print(f"Total Profit: ${total_profit:,.2f}")
+
+    return best_i, best_j, best_n, best_T, best_cpci_min, best_cpci_max, total_profit
+
+
+
+if __name__ == "__main__":
+    main_file = 'D6CK32X6.csv'        # SPY data
+    vix_file = 'VIX_History.csv'      # VIX data
+    cpci_file = 'CPCI.csv'            # CPCI data
+    initial_investment = 16000         # $16,000 initial investment
+
+    if not os.path.exists(main_file):
+        print(f"Error: SPY data file '{main_file}' not found.")
+        sys.exit(1)
+    elif not os.path.exists(vix_file):
+        print(f"Error: VIX data file '{vix_file}' not found.")
+        sys.exit(1)
+    elif not os.path.exists(cpci_file):
+        print(f"Error: CPCI data file '{cpci_file}' not found.")
+        sys.exit(1)
+    else:
+        try:
+            best_i, best_j, best_n, best_T, best_cpci_min, best_cpci_max, total_profit = analyze_spy_gaps_combined(
+                main_file=main_file,
+                vix_file=vix_file,
+                cpci_file=cpci_file,
+                initial_investment=initial_investment,
+                vix_i_min=10.0,
+                vix_i_max=30.0,
+                vix_j_min=10.0,
+                vix_j_max=30.0,
+                vix_step=0.1,
+                atr_n_min=2,
+                atr_n_max=20,
+                atr_T_min=10.0,
+                atr_T_max=20.0,
+                atr_T_step=0.1,
+                cpci_step=0.01
+            )
+        except KeyError as e:
+            print(f"KeyError: {e}")
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")

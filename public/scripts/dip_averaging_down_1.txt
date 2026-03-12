@@ -1,0 +1,177 @@
+"""
+DIP Buy with Averaging Down Strategy
+
+This strategy buys dips in SPY and averages down if price continues falling:
+1. Enters LONG when price drops by average of recent red day drops
+2. If price drops further (by ATR amount), adds to position (averages down)
+3. Exits all positions at market close
+
+Perfect for understanding position sizing and risk management!
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+import os
+
+current_file = Path(os.path.abspath(__file__))
+project_root = current_file.parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from utils.base_strategy_fixed import BaseStrategy
+
+class DIPAveragingStrategy(BaseStrategy):
+    """
+    DIP Buy with Averaging Down - Advanced dip buying strategy
+    """
+    
+    def __init__(self, data_path=None, lookback_days=21, atr_period=14):
+        super().__init__(
+            name="DIP Averaging Down",
+            description="Buys dips and averages down using ATR levels",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close']
+        )
+        
+        self.lookback_days = lookback_days
+        self.atr_period = atr_period
+        self.max_positions = 3  # Maximum number of averaging down positions
+        
+        if data_path:
+            self.load_data(data_path)
+    
+    def calculate_indicators(self):
+        """Calculate ATR and average drops"""
+        df = self.data.copy()
+        
+        high_low = df['High'] - df['Low']
+        high_close = np.abs(df['High'] - df['Close'].shift())
+        low_close = np.abs(df['Low'] - df['Close'].shift())
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = true_range.rolling(window=self.atr_period).mean()
+        
+        df['is_red_day'] = df['Close'] < df['Open']
+        df['daily_drop'] = np.where(df['is_red_day'], df['Open'] - df['Close'], 0.0)
+        df['avg_drop'] = df['daily_drop'].rolling(window=self.lookback_days).mean().shift(1)
+        df['avg_drop'].fillna(0.0, inplace=True)
+        
+        return df
+    
+    def calculate_signals(self):
+        """Find entry and averaging down opportunities"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.calculate_indicators()
+        signals = []
+        
+        for i in range(max(self.lookback_days, self.atr_period), len(df)):
+            curr_day = df.iloc[i]
+            
+            avg_drop = curr_day['avg_drop']
+            atr = curr_day['ATR']
+            
+            if avg_drop <= 0 or pd.isna(atr):
+                continue
+            
+            open_price = curr_day['Open']
+            
+            entry_level_1 = open_price - avg_drop
+            
+            entry_level_2 = entry_level_1 - (atr * 1.0)
+            entry_level_3 = entry_level_1 - (atr * 2.0)
+            
+            entries = []
+            if curr_day['Low'] <= entry_level_1:
+                entries.append({
+                    'level': 1,
+                    'price': entry_level_1,
+                    'size': 0.33  # 1/3 of capital
+                })
+            
+            if curr_day['Low'] <= entry_level_2:
+                entries.append({
+                    'level': 2,
+                    'price': entry_level_2,
+                    'size': 0.33
+                })
+            
+            if curr_day['Low'] <= entry_level_3:
+                entries.append({
+                    'level': 3,
+                    'price': entry_level_3,
+                    'size': 0.34  # Remaining capital
+                })
+            
+            if entries:
+                total_size = sum(e['size'] for e in entries)
+                avg_entry = sum(e['price'] * e['size'] for e in entries) / total_size
+                
+                signal = {
+                    'date': curr_day['Date'],
+                    'direction': 'LONG',
+                    'entry_price': avg_entry,
+                    'exit_price': curr_day['Close'],
+                    'num_entries': len(entries),
+                    'signal_strength': len(entries) / 3.0,  # More entries = stronger signal
+                    'atr': atr,
+                    'avg_drop': avg_drop
+                }
+                signals.append(signal)
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+    
+    def get_summary_metrics(self):
+        """Get performance summary with averaging metrics"""
+        if self.performance_metrics is None:
+            return None
+        
+        metrics = self.performance_metrics.copy()
+        
+        if self.signals is not None and len(self.signals) > 0:
+            avg_entries = self.signals['num_entries'].mean()
+            metrics['avg_entries_per_trade'] = round(avg_entries, 2)
+            
+            for n in [1, 2, 3]:
+                n_entry_trades = self.signals[self.signals['num_entries'] == n]
+                if len(n_entry_trades) > 0:
+                    metrics[f'{n}_entry_trades'] = len(n_entry_trades)
+        
+        return metrics
+
+def main():
+    """Example usage"""
+    print("=" * 60)
+    print("DIP AVERAGING DOWN STRATEGY")
+    print("=" * 60)
+    print("\nBuys dips and adds to position if price drops further.")
+    print("Uses ATR for intelligent position sizing.")
+    print("=" * 60)
+    
+    data_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    
+    strategy = DIPAveragingStrategy(data_path)
+    
+    print("\nAnalyzing market conditions...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} trading opportunities")
+    
+    print("\nRunning backtest...")
+    strategy.run_backtest(initial_capital=10000)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\n" + "=" * 60)
+    print("RESULTS")
+    print("=" * 60)
+    print(f"Total Trades: {metrics['total_trades']}")
+    print(f"Win Rate: {metrics['win_rate']:.1f}%")
+    print(f"Total Profit: ${metrics['total_profit']:.2f}")
+    print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+    
+    if 'avg_entries_per_trade' in metrics:
+        print(f"\nAvg Entries per Trade: {metrics['avg_entries_per_trade']}")
+
+if __name__ == "__main__":
+    main()

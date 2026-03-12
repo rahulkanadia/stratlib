@@ -1,0 +1,504 @@
+"""
+Strategy Results Visualization Tool
+-----------------------------------
+Creates visual comparisons and analysis of trading strategy results.
+Generates charts and summary reports without requiring matplotlib.
+"""
+
+import pandas as pd
+import numpy as np
+import os
+from datetime import datetime
+import json
+
+
+def load_all_results(results_dir='results'):
+    """Load all strategy results from CSV files."""
+    results = []
+    
+    if not os.path.exists(results_dir):
+        print(f"Results directory not found: {results_dir}")
+        return pd.DataFrame()
+    
+    for file in os.listdir(results_dir):
+        if file.endswith('_trades.csv'):
+            file_path = os.path.join(results_dir, file)
+            strategy_name = file.replace('_trades.csv', '').replace('_', ' ').title()
+            
+            try:
+                trades_df = pd.read_csv(file_path)
+                if len(trades_df) > 0:
+                    total_trades = len(trades_df)
+                    total_profit = trades_df['Profit'].sum()
+                    win_rate = (trades_df['Profit'] > 0).sum() / total_trades * 100
+                    
+                    results.append({
+                        'Strategy': strategy_name,
+                        'File': file,
+                        'Total Trades': total_trades,
+                        'Win Rate': win_rate,
+                        'Total Profit': total_profit,
+                        'Avg Profit': trades_df['Profit'].mean(),
+                        'Max Win': trades_df['Profit'].max(),
+                        'Max Loss': trades_df['Profit'].min(),
+                        'First Trade': trades_df['Entry Date'].min(),
+                        'Last Trade': trades_df['Entry Date'].max()
+                    })
+            except Exception as e:
+                print(f"Error loading {file}: {e}")
+    
+    return pd.DataFrame(results)
+
+
+def create_text_chart(values, labels, title, width=50):
+    """Create a simple text-based bar chart."""
+    if len(values) == 0:
+        return "No data available"
+    
+    max_val = max(abs(v) for v in values)
+    if max_val == 0:
+        return "All values are zero"
+    
+    chart = f"\n{title}\n{'='*width}\n"
+    
+    for label, value in zip(labels, values):
+        bar_length = int(abs(value) / max_val * (width - 25))
+        
+        if value >= 0:
+            bar = '█' * bar_length
+            chart += f"{label:20} | {bar} {value:,.0f}\n"
+        else:
+            bar = '▒' * bar_length
+            chart += f"{label:20} | {bar} {value:,.0f}\n"
+    
+    chart += '='*width + '\n'
+    return chart
+
+
+def create_performance_matrix(results_df):
+    """Create a performance matrix comparing strategies."""
+    if len(results_df) == 0:
+        return "No results to display"
+    
+    matrix = "\nPERFORMANCE MATRIX\n"
+    matrix += "="*100 + "\n"
+    matrix += f"{'Strategy':25} {'Trades':>8} {'Win%':>8} {'Profit':>12} {'Avg/Trade':>12} {'Max Win':>12} {'Max Loss':>12}\n"
+    matrix += "-"*100 + "\n"
+    
+    results_sorted = results_df.sort_values('Total Profit', ascending=False)
+    
+    for _, row in results_sorted.iterrows():
+        matrix += f"{row['Strategy'][:25]:25} "
+        matrix += f"{row['Total Trades']:8d} "
+        matrix += f"{row['Win Rate']:7.1f}% "
+        matrix += f"${row['Total Profit']:11,.2f} "
+        matrix += f"${row['Avg Profit']:11,.2f} "
+        matrix += f"${row['Max Win']:11,.2f} "
+        matrix += f"${row['Max Loss']:11,.2f}\n"
+    
+    matrix += "="*100 + "\n"
+    return matrix
+
+
+def create_risk_analysis(results_df):
+    """Analyze risk metrics for each strategy."""
+    if len(results_df) == 0:
+        return "No results to analyze"
+    
+    analysis = "\nRISK ANALYSIS\n"
+    analysis += "="*80 + "\n"
+    
+    for _, row in results_df.iterrows():
+        strategy = row['Strategy']
+        win_rate = row['Win Rate']
+        avg_profit = row['Avg Profit']
+        max_win = row['Max Win']
+        max_loss = abs(row['Max Loss'])
+        
+        risk_reward = max_win / max_loss if max_loss > 0 else float('inf')
+        expectancy = avg_profit
+        
+        if win_rate > 60 and risk_reward > 2:
+            rating = "★★★★★ Excellent"
+        elif win_rate > 50 and risk_reward > 1.5:
+            rating = "★★★★☆ Good"
+        elif win_rate > 45 and risk_reward > 1:
+            rating = "★★★☆☆ Average"
+        elif win_rate > 40:
+            rating = "★★☆☆☆ Below Average"
+        else:
+            rating = "★☆☆☆☆ Poor"
+        
+        analysis += f"\n{strategy}\n"
+        analysis += f"  Win Rate:      {win_rate:.1f}%\n"
+        analysis += f"  Risk/Reward:   {risk_reward:.2f}:1\n"
+        analysis += f"  Expectancy:    ${expectancy:.2f} per trade\n"
+        analysis += f"  Risk Rating:   {rating}\n"
+    
+    analysis += "\n" + "="*80 + "\n"
+    return analysis
+
+
+def create_monthly_performance(trades_file):
+    """Analyze monthly performance for a specific strategy."""
+    try:
+        trades_df = pd.read_csv(trades_file)
+        trades_df['Entry Date'] = pd.to_datetime(trades_df['Entry Date'])
+        
+        trades_df['Month'] = trades_df['Entry Date'].dt.to_period('M')
+        monthly = trades_df.groupby('Month').agg({
+            'Profit': ['sum', 'count', 'mean'],
+            'Entry Date': 'count'
+        })
+        
+        report = f"\nMONTHLY PERFORMANCE: {os.path.basename(trades_file)}\n"
+        report += "="*60 + "\n"
+        report += f"{'Month':10} {'Trades':>8} {'Total P/L':>12} {'Avg P/L':>12} {'Win Rate':>10}\n"
+        report += "-"*60 + "\n"
+        
+        for month, row in monthly.iterrows():
+            total_profit = row[('Profit', 'sum')]
+            num_trades = row[('Profit', 'count')]
+            avg_profit = row[('Profit', 'mean')]
+            
+            month_trades = trades_df[trades_df['Month'] == month]
+            win_rate = (month_trades['Profit'] > 0).sum() / len(month_trades) * 100
+            
+            report += f"{str(month):10} {num_trades:8d} ${total_profit:11,.2f} ${avg_profit:11,.2f} {win_rate:9.1f}%\n"
+        
+        report += "="*60 + "\n"
+        return report
+        
+    except Exception as e:
+        return f"Error analyzing monthly performance: {e}"
+
+
+def generate_html_report(results_df, output_file='strategy_report.html'):
+    """Generate an HTML report with interactive elements."""
+    
+    html_content = '''<!DOCTYPE html>
+<html>
+<head>
+    <title>Trading Strategy Performance Report</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1, h2 {
+            color: #333;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #4CAF50;
+            color: white;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        .positive {
+            color: green;
+            font-weight: bold;
+        }
+        .negative {
+            color: red;
+            font-weight: bold;
+        }
+        .chart {
+            margin: 20px 0;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+        }
+        .summary {
+            display: flex;
+            justify-content: space-around;
+            margin: 20px 0;
+        }
+        .summary-box {
+            text-align: center;
+            padding: 20px;
+            background-color: #e3f2fd;
+            border-radius: 5px;
+            flex: 1;
+            margin: 0 10px;
+        }
+        .summary-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #1976d2;
+        }
+        .summary-label {
+            color: #666;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Trading Strategy Performance Report</h1>
+        <p>Generated: {timestamp}</p>
+        
+        <div class="summary">
+            <div class="summary-box">
+                <div class="summary-value">{total_strategies}</div>
+                <div class="summary-label">Total Strategies</div>
+            </div>
+            <div class="summary-box">
+                <div class="summary-value">${total_profit:,.2f}</div>
+                <div class="summary-label">Combined Profit</div>
+            </div>
+            <div class="summary-box">
+                <div class="summary-value">{avg_win_rate:.1f}%</div>
+                <div class="summary-label">Average Win Rate</div>
+            </div>
+            <div class="summary-box">
+                <div class="summary-value">{total_trades}</div>
+                <div class="summary-label">Total Trades</div>
+            </div>
+        </div>
+        
+        <h2>Strategy Performance Comparison</h2>
+        <table id="performance-table">
+            <thead>
+                <tr>
+                    <th>Strategy</th>
+                    <th>Total Trades</th>
+                    <th>Win Rate</th>
+                    <th>Total Profit</th>
+                    <th>Avg per Trade</th>
+                    <th>Max Win</th>
+                    <th>Max Loss</th>
+                    <th>Risk Rating</th>
+                </tr>
+            </thead>
+            <tbody>
+'''
+    
+    for _, row in results_df.sort_values('Total Profit', ascending=False).iterrows():
+        profit_class = 'positive' if row['Total Profit'] > 0 else 'negative'
+        
+        win_rate = row['Win Rate']
+        risk_reward = row['Max Win'] / abs(row['Max Loss']) if row['Max Loss'] < 0 else 0
+        
+        if win_rate > 60 and risk_reward > 2:
+            rating = "⭐⭐⭐⭐⭐"
+        elif win_rate > 50 and risk_reward > 1.5:
+            rating = "⭐⭐⭐⭐"
+        elif win_rate > 45 and risk_reward > 1:
+            rating = "⭐⭐⭐"
+        elif win_rate > 40:
+            rating = "⭐⭐"
+        else:
+            rating = "⭐"
+        
+        html_content += f'''
+                <tr>
+                    <td><strong>{row['Strategy']}</strong></td>
+                    <td>{row['Total Trades']}</td>
+                    <td>{row['Win Rate']:.1f}%</td>
+                    <td class="{profit_class}">${row['Total Profit']:,.2f}</td>
+                    <td>${row['Avg Profit']:,.2f}</td>
+                    <td class="positive">${row['Max Win']:,.2f}</td>
+                    <td class="negative">${row['Max Loss']:,.2f}</td>
+                    <td>{rating}</td>
+                </tr>
+'''
+    
+    html_content += '''
+            </tbody>
+        </table>
+        
+        <h2>Top Performers</h2>
+        <div class="chart">
+            <h3>By Total Profit</h3>
+            <pre>{profit_chart}</pre>
+        </div>
+        
+        <div class="chart">
+            <h3>By Win Rate</h3>
+            <pre>{winrate_chart}</pre>
+        </div>
+        
+        <h2>Risk Analysis Summary</h2>
+        <p>Strategies are rated based on win rate and risk/reward ratio:</p>
+        <ul>
+            <li>⭐⭐⭐⭐⭐ Excellent: Win rate > 60% and Risk/Reward > 2:1</li>
+            <li>⭐⭐⭐⭐ Good: Win rate > 50% and Risk/Reward > 1.5:1</li>
+            <li>⭐⭐⭐ Average: Win rate > 45% and Risk/Reward > 1:1</li>
+            <li>⭐⭐ Below Average: Win rate > 40%</li>
+            <li>⭐ Poor: Win rate < 40%</li>
+        </ul>
+    </div>
+    
+    <script>
+        // Add sorting functionality to table
+        function sortTable(n) {{
+            var table = document.getElementById("performance-table");
+            var rows = table.rows;
+            var switching = true;
+            var shouldSwitch, i;
+            var dir = "asc";
+            var switchcount = 0;
+            
+            while (switching) {{
+                switching = false;
+                for (i = 1; i < (rows.length - 1); i++) {{
+                    shouldSwitch = false;
+                    var x = rows[i].getElementsByTagName("TD")[n];
+                    var y = rows[i + 1].getElementsByTagName("TD")[n];
+                    
+                    if (dir == "asc") {{
+                        if (x.innerHTML.toLowerCase() > y.innerHTML.toLowerCase()) {{
+                            shouldSwitch = true;
+                            break;
+                        }}
+                    }} else if (dir == "desc") {{
+                        if (x.innerHTML.toLowerCase() < y.innerHTML.toLowerCase()) {{
+                            shouldSwitch = true;
+                            break;
+                        }}
+                    }}
+                }}
+                
+                if (shouldSwitch) {{
+                    rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
+                    switching = true;
+                    switchcount++;
+                }} else {{
+                    if (switchcount == 0 && dir == "asc") {{
+                        dir = "desc";
+                        switching = true;
+                    }}
+                }}
+            }}
+        }}
+        
+        // Add click handlers to headers
+        var headers = document.getElementsByTagName("th");
+        for (var i = 0; i < headers.length; i++) {{
+            headers[i].style.cursor = "pointer";
+            headers[i].onclick = function() {{
+                sortTable(this.cellIndex);
+            }};
+        }}
+    </script>
+</body>
+</html>
+'''
+    
+    total_strategies = len(results_df)
+    total_profit = results_df['Total Profit'].sum()
+    avg_win_rate = results_df['Win Rate'].mean()
+    total_trades = results_df['Total Trades'].sum()
+    
+    top_profit = results_df.nlargest(10, 'Total Profit')
+    profit_chart = create_text_chart(
+        top_profit['Total Profit'].values,
+        top_profit['Strategy'].values,
+        "Top 10 Strategies by Profit"
+    )
+    
+    top_winrate = results_df.nlargest(10, 'Win Rate')
+    winrate_chart = create_text_chart(
+        top_winrate['Win Rate'].values,
+        top_winrate['Strategy'].values,
+        "Top 10 Strategies by Win Rate"
+    )
+    
+    html_content = html_content.format(
+        timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        total_strategies=total_strategies,
+        total_profit=total_profit,
+        avg_win_rate=avg_win_rate,
+        total_trades=total_trades,
+        profit_chart=profit_chart,
+        winrate_chart=winrate_chart
+    )
+    
+    with open(output_file, 'w') as f:
+        f.write(html_content)
+    
+    print(f"HTML report saved to: {output_file}")
+
+
+def main():
+    """Main function to generate all visualizations and reports."""
+    print("="*70)
+    print("STRATEGY RESULTS VISUALIZATION")
+    print("="*70)
+    
+    results_df = load_all_results()
+    
+    if len(results_df) == 0:
+        print("No results found. Please run some strategies first.")
+        return
+    
+    print(f"\nLoaded {len(results_df)} strategy results")
+    
+    print(create_performance_matrix(results_df))
+    
+    top_5_profit = results_df.nlargest(5, 'Total Profit')
+    print(create_text_chart(
+        top_5_profit['Total Profit'].values,
+        top_5_profit['Strategy'].values,
+        "TOP 5 STRATEGIES BY TOTAL PROFIT",
+        width=60
+    ))
+    
+    top_5_winrate = results_df.nlargest(5, 'Win Rate')
+    print(create_text_chart(
+        top_5_winrate['Win Rate'].values,
+        top_5_winrate['Strategy'].values,
+        "TOP 5 STRATEGIES BY WIN RATE (%)",
+        width=60
+    ))
+    
+    print(create_risk_analysis(results_df.head(10)))
+    
+    generate_html_report(results_df)
+    
+    summary = {
+        'generated': datetime.now().isoformat(),
+        'total_strategies': len(results_df),
+        'total_profit': float(results_df['Total Profit'].sum()),
+        'average_win_rate': float(results_df['Win Rate'].mean()),
+        'best_strategy': {
+            'name': results_df.iloc[0]['Strategy'],
+            'profit': float(results_df.iloc[0]['Total Profit']),
+            'win_rate': float(results_df.iloc[0]['Win Rate'])
+        },
+        'strategies': results_df.to_dict('records')
+    }
+    
+    with open('strategy_summary.json', 'w') as f:
+        json.dump(summary, f, indent=2)
+    
+    print("\n" + "="*70)
+    print("REPORTS GENERATED:")
+    print("="*70)
+    print("1. Console output (above)")
+    print("2. strategy_report.html - Interactive HTML report")
+    print("3. strategy_summary.json - Machine-readable summary")
+    print("\nOpen strategy_report.html in a web browser for the best viewing experience!")
+
+
+if __name__ == "__main__":
+    main()

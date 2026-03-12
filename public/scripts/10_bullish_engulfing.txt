@@ -1,0 +1,70 @@
+import pandas as pd
+import numpy as np
+from base_strategy import GapStrategy
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from gap_utils import *
+
+class BullishEngulfingStrategy(GapStrategy):
+    """
+    Bullish Engulfing Strategy
+    Success Rate: 72.22% | Total Profit: $602.23 | Trades: 36
+    
+    This strategy trades gaps after a bullish engulfing candlestick pattern,
+    where a green candle completely engulfs the previous red candle.
+    """
+    
+    def __init__(self):
+        super().__init__(
+            name="Bullish Engulfing",
+            description="Fade gaps after bullish engulfing pattern"
+        )
+    
+    def calculate_indicators(self, df):
+        """Identify bullish engulfing patterns"""
+        df['IsGreen'] = df['Close'] > df['Open']
+        df['IsRed'] = df['Close'] < df['Open']
+        
+        df['Bullish_Engulfing'] = (
+            df['IsGreen'].shift(1) & 
+            df['IsRed'].shift(2) & 
+            (df['Open'].shift(1) < df['Close'].shift(2)) & 
+            (df['Close'].shift(1) > df['Open'].shift(2))
+        ).fillna(False)
+        
+        return df
+    
+    def get_filter_condition(self, df):
+        """Must have bullish engulfing pattern on previous day"""
+        return df['Bullish_Engulfing']
+
+def main():
+    """Run the strategy"""
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv') and f not in ['gap_strategies_all_results.csv', 'gap_strategies_top10_profit.csv', 'gap_strategies_top10_success_rate.csv']]
+    
+    if csv_files:
+        data_file = csv_files[0]
+        print(f"Using data file: {data_file}")
+    else:
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_file = os.path.join(parent_dir, '..', '7J0OK1VR.csv')
+        if not os.path.exists(data_file):
+            print("Error: No CSV data file found. Please place a CSV file in the current directory.")
+            return
+    
+    strategy = BullishEngulfingStrategy()
+    
+    try:
+        stats, trades_df = strategy.run_strategy(data_file)
+        strategy.print_results(stats, trades_df)
+        
+        output_file = f"{strategy.name.replace(' ', '_')}_trades.csv"
+        trades_df.to_csv(output_file, index=False)
+        print(f"Trade details saved to: {output_file}")
+        
+    except Exception as e:
+        print(f"Error running strategy: {e}")
+
+if __name__ == "__main__":
+    main()

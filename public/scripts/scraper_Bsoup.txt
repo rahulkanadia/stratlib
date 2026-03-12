@@ -1,0 +1,52 @@
+import requests
+import re
+import json
+from bs4 import BeautifulSoup
+import pandas as pd
+
+url = "https://finance.yahoo.com/quote/F/history?period1=1423008000&period2=1738659661"
+headers = {
+    "User-Agent": "Mozilla/5.0"
+}
+
+r = requests.get(url, headers=headers)
+r.raise_for_status()
+
+soup = BeautifulSoup(r.text, "lxml")
+
+script_tags = soup.find_all("script")
+
+historical_data = None
+
+for script in script_tags:
+    if "HistoricalPriceStore" in script.text:
+        match = re.search(r'"HistoricalPriceStore":{"prices":(.*?),"isPending"', script.text)
+        if match:
+            data_str = match.group(1)
+            historical_data = json.loads(data_str)
+            break
+
+if not historical_data:
+    raise Exception("Could not find HistoricalPriceStore data in the page script.")
+
+
+df = pd.DataFrame(historical_data)
+
+df = df[~df['type'].notna()]
+
+df['date'] = pd.to_datetime(df['date'], unit='s')
+
+df.rename(columns={
+    'date': 'Date',
+    'open': 'Open',
+    'high': 'High',
+    'low': 'Low',
+    'close': 'Close',
+    'volume': 'Volume',
+    'adjclose': 'Adj Close'
+}, inplace=True)
+
+df = df[['Date', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']]
+df.sort_values('Date', inplace=True)
+
+print(df.head(10))

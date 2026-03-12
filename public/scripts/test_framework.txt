@@ -1,0 +1,214 @@
+"""
+Test Framework Script
+--------------------
+Quick test to ensure the framework is working correctly.
+Runs a sample strategy and verifies all components.
+"""
+
+import os
+import sys
+import pandas as pd
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+
+def test_imports():
+    """Test that all imports work correctly."""
+    print("Testing imports...")
+    try:
+        from utils import (
+            BaseStrategy, LongShortStrategy,
+            load_data, calculate_rsi, calculate_atr,
+            calculate_statistics, print_statistics
+        )
+        print("✓ Utils imported successfully")
+        return True
+    except ImportError as e:
+        print(f"✗ Import error: {e}")
+        return False
+
+
+def test_data_loading():
+    """Test data loading functionality."""
+    print("\nTesting data loading...")
+    try:
+        from utils import load_data
+        data_file = os.path.join('data', '7J0OK1VR.csv')
+        
+        if not os.path.exists(data_file):
+            print(f"✗ Data file not found: {data_file}")
+            print("  Please ensure CSV files are in the data/ directory")
+            return False
+            
+        df = load_data(data_file)
+        print(f"✓ Data loaded successfully: {len(df)} rows")
+        print(f"  Date range: {df['Date'].min()} to {df['Date'].max()}")
+        return True
+    except Exception as e:
+        print(f"✗ Data loading error: {e}")
+        return False
+
+
+def test_simple_strategy():
+    """Test running a simple strategy."""
+    print("\nTesting simple strategy execution...")
+    
+    try:
+        from utils import BaseStrategy, calculate_rsi
+        
+        class TestStrategy(BaseStrategy):
+            def __init__(self):
+                super().__init__("Test Strategy", initial_investment=16000)
+                
+            def calculate_indicators(self, df):
+                df['RSI'] = calculate_rsi(df['Close'], period=14)
+                return df
+                
+            def get_entry_conditions(self, df):
+                return df['RSI'] < 30
+        
+        strategy = TestStrategy()
+        data_file = os.path.join('data', '7J0OK1VR.csv')
+        
+        if os.path.exists(data_file):
+            trades_df, statistics = strategy.run_backtest(data_file)
+            
+            if statistics['total_trades'] > 0:
+                print(f"✓ Strategy executed successfully")
+                print(f"  Total trades: {statistics['total_trades']}")
+                print(f"  Win rate: {statistics['win_rate']:.2f}%")
+                print(f"  Total profit: ${statistics['total_profit']:,.2f}")
+                return True
+            else:
+                print("✓ Strategy executed but no trades generated")
+                print("  This is normal for strict entry conditions")
+                return True
+        else:
+            print("✗ Data file not found")
+            return False
+            
+    except Exception as e:
+        print(f"✗ Strategy execution error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_indicators():
+    """Test technical indicator calculations."""
+    print("\nTesting technical indicators...")
+    
+    try:
+        from utils import (
+            calculate_sma, calculate_ema, calculate_rsi,
+            calculate_atr, calculate_bollinger_bands
+        )
+        
+        dates = pd.date_range('2023-01-01', periods=100)
+        prices = pd.Series(100 + pd.Series(range(100)).cumsum() * 0.1 + 
+                          pd.Series(range(100)).apply(lambda x: pd.np.random.randn() * 2))
+        
+        sma = calculate_sma(prices, window=20)
+        print(f"✓ SMA calculated: last value = {sma.iloc[-1]:.2f}")
+        
+        ema = calculate_ema(prices, span=20)
+        print(f"✓ EMA calculated: last value = {ema.iloc[-1]:.2f}")
+        
+        rsi = calculate_rsi(prices, period=14)
+        print(f"✓ RSI calculated: last value = {rsi.iloc[-1]:.2f}")
+        
+        high = prices + abs(pd.Series(range(100)).apply(lambda x: pd.np.random.randn() * 1))
+        low = prices - abs(pd.Series(range(100)).apply(lambda x: pd.np.random.randn() * 1))
+        atr = calculate_atr(high, low, prices, period=14)
+        print(f"✓ ATR calculated: last value = {atr.iloc[-1]:.2f}")
+        
+        middle, upper, lower, width = calculate_bollinger_bands(prices)
+        print(f"✓ Bollinger Bands calculated: width = {width.iloc[-1]:.2f}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"✗ Indicator calculation error: {e}")
+        return False
+
+
+def test_file_structure():
+    """Test that all directories exist."""
+    print("\nTesting file structure...")
+    
+    required_dirs = [
+        'strategies',
+        'strategies/dip_strategies',
+        'strategies/gap_and_go_strategies',
+        'strategies/spy_strategies',
+        'strategies/ml_strategies',
+        'strategies/other_strategies',
+        'utils',
+        'data',
+        'results',
+        'docs'
+    ]
+    
+    all_exist = True
+    for dir_path in required_dirs:
+        if os.path.exists(dir_path):
+            print(f"✓ {dir_path}/")
+        else:
+            print(f"✗ {dir_path}/ (missing)")
+            all_exist = False
+    
+    return all_exist
+
+
+def run_all_tests():
+    """Run all framework tests."""
+    print("="*60)
+    print("TRADING STRATEGY FRAMEWORK TEST")
+    print("="*60)
+    
+    tests = [
+        ("File Structure", test_file_structure),
+        ("Imports", test_imports),
+        ("Data Loading", test_data_loading),
+        ("Indicators", test_indicators),
+        ("Strategy Execution", test_simple_strategy)
+    ]
+    
+    results = []
+    for test_name, test_func in tests:
+        print(f"\n{'='*60}")
+        result = test_func()
+        results.append((test_name, result))
+    
+    print("\n" + "="*60)
+    print("TEST SUMMARY")
+    print("="*60)
+    
+    passed = sum(1 for _, result in results if result)
+    total = len(results)
+    
+    for test_name, result in results:
+        status = "✓ PASSED" if result else "✗ FAILED"
+        print(f"{test_name:20} {status}")
+    
+    print(f"\nTotal: {passed}/{total} tests passed")
+    
+    if passed == total:
+        print("\n🎉 All tests passed! The framework is ready to use.")
+        print("\nNext steps:")
+        print("1. Run a single strategy: python strategies/spy_strategies/spy_gap_fade.py")
+        print("2. Run all strategies: python run_all.py")
+        print("3. Visualize results: python visualize_results.py")
+    else:
+        print("\n⚠️  Some tests failed. Please check the errors above.")
+        print("\nCommon issues:")
+        print("- Missing data files in data/ directory")
+        print("- Import paths need adjustment")
+        print("- Missing dependencies")
+    
+    return passed == total
+
+
+if __name__ == "__main__":
+    success = run_all_tests()
+    sys.exit(0 if success else 1)

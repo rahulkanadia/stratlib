@@ -1,0 +1,870 @@
+"""
+Batch converter for all remaining strategies
+Converts all SPY and other strategies to clean format
+"""
+
+import os
+import shutil
+from pathlib import Path
+import re
+
+def create_strategy_template(strategy_name, description, strategy_type="general"):
+    """Create a basic strategy template"""
+    
+    template = f'''"""
+{strategy_name} Strategy
+
+{description}
+
+This is a standalone, beginner-friendly implementation.
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from utils.base_strategy import BaseStrategy
+
+class {strategy_name.replace(" ", "")}Strategy(BaseStrategy):
+    """
+    {strategy_name} Implementation
+    """
+    
+    def __init__(self, data_path=None):
+        super().__init__(
+            name="{strategy_name}",
+            description="{description}",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close']
+        )
+        
+        if data_path:
+            self.load_data(data_path)
+    
+    def calculate_signals(self):
+        """Calculate trading signals"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.data.copy()
+        signals = []
+        
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+    
+    def run_backtest(self, initial_capital=10000, position_size=1.0):
+        """Run backtest"""
+        return super().run_backtest(initial_capital, position_size)
+
+def main():
+    """Run the strategy"""
+    print("=" * 60)
+    print("{strategy_name.upper()} STRATEGY")
+    print("=" * 60)
+    
+    data_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    
+    strategy = {strategy_name.replace(" ", "")}Strategy(data_path)
+    
+    print("\\nSearching for trading opportunities...")
+    signals = strategy.calculate_signals()
+    print(f"Found {{len(signals)}} trading signals")
+    
+    print("\\nRunning backtest with $10,000 initial capital...")
+    strategy.run_backtest(initial_capital=10000)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\\n" + "=" * 60)
+    print("STRATEGY RESULTS")
+    print("=" * 60)
+    if metrics:
+        print(f"Total Trades: {{metrics['total_trades']}}")
+        print(f"Win Rate: {{metrics['win_rate']:.1f}}%")
+        print(f"Total Profit/Loss: ${{metrics['total_profit']:.2f}}")
+        print(f"Max Drawdown: {{metrics['max_drawdown']:.1f}}%")
+    else:
+        print("No trades executed.")
+
+if __name__ == "__main__":
+    main()
+'''
+    return template
+
+def convert_dip_strategy():
+    """Convert DIP strategy with averaging down logic"""
+    content = '''"""
+DIP Buy with Averaging Down Strategy
+
+This strategy buys dips in SPY and averages down if price continues falling:
+1. Enters LONG when price drops by average of recent red day drops
+2. If price drops further (by ATR amount), adds to position (averages down)
+3. Exits all positions at market close
+
+Perfect for understanding position sizing and risk management!
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from utils.base_strategy import BaseStrategy
+
+class DIPAveragingStrategy(BaseStrategy):
+    """
+    DIP Buy with Averaging Down - Advanced dip buying strategy
+    """
+    
+    def __init__(self, data_path=None, lookback_days=21, atr_period=14):
+        super().__init__(
+            name="DIP Averaging Down",
+            description="Buys dips and averages down using ATR levels",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close']
+        )
+        
+        self.lookback_days = lookback_days
+        self.atr_period = atr_period
+        self.max_positions = 3  # Maximum number of averaging down positions
+        
+        if data_path:
+            self.load_data(data_path)
+    
+    def calculate_indicators(self):
+        """Calculate ATR and average drops"""
+        df = self.data.copy()
+        
+        high_low = df['High'] - df['Low']
+        high_close = np.abs(df['High'] - df['Close'].shift())
+        low_close = np.abs(df['Low'] - df['Close'].shift())
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = true_range.rolling(window=self.atr_period).mean()
+        
+        df['is_red_day'] = df['Close'] < df['Open']
+        df['daily_drop'] = np.where(df['is_red_day'], df['Open'] - df['Close'], 0.0)
+        df['avg_drop'] = df['daily_drop'].rolling(window=self.lookback_days).mean().shift(1)
+        df['avg_drop'].fillna(0.0, inplace=True)
+        
+        return df
+    
+    def calculate_signals(self):
+        """Find entry and averaging down opportunities"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.calculate_indicators()
+        signals = []
+        
+        for i in range(max(self.lookback_days, self.atr_period), len(df)):
+            curr_day = df.iloc[i]
+            
+            avg_drop = curr_day['avg_drop']
+            atr = curr_day['ATR']
+            
+            if avg_drop <= 0 or pd.isna(atr):
+                continue
+            
+            open_price = curr_day['Open']
+            
+            entry_level_1 = open_price - avg_drop
+            
+            entry_level_2 = entry_level_1 - (atr * 1.0)
+            entry_level_3 = entry_level_1 - (atr * 2.0)
+            
+            entries = []
+            if curr_day['Low'] <= entry_level_1:
+                entries.append({
+                    'level': 1,
+                    'price': entry_level_1,
+                    'size': 0.33  # 1/3 of capital
+                })
+            
+            if curr_day['Low'] <= entry_level_2:
+                entries.append({
+                    'level': 2,
+                    'price': entry_level_2,
+                    'size': 0.33
+                })
+            
+            if curr_day['Low'] <= entry_level_3:
+                entries.append({
+                    'level': 3,
+                    'price': entry_level_3,
+                    'size': 0.34  # Remaining capital
+                })
+            
+            if entries:
+                total_size = sum(e['size'] for e in entries)
+                avg_entry = sum(e['price'] * e['size'] for e in entries) / total_size
+                
+                signal = {
+                    'date': curr_day['Date'],
+                    'direction': 'LONG',
+                    'entry_price': avg_entry,
+                    'exit_price': curr_day['Close'],
+                    'num_entries': len(entries),
+                    'signal_strength': len(entries) / 3.0,  # More entries = stronger signal
+                    'atr': atr,
+                    'avg_drop': avg_drop
+                }
+                signals.append(signal)
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+    
+    def get_summary_metrics(self):
+        """Get performance summary with averaging metrics"""
+        if self.performance_metrics is None:
+            return None
+        
+        metrics = self.performance_metrics.copy()
+        
+        if self.signals is not None and len(self.signals) > 0:
+            avg_entries = self.signals['num_entries'].mean()
+            metrics['avg_entries_per_trade'] = round(avg_entries, 2)
+            
+            for n in [1, 2, 3]:
+                n_entry_trades = self.signals[self.signals['num_entries'] == n]
+                if len(n_entry_trades) > 0:
+                    metrics[f'{n}_entry_trades'] = len(n_entry_trades)
+        
+        return metrics
+
+def main():
+    """Example usage"""
+    print("=" * 60)
+    print("DIP AVERAGING DOWN STRATEGY")
+    print("=" * 60)
+    print("\\nBuys dips and adds to position if price drops further.")
+    print("Uses ATR for intelligent position sizing.")
+    print("=" * 60)
+    
+    data_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    
+    strategy = DIPAveragingStrategy(data_path)
+    
+    print("\\nAnalyzing market conditions...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} trading opportunities")
+    
+    print("\\nRunning backtest...")
+    strategy.run_backtest(initial_capital=10000)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\\n" + "=" * 60)
+    print("RESULTS")
+    print("=" * 60)
+    print(f"Total Trades: {metrics['total_trades']}")
+    print(f"Win Rate: {metrics['win_rate']:.1f}%")
+    print(f"Total Profit: ${metrics['total_profit']:.2f}")
+    print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+    
+    if 'avg_entries_per_trade' in metrics:
+        print(f"\\nAvg Entries per Trade: {metrics['avg_entries_per_trade']}")
+
+if __name__ == "__main__":
+    main()
+'''
+    return content
+
+def convert_vix_atr_strategy():
+    """Convert VIX + ATR combined strategy"""
+    content = '''"""
+VIX + ATR Combined Filter Strategy
+
+This strategy combines VIX (market volatility) and ATR (price volatility):
+- Only trades when both VIX and ATR are in optimal ranges
+- Fades gaps when volatility conditions are favorable
+- Uses multiple timeframes for confirmation
+
+Great for learning multi-indicator strategies!
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from utils.base_strategy import BaseStrategy
+
+class VIXATRStrategy(BaseStrategy):
+    """
+    Combined VIX and ATR filtering strategy
+    """
+    
+    def __init__(self, spy_data_path=None, vix_data_path=None):
+        super().__init__(
+            name="VIX ATR Combined",
+            description="Gap fade with VIX and ATR filters",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close']
+        )
+        
+        self.vix_low_threshold = 15
+        self.vix_high_threshold = 30
+        
+        self.atr_period = 14
+        self.atr_multiplier = 1.5
+        
+        self.min_gap_percent = 0.5  # Minimum gap as % of price
+        
+        self.vix_data = None
+        
+        if spy_data_path:
+            self.load_data(spy_data_path)
+        if vix_data_path:
+            self.load_vix_data(vix_data_path)
+    
+    def load_vix_data(self, vix_path):
+        """Load and merge VIX data"""
+        try:
+            vix_df = pd.read_csv(vix_path, parse_dates=['Date'])
+            vix_df = vix_df[['Date', 'Close']].rename(columns={'Close': 'VIX'})
+            self.vix_data = vix_df
+            
+            if self.data is not None:
+                self.data = pd.merge(self.data, vix_df, on='Date', how='inner')
+        except Exception as e:
+            print(f"Warning: Could not load VIX data: {e}")
+    
+    def calculate_indicators(self):
+        """Calculate ATR and other indicators"""
+        df = self.data.copy()
+        
+        high_low = df['High'] - df['Low']
+        high_close = np.abs(df['High'] - df['Close'].shift())
+        low_close = np.abs(df['Low'] - df['Close'].shift())
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = true_range.rolling(window=self.atr_period).mean()
+        
+        df['ATR_Percent'] = (df['ATR'] / df['Close']) * 100
+        
+        df['Gap'] = df['Open'] - df['Close'].shift()
+        df['Gap_Percent'] = (df['Gap'] / df['Close'].shift()) * 100
+        
+        return df
+    
+    def calculate_signals(self):
+        """Find trading opportunities with combined filters"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.calculate_indicators()
+        signals = []
+        
+        has_vix = 'VIX' in df.columns
+        
+        for i in range(self.atr_period + 1, len(df)):
+            curr_day = df.iloc[i]
+            prev_day = df.iloc[i-1]
+            
+            if has_vix:
+                vix = curr_day['VIX']
+                if vix < self.vix_low_threshold or vix > self.vix_high_threshold:
+                    continue
+            
+            atr = curr_day['ATR']
+            atr_percent = curr_day['ATR_Percent']
+            
+            if pd.isna(atr) or atr_percent < 0.5 or atr_percent > 3.0:
+                continue
+            
+            gap_percent = curr_day['Gap_Percent']
+            
+            if abs(gap_percent) < self.min_gap_percent:
+                continue
+            
+            if gap_percent > 0:  # Gap up - SHORT
+                direction = 'SHORT'
+                entry_price = curr_day['Open']
+                
+                target = prev_day['Close']
+                stop = entry_price + (atr * self.atr_multiplier)
+                
+                if curr_day['Low'] <= target:
+                    exit_price = target
+                elif curr_day['High'] >= stop:
+                    exit_price = stop
+                else:
+                    exit_price = curr_day['Close']
+                    
+            else:  # Gap down - LONG
+                direction = 'LONG'
+                entry_price = curr_day['Open']
+                
+                target = prev_day['Close']
+                stop = entry_price - (atr * self.atr_multiplier)
+                
+                if curr_day['High'] >= target:
+                    exit_price = target
+                elif curr_day['Low'] <= stop:
+                    exit_price = stop
+                else:
+                    exit_price = curr_day['Close']
+            
+            signal = {
+                'date': curr_day['Date'],
+                'direction': direction,
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'gap_percent': gap_percent,
+                'atr': atr,
+                'atr_percent': atr_percent,
+                'signal_strength': min(abs(gap_percent) / 2.0, 1.0)
+            }
+            
+            if has_vix:
+                signal['vix'] = vix
+            
+            signals.append(signal)
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+
+def main():
+    """Example usage"""
+    print("=" * 60)
+    print("VIX + ATR COMBINED STRATEGY")
+    print("=" * 60)
+    print("\\nFades gaps when both market and price volatility")
+    print("are in optimal ranges for mean reversion.")
+    print("=" * 60)
+    
+    spy_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    vix_path = Path(__file__).parent.parent.parent / "data" / "VIX_History.csv"
+    
+    strategy = VIXATRStrategy(spy_path, vix_path)
+    
+    print("\\nAnalyzing volatility conditions...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} opportunities with optimal volatility")
+    
+    print("\\nRunning backtest...")
+    strategy.run_backtest(initial_capital=10000)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\\n" + "=" * 60)
+    print("RESULTS")
+    print("=" * 60)
+    print(f"Total Trades: {metrics['total_trades']}")
+    print(f"Win Rate: {metrics['win_rate']:.1f}%")
+    print(f"Total Profit: ${metrics['total_profit']:.2f}")
+    print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+
+if __name__ == "__main__":
+    main()
+'''
+    return content
+
+def convert_moving_average_strategy():
+    """Convert simple moving average crossover strategy"""
+    content = '''"""
+Moving Average Crossover Strategy
+
+Classic trend-following strategy using two moving averages:
+- LONG when fast MA crosses above slow MA (uptrend)
+- SHORT when fast MA crosses below slow MA (downtrend)
+- Exit on opposite signal
+
+Perfect introduction to trend-following strategies!
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from utils.base_strategy import BaseStrategy
+
+class MovingAverageCrossStrategy(BaseStrategy):
+    """
+    Simple Moving Average Crossover Strategy
+    """
+    
+    def __init__(self, data_path=None, fast_period=10, slow_period=30):
+        super().__init__(
+            name="MA Crossover",
+            description="Trades based on moving average crossovers",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close']
+        )
+        
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+        
+        if data_path:
+            self.load_data(data_path)
+    
+    def calculate_indicators(self):
+        """Calculate moving averages"""
+        df = self.data.copy()
+        
+        df['MA_Fast'] = df['Close'].rolling(window=self.fast_period).mean()
+        df['MA_Slow'] = df['Close'].rolling(window=self.slow_period).mean()
+        
+        df['MA_Diff'] = df['MA_Fast'] - df['MA_Slow']
+        df['MA_Cross'] = np.sign(df['MA_Diff']).diff()
+        
+        return df
+    
+    def calculate_signals(self):
+        """Find MA crossover signals"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.calculate_indicators()
+        signals = []
+        
+        position = None  # Track current position
+        
+        for i in range(self.slow_period + 1, len(df)):
+            curr_day = df.iloc[i]
+            
+            if pd.isna(curr_day['MA_Cross']):
+                continue
+            
+            if curr_day['MA_Cross'] > 0:  # Bullish crossover
+                if position == 'SHORT':
+                    signal = {
+                        'date': curr_day['Date'],
+                        'direction': 'CLOSE_SHORT',
+                        'entry_price': curr_day['Open'],
+                        'exit_price': curr_day['Open'],  # Exit at open
+                        'signal_type': 'exit',
+                        'signal_strength': 0.5
+                    }
+                    signals.append(signal)
+                
+                signal = {
+                    'date': curr_day['Date'],
+                    'direction': 'LONG',
+                    'entry_price': curr_day['Open'],
+                    'exit_price': None,  # Will be set on exit
+                    'ma_fast': curr_day['MA_Fast'],
+                    'ma_slow': curr_day['MA_Slow'],
+                    'signal_type': 'entry',
+                    'signal_strength': 1.0
+                }
+                signals.append(signal)
+                position = 'LONG'
+                
+            elif curr_day['MA_Cross'] < 0:  # Bearish crossover
+                if position == 'LONG':
+                    signal = {
+                        'date': curr_day['Date'],
+                        'direction': 'CLOSE_LONG',
+                        'entry_price': curr_day['Open'],
+                        'exit_price': curr_day['Open'],  # Exit at open
+                        'signal_type': 'exit',
+                        'signal_strength': 0.5
+                    }
+                    signals.append(signal)
+                
+                signal = {
+                    'date': curr_day['Date'],
+                    'direction': 'SHORT',
+                    'entry_price': curr_day['Open'],
+                    'exit_price': None,  # Will be set on exit
+                    'ma_fast': curr_day['MA_Fast'],
+                    'ma_slow': curr_day['MA_Slow'],
+                    'signal_type': 'entry',
+                    'signal_strength': 1.0
+                }
+                signals.append(signal)
+                position = 'SHORT'
+        
+        processed_signals = []
+        open_position = None
+        
+        for signal in signals:
+            if signal['signal_type'] == 'entry' and open_position is None:
+                open_position = signal
+            elif signal['signal_type'] == 'exit' and open_position is not None:
+                trade_signal = {
+                    'date': open_position['date'],
+                    'direction': open_position['direction'],
+                    'entry_price': open_position['entry_price'],
+                    'exit_price': signal['exit_price'],
+                    'exit_date': signal['date'],
+                    'signal_strength': 1.0
+                }
+                processed_signals.append(trade_signal)
+                open_position = None
+        
+        self.signals = pd.DataFrame(processed_signals)
+        return self.signals
+
+def main():
+    """Example usage"""
+    print("=" * 60)
+    print("MOVING AVERAGE CROSSOVER STRATEGY")
+    print("=" * 60)
+    print(f"\\nTrades when {10}-day MA crosses {30}-day MA")
+    print("Classic trend-following approach")
+    print("=" * 60)
+    
+    data_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    
+    strategy = MovingAverageCrossStrategy(data_path, fast_period=10, slow_period=30)
+    
+    print("\\nCalculating moving averages...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} crossover trades")
+    
+    print("\\nRunning backtest...")
+    strategy.run_backtest(initial_capital=10000)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\\n" + "=" * 60)
+    print("RESULTS")
+    print("=" * 60)
+    print(f"Total Trades: {metrics['total_trades']}")
+    print(f"Win Rate: {metrics['win_rate']:.1f}%")
+    print(f"Total Profit: ${metrics['total_profit']:.2f}")
+    print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+
+if __name__ == "__main__":
+    main()
+'''
+    return content
+
+def convert_rsi_strategy():
+    """Convert RSI overbought/oversold strategy"""
+    content = '''"""
+RSI Mean Reversion Strategy
+
+Trades based on RSI (Relative Strength Index) extremes:
+- LONG when RSI < 30 (oversold)
+- SHORT when RSI > 70 (overbought)
+- Exit when RSI returns to neutral (50)
+
+Great for learning momentum indicators!
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from utils.base_strategy import BaseStrategy
+
+class RSIStrategy(BaseStrategy):
+    """
+    RSI-based mean reversion strategy
+    """
+    
+    def __init__(self, data_path=None, rsi_period=14, oversold=30, overbought=70):
+        super().__init__(
+            name="RSI Mean Reversion",
+            description="Trades RSI extremes expecting reversion",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close']
+        )
+        
+        self.rsi_period = rsi_period
+        self.oversold = oversold
+        self.overbought = overbought
+        self.neutral = 50
+        
+        if data_path:
+            self.load_data(data_path)
+    
+    def calculate_rsi(self):
+        """Calculate RSI indicator"""
+        df = self.data.copy()
+        
+        delta = df['Close'].diff()
+        
+        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+        
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        return df
+    
+    def calculate_signals(self):
+        """Find RSI extreme signals"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.calculate_rsi()
+        signals = []
+        
+        position = None
+        entry_info = None
+        
+        for i in range(self.rsi_period + 1, len(df)):
+            curr_day = df.iloc[i]
+            prev_day = df.iloc[i-1]
+            
+            curr_rsi = curr_day['RSI']
+            prev_rsi = prev_day['RSI']
+            
+            if pd.isna(curr_rsi):
+                continue
+            
+            if position is None:
+                if prev_rsi > self.oversold and curr_rsi <= self.oversold:
+                    position = 'LONG'
+                    entry_info = {
+                        'date': curr_day['Date'],
+                        'entry_price': curr_day['Close'],
+                        'entry_rsi': curr_rsi
+                    }
+                
+                elif prev_rsi < self.overbought and curr_rsi >= self.overbought:
+                    position = 'SHORT'
+                    entry_info = {
+                        'date': curr_day['Date'],
+                        'entry_price': curr_day['Close'],
+                        'entry_rsi': curr_rsi
+                    }
+            
+            elif position == 'LONG':
+                if curr_rsi >= self.neutral or curr_rsi >= self.overbought:
+                    signal = {
+                        'date': entry_info['date'],
+                        'direction': 'LONG',
+                        'entry_price': entry_info['entry_price'],
+                        'exit_price': curr_day['Close'],
+                        'entry_rsi': entry_info['entry_rsi'],
+                        'exit_rsi': curr_rsi,
+                        'signal_strength': (self.neutral - entry_info['entry_rsi']) / self.neutral
+                    }
+                    signals.append(signal)
+                    position = None
+                    entry_info = None
+            
+            elif position == 'SHORT':
+                if curr_rsi <= self.neutral or curr_rsi <= self.oversold:
+                    signal = {
+                        'date': entry_info['date'],
+                        'direction': 'SHORT',
+                        'entry_price': entry_info['entry_price'],
+                        'exit_price': curr_day['Close'],
+                        'entry_rsi': entry_info['entry_rsi'],
+                        'exit_rsi': curr_rsi,
+                        'signal_strength': (entry_info['entry_rsi'] - self.neutral) / (100 - self.neutral)
+                    }
+                    signals.append(signal)
+                    position = None
+                    entry_info = None
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+    
+    def get_summary_metrics(self):
+        """Get performance summary with RSI-specific metrics"""
+        if self.performance_metrics is None:
+            return None
+        
+        metrics = self.performance_metrics.copy()
+        
+        if self.signals is not None and len(self.signals) > 0:
+            avg_entry_rsi = self.signals['entry_rsi'].mean()
+            metrics['avg_entry_rsi'] = round(avg_entry_rsi, 1)
+            
+            oversold_trades = self.signals[self.signals['direction'] == 'LONG']
+            overbought_trades = self.signals[self.signals['direction'] == 'SHORT']
+            
+            if len(oversold_trades) > 0:
+                metrics['oversold_trades'] = len(oversold_trades)
+            
+            if len(overbought_trades) > 0:
+                metrics['overbought_trades'] = len(overbought_trades)
+        
+        return metrics
+
+def main():
+    """Example usage"""
+    print("=" * 60)
+    print("RSI MEAN REVERSION STRATEGY")
+    print("=" * 60)
+    print("\\nBuys when RSI < 30 (oversold)")
+    print("Sells when RSI > 70 (overbought)")
+    print("=" * 60)
+    
+    data_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    
+    strategy = RSIStrategy(data_path)
+    
+    print("\\nCalculating RSI and finding extremes...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} RSI extreme trades")
+    
+    print("\\nRunning backtest...")
+    strategy.run_backtest(initial_capital=10000)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\\n" + "=" * 60)
+    print("RESULTS")
+    print("=" * 60)
+    print(f"Total Trades: {metrics['total_trades']}")
+    print(f"Win Rate: {metrics['win_rate']:.1f}%")
+    print(f"Total Profit: ${metrics['total_profit']:.2f}")
+    print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+    
+    if 'avg_entry_rsi' in metrics:
+        print(f"\\nAverage Entry RSI: {metrics['avg_entry_rsi']}")
+    if 'oversold_trades' in metrics:
+        print(f"Oversold Trades (LONG): {metrics['oversold_trades']}")
+    if 'overbought_trades' in metrics:
+        print(f"Overbought Trades (SHORT): {metrics['overbought_trades']}")
+
+if __name__ == "__main__":
+    main()
+'''
+    return content
+
+def main():
+    """Main batch conversion function"""
+    print("Starting batch conversion of all strategies...")
+    
+    base_dir = Path("/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/clean_strategies/strategies")
+    
+    directories = [
+        base_dir / "spy_strategies",
+        base_dir / "dip_strategies", 
+        base_dir / "gap_and_go_strategies",
+        base_dir / "volatility_strategies",
+        base_dir / "indicator_strategies",
+        base_dir / "ml_strategies"
+    ]
+    
+    for dir_path in directories:
+        dir_path.mkdir(parents=True, exist_ok=True)
+    
+    strategies = {
+        "dip_strategies/dip_averaging_down.py": convert_dip_strategy(),
+        
+        "volatility_strategies/vix_atr_combined.py": convert_vix_atr_strategy(),
+        
+        "indicator_strategies/ma_crossover.py": convert_moving_average_strategy(),
+        "indicator_strategies/rsi_mean_reversion.py": convert_rsi_strategy(),
+    }
+    
+    created_count = 0
+    for relative_path, content in strategies.items():
+        full_path = base_dir / relative_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(full_path, 'w') as f:
+            f.write(content)
+        
+        print(f"Created: {relative_path}")
+        created_count += 1
+    
+    print(f"\nBatch conversion complete!")
+    print(f"Total strategies created: {created_count}")
+    print(f"Output directory: {base_dir}")
+
+if __name__ == "__main__":
+    main()

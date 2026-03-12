@@ -1,0 +1,50 @@
+"""
+Download SPY data for 2025
+"""
+import yfinance as yf
+import pandas as pd
+from datetime import datetime
+
+print("Downloading 2025 SPY data...")
+print("=" * 80)
+
+ticker = "SPY"
+start_date = "2025-01-01"
+end_date = datetime.now().strftime("%Y-%m-%d")
+
+print(f"Ticker: {ticker}")
+print(f"Start Date: {start_date}")
+print(f"End Date: {end_date}")
+print()
+
+spy_data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+
+if len(spy_data) == 0:
+    print("ERROR: No data downloaded. Check date range and ticker symbol.")
+else:
+    spy_data.reset_index(inplace=True)
+
+    if isinstance(spy_data.columns, pd.MultiIndex):
+        spy_data.columns = spy_data.columns.get_level_values(0)
+
+    spy_data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+
+    print(f"Downloaded {len(spy_data)} trading days")
+    print(f"Date Range: {spy_data['Date'].min()} to {spy_data['Date'].max()}")
+    print()
+
+    print("First few rows:")
+    print(spy_data.head())
+    print()
+
+    print("Last few rows:")
+    print(spy_data.tail())
+    print()
+
+    output_file = "SPY_2025_data.csv"
+    spy_data.to_csv(output_file, index=False)
+    print(f"Data saved to: {output_file}")
+    print("=" * 80)
+
+    print("\nSummary Statistics:")
+    print(spy_data.describe())

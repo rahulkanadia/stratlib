@@ -1,0 +1,207 @@
+import pandas as pd
+import numpy as np
+import os
+from itertools import product
+import warnings
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+
+
+
+
+def load_data(file_name):
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'], dayfirst=True, errors='coerce')
+    vix_df.dropna(subset=['Date'], inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+def calculate_day_range(day):
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    number_of_shares = position_size / entry_price
+    if trade_direction == 'Long':
+        return number_of_shares * (exit_price - entry_price)
+    else:
+        return number_of_shares * (entry_price - exit_price)
+
+def precompute_potential_trades(df, initial_investment):
+    """
+    מחזירה np.array (אורך n), שבו כל אינדקס i מייצג את הרווח הפוטנציאלי אם נסחור ביום i
+    (או 0 אם אין טרייד).
+    """
+    n = len(df)
+    trade_pnl = np.zeros(n, dtype=np.float64)
+    
+    for i in range(1, n):
+        prev_day = df.iloc[i - 1]
+        curr_day = df.iloc[i]
+        prev_range = calculate_day_range(prev_day)
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        
+        if is_gap_valid(gap, prev_range):
+            trade_direction = determine_trade_direction(gap)
+            entry_price = curr_day['Open']
+            exit_price, _ = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+            pnl = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+            trade_pnl[i] = pnl  # יום i
+    
+    return trade_pnl
+
+def precompute_drop_ratios(vix_df, maxY=10):
+    """
+    בונה מערך drop_ratios בגודל (n, maxY+1).
+    drop_ratios[i, Y] מייצג את אחוז הירידה (X%) בין היום i-Y ל i, לפי ה-OPEN של VIX.
+    אם i < Y => NaN.
+    """
+    vix_df_sorted = vix_df.sort_values('Date').reset_index(drop=True)
+    vix_open = vix_df_sorted['OPEN'].values
+    n = len(vix_open)
+
+    drop_ratios = np.full((n, maxY+1), np.nan, dtype=np.float64)
+    for i in range(n):
+        for Y in range(1, maxY+1):
+            j = i - Y
+            if j < 0:
+                continue
+            if vix_open[j] == 0:
+                continue
+            drop_ratios[i, Y] = (vix_open[j] - vix_open[i]) / vix_open[j] * 100.0
+
+    dates = vix_df_sorted['Date'].values
+    return drop_ratios, dates
+
+def build_vix_date_index_map(vix_dates):
+    """
+    מחזיר מילון: date -> index in the vix array
+    לצורך גישה מהירה (O(1)) למיקום של תאריך בתוך הווקטור.
+    """
+    return { d: i for i, d in enumerate(vix_dates) }
+
+def optimize_drop_filter_fast(df, vix_df, trade_pnl, drop_ratios, vix_date_index, 
+                              X_values, Y_values, Z_values):
+    """
+    מממשים אופטימיזציה מהירה על (X, Y, Z).
+    - trade_pnl[i] -> הרווח הפוטנציאלי ביום i (או 0)
+    - drop_ratios[idx, Y] -> אחוז הירידה עבור אינדקס VIX=idx, אם i-Y>=0
+    - vix_date_index -> למפות תאריך מסוים ל"איזה אינדקס ב-VIX"
+    """
+    n = len(df)
+    df_dates = df['Date'].values  # numpy array
+
+    best_X, best_Y, best_Z = None, None, None
+    best_profit = float('-inf')
+    results = []
+
+    skip_days = np.zeros(n, dtype=bool)
+
+    for X in X_values:
+        for Y in Y_values:
+            for Z in Z_values:
+                skip_days[:] = False
+
+                for i in range(n):
+                    date_i = df_dates[i]
+                    if date_i not in vix_date_index:
+                        continue
+                    vix_idx = vix_date_index[date_i]
+                    val = drop_ratios[vix_idx, Y] if (Y > 0 and Y < drop_ratios.shape[1]) else np.nan
+                    if not np.isnan(val) and val >= X:
+                        start_skip = i + 1
+                        end_skip = min(i + Z, n - 1)
+                        skip_days[start_skip:end_skip+1] = True
+
+                total_profit = np.sum(trade_pnl[~skip_days])
+
+                results.append((X, Y, Z, total_profit))
+                if total_profit > best_profit:
+                    best_profit = total_profit
+                    best_X = X
+                    best_Y = Y
+                    best_Z = Z
+
+    results_df = pd.DataFrame(results, columns=['X','Y','Z','TotalProfit'])
+    results_df_sorted = results_df.sort_values('TotalProfit', ascending=False)
+
+    return best_X, best_Y, best_Z, best_profit, results_df_sorted
+
+
+def demo_main():
+    main_file = 'D6CK32X6.csv'
+    vix_file = 'VIX_History.csv'
+    initial_investment = 16000
+
+    if not os.path.exists(main_file):
+        print(f"Error: Main data file '{main_file}' not found.")
+        return
+    if not os.path.exists(vix_file):
+        print(f"Error: VIX data file '{vix_file}' not found.")
+        return
+
+    df = load_data(main_file)
+    vix_df = load_vix_data(vix_file)
+
+    trade_pnl = precompute_potential_trades(df, initial_investment)
+
+    maxY = 10  # אם אתה רוצה לבדוק עד 10 ימים אחורה
+    drop_ratios, vix_dates = precompute_drop_ratios(vix_df, maxY=maxY)
+    vix_date_index = build_vix_date_index_map(vix_dates)
+
+    X_values = np.round(np.arange(1.0, 20.1, 0.1), 1)
+    Y_values = range(1, 11)  # 1..10
+    Z_values = range(1, 11)  # 1..10
+
+    print("Running fast drop-filter optimization ...")
+    best_X, best_Y, best_Z, best_profit, results_df = optimize_drop_filter_fast(
+        df, vix_df, trade_pnl, drop_ratios, vix_date_index,
+        X_values, Y_values, Z_values
+    )
+
+    print("\n=== Best (X,Y,Z) ===")
+    print(f"X={best_X}, Y={best_Y}, Z={best_Z}, Profit={best_profit:,.2f}\n")
+
+    print("Top 20 combos:")
+    print(results_df.head(20).to_string(index=False))
+
+
+if __name__ == "__main__":
+    demo_main()

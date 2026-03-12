@@ -1,0 +1,230 @@
+import pandas as pd
+import numpy as np
+
+def load_data(file_name):
+    """
+    Loads the CSV file into a DataFrame, sorts it by date, and resets the index.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_day_range(day):
+    """
+    Calculates the trading range of a day (High - Low).
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    Calculates the gap between the previous day's close and the current day's open.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid_inverse(gap, prev_range, lower_bound=0.15, upper_bound=0.85):
+    """
+    Inverse (Gap & Go) Strategy Gap Validity:
+    Checks if the gap meets the specified conditions:
+    - At least $0.20
+    - Gap percentage < lower_bound or > upper_bound of the previous day's range
+      (Here we allow customization of these percentage bounds for optimization.)
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return gap_percentage < lower_bound or gap_percentage > upper_bound
+
+def determine_trade_direction_inverse(gap):
+    """
+    Inverse (Gap & Go) Strategy Trade Direction:
+    - Gap up: Long position
+    - Gap down: Short position
+    """
+    return 'Long' if gap > 0 else 'Short'
+
+def determine_exit_price_inverse(curr_day):
+    """
+    For the inverse strategy:
+    The exit price is always the day's closing price.
+    """
+    return curr_day['Close']
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    Calculates the profit or loss of a trade.
+    """
+    number_of_shares = position_size / entry_price
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:  # Short position
+        profit_loss = number_of_shares * (entry_price - exit_price)
+    return profit_loss
+
+def analyze_trades_inverse(df, initial_investment, lower_bound=0.15, upper_bound=0.85):
+    """
+    Analyzes the DataFrame for valid inverse (Gap & Go) trades
+    based on customizable gap percentage bounds.
+    """
+    trades = []
+    total_days = len(df)
+    
+    for i in range(1, total_days):
+        prev_day = df.iloc[i - 1]
+        curr_day = df.iloc[i]
+        
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+        
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid_inverse(gap, prev_range, lower_bound, upper_bound):
+            continue
+        
+        trade_direction = determine_trade_direction_inverse(gap)
+        entry_price = curr_day['Open']
+        exit_price = determine_exit_price_inverse(curr_day)
+
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+
+        trades.append({
+            'Date': curr_day['Date'],
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Profit/Loss': profit_loss
+        })
+
+    return pd.DataFrame(trades)
+
+def calculate_statistics(trades_df):
+    """
+    Prints summary statistics of the trade DataFrame.
+    """
+    if trades_df.empty:
+        print("No trades met the criteria.")
+        return
+
+    gains = trades_df[trades_df['Profit/Loss'] > 0]
+    losses = trades_df[trades_df['Profit/Loss'] < 0]
+
+    average_gain = gains['Profit/Loss'].mean() if not gains.empty else 0
+    average_loss = losses['Profit/Loss'].mean() if not losses.empty else 0
+    max_gain = gains['Profit/Loss'].max() if not gains.empty else 0
+    max_loss = losses['Profit/Loss'].min() if not losses.empty else 0
+
+    if not gains.empty:
+        max_gain_date = gains.loc[gains['Profit/Loss'].idxmax(), 'Date']
+    else:
+        max_gain_date = None
+
+    if not losses.empty:
+        max_loss_date = losses.loc[losses['Profit/Loss'].idxmin(), 'Date']
+    else:
+        max_loss_date = None
+
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Average Gain per Trade: ${average_gain:,.2f}")
+    print(f"Average Loss per Trade: ${average_loss:,.2f}")
+    if max_gain_date is not None:
+        print(f"Maximum Gain per Trade: ${max_gain:,.2f} on {max_gain_date.date()}")
+    else:
+        print("No gains to report.")
+    if max_loss_date is not None:
+        print(f"Maximum Loss per Trade: ${max_loss:,.2f} on {max_loss_date.date()}")
+    else:
+        print("No losses to report.")
+
+def simulate_trading(trades_df, initial_investment):
+    """
+    Simulates trading with a given initial investment and returns the final amount.
+    """
+    if trades_df.empty:
+        print("No trades to simulate.")
+        return initial_investment
+
+    current_amount = initial_investment
+    for index, row in trades_df.iterrows():
+        current_amount += row['Profit/Loss']
+
+    total_profit_loss = trades_df['Profit/Loss'].sum()
+    final_amount = current_amount
+
+    print(f"Initial Investment: ${initial_investment:,.2f}")
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Total Profit/Loss from All Trades: ${total_profit_loss:,.2f}")
+    print(f"Final Amount after All Trades: ${final_amount:,.2f}")
+
+    return final_amount
+
+def optimize_inverse_strategy(df, initial_investment, min_occurrence_count=30):
+    """
+    Attempts to find the best gap percentage thresholds (lower_bound and upper_bound)
+    for the inverse strategy that yield the highest success rate and meet the minimum occurrence count.
+    
+    Similar to the first version’s approach, we:
+    - Iterate over a grid of (lower_bound, upper_bound) conditions.
+    - Filter out parameter sets with fewer than min_occurrence_count trades.
+    - Pick the condition set with the highest success rate (and if needed, consider total profit as a secondary criterion).
+    """
+    lower_bounds = np.round(np.arange(0.05, 0.95, 0.05), 2)
+    upper_bounds = np.round(np.arange(0.05, 0.95, 0.05), 2)
+    
+    results = []
+    for lb in lower_bounds:
+        for ub in upper_bounds:
+            if lb >= ub:
+                continue
+            trades_df = analyze_trades_inverse(df, initial_investment, lower_bound=lb, upper_bound=ub)
+            
+            occurrence_count = len(trades_df)
+            if occurrence_count < min_occurrence_count:
+                continue
+            
+            if occurrence_count > 0:
+                success_count = (trades_df['Profit/Loss'] > 0).sum()
+                success_rate = success_count / occurrence_count
+                total_profit = trades_df['Profit/Loss'].sum()
+                results.append((lb, ub, occurrence_count, success_rate, total_profit))
+
+    if not results:
+        print("No conditions met the minimum occurrence requirement.")
+        return None, None, None
+
+    results_df = pd.DataFrame(results, columns=['LowerBound', 'UpperBound', 'OccurrenceCount', 'SuccessRate', 'TotalProfit'])
+    results_df.sort_values(by=['SuccessRate', 'TotalProfit', 'OccurrenceCount'], ascending=[False, False, False], inplace=True)
+    best_lb = results_df.iloc[0]['LowerBound']
+    best_ub = results_df.iloc[0]['UpperBound']
+    best_occ_count = int(results_df.iloc[0]['OccurrenceCount'])
+    best_success_rate = results_df.iloc[0]['SuccessRate']
+    best_total_profit = results_df.iloc[0]['TotalProfit']
+
+    print("\n=== Optimization Results ===")
+    print(f"Best Gap Conditions: lower_bound={best_lb}, upper_bound={best_ub}")
+    print(f"Occurrences: {best_occ_count}, Success Rate: {best_success_rate:.2f}, Total Profit: ${best_total_profit:,.2f}")
+
+    best_trades = analyze_trades_inverse(df, initial_investment, lower_bound=best_lb, upper_bound=best_ub)
+    return best_lb, best_ub, best_trades
+
+def analyze_spy_gaps_combined_inverse_optimized(file_name, initial_investment):
+    """
+    Main function that orchestrates the inverse strategy analysis with optimization.
+    First, load data, then run optimization to find the best gap conditions,
+    and finally print statistics and simulate trading with the optimal conditions.
+    """
+    df = load_data(file_name)
+    best_lb, best_ub, best_trades = optimize_inverse_strategy(df, initial_investment, min_occurrence_count=30)
+
+    if best_trades is None or best_trades.empty:
+        print("No optimal parameter set found or no trades available.")
+        return
+
+    print("\n=== Final Statistics for Best Conditions ===")
+    calculate_statistics(best_trades)
+    simulate_trading(best_trades, initial_investment)
+
+file_name = 'D6CK32X6.csv'
+initial_investment = 16000
+
+analyze_spy_gaps_combined_inverse_optimized(file_name, initial_investment)

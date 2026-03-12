@@ -1,0 +1,115 @@
+
+> 策略名称
+
+均线傻瓜版
+
+> 策略作者
+
+sabar
+
+
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|Amount|100|数额|
+
+
+> 源码 (javascript)
+
+``` javascript
+
+
+
+var e = exchange
+e.SetContractType('swap')
+var LastBarTime = 0
+Idle = -1
+status = Idle
+
+
+function UpdateInfo() {
+    var account = exchange.GetAccount()
+    records = exchange.GetRecords()
+    ticker = exchange.GetTicker()
+    balance = account.Stocks
+    Bar = records[records.length - 1]
+}
+
+
+function Get_MA() {
+    
+    var MA_10 = TA.MA(records, 10)
+    MA_close_10 = MA_10[MA_10.length - 1]
+    
+    var MA_20 = TA.MA(records, 20)
+    MA_close_20 = MA_20[MA_20.length - 1]
+
+    var MA_30 = TA.MA(records, 30)
+    MA_close_30 = MA_30[MA_30.length - 1]
+
+}
+
+
+function onTick() {
+    if (LastBarTime !== Bar.Time) { 
+
+        if (status === PD_LONG) {
+            if (Bar.Close < MA_close_10) {
+                exchange.SetDirection("closebuy")
+                exchange.Sell(ticker.Buy, Amount)
+                status = Idle
+            }
+        }
+
+        if (status === PD_SHORT) {
+            if (Bar.Close > MA_close_10) {
+                exchange.SetDirection("closesell") 
+                exchange.Buy(ticker.Sell, Amount)
+                status = Idle
+            }
+        }
+ Sleep(1 * 1000)
+        if (status === Idle) {
+            if (Bar.Close > MA_close_20 ) {
+                exchange.SetDirection("buy") 
+                exchange.Buy(ticker.Sell, Amount)
+                status = PD_LONG
+            }
+            if (Bar.Close < MA_close_20 ) {
+                exchange.SetDirection("sell") 
+                exchange.Sell(ticker.Buy, Amount)
+                status = PD_SHORT
+            }
+        }
+        LastBarTime = Bar.Time
+    }
+}
+
+function main() {
+    
+    while (1) {
+        
+        UpdateInfo()
+        
+        Get_MA()
+        
+        onTick()
+        
+        LogStatus(balance)
+        
+        Sleep(5 * 1000)
+    }
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2021-09-23 17:15:26

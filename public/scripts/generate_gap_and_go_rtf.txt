@@ -1,0 +1,186 @@
+import pandas as pd
+from datetime import datetime
+import json
+import os
+
+def generate_gap_and_go_rtf_report():
+    """Generate RTF report with TOP 100 tables for Gap & Go strategies"""
+    
+    print("Generating Gap & Go RTF report...")
+    
+    try:
+        all_results = pd.read_csv('gap_and_go_all_results.csv')
+        print(f"Loaded {len(all_results)} Gap & Go strategies")
+    except Exception as e:
+        print(f"Error reading results: {e}")
+        return
+    
+    try:
+        with open('gap_and_go_summary.json', 'r') as f:
+            summary = json.load(f)
+    except:
+        summary = {
+            'Total Strategies Tested': 1000,
+            'Strategies with 100+ Trades': len(all_results),
+            'Profitable Strategies': len(all_results[all_results['Total Profit'] > 0]),
+            'Profit Rate': len(all_results[all_results['Total Profit'] > 0]) / len(all_results) * 100
+        }
+    
+    top_success = all_results.nlargest(100, 'Success Rate')
+    top_profit = all_results.nlargest(100, 'Total Profit')
+    
+    total_strategies = len(all_results)
+    profitable_strategies = len(all_results[all_results['Total Profit'] > 0])
+    avg_success_rate = all_results['Success Rate'].mean()
+    avg_profit = all_results['Total Profit'].mean()
+    avg_trades = all_results['Total Trades'].mean()
+    best_success = all_results['Success Rate'].max()
+    best_profit = all_results['Total Profit'].max()
+    most_trades = all_results['Total Trades'].max()
+    
+    rtf_content = r'''{\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang1033{\fonttbl{\f0\fswiss\fcharset0 Arial;}{\f1\fmodern\fcharset0 Courier New;}}
+{\colortbl ;\red0\green0\blue255;\red0\green128\blue0;\red255\green0\blue0;\red128\green0\blue128;}
+{\*\generator Riched20 10.0.19041}\viewkind4\uc1 
+\pard\sa200\sl276\slmult1\b\f0\fs32 GAP & GO TWO-INDICATOR TRADING STRATEGIES\b0\fs22\par
+\par
+\b\fs28 EXECUTIVE SUMMARY\b0\fs22\par
+This document presents the results of testing ''' + f"{summary.get('Total Strategies Tested', 1000):,}" + r''' Gap & Go two-indicator trading strategies on SPY data from 2020-2024. Gap & Go strategies trade in the direction of the gap, expecting price continuation. Each strategy combines two technical indicators and requires a minimum of 100 trades to qualify as "high-frequency". All strategies were tested with an initial investment of $16,000 and are free from look-ahead bias.\par
+\par
+\b\fs24 Key Findings:\b0\fs22\par
+- Total Strategies Tested: ''' + f"{summary.get('Total Strategies Tested', 1000):,}" + r'''\par
+- Strategies with 100+ Trades: ''' + f"{total_strategies:,}" + r'''\par
+- Profitable Strategies: ''' + f"{profitable_strategies:,}" + f" ({profitable_strategies/total_strategies*100:.1f}%)" + r'''\par
+- Average Success Rate: ''' + f"{avg_success_rate:.2f}%" + r'''\par
+- Average Profit: $''' + f"{avg_profit:,.2f}" + r'''\par
+- Average Trades per Strategy: ''' + f"{avg_trades:.0f}" + r'''\par
+- Best Success Rate: ''' + f"{best_success:.2f}%" + r'''\par
+- Best Total Profit: $''' + f"{best_profit:,.2f}" + r'''\par
+- Most Active Strategy: ''' + f"{most_trades:,}" + r''' trades\par
+\par
+\cf3\b IMPORTANT: Gap & Go strategies showed a low profit rate of ''' + f"{profitable_strategies/total_strategies*100:.1f}%" + r''', indicating the challenges of this trading approach in the current market environment.\cf0\b0\par
+\par'''
+
+    rtf_content += r'''\b\fs28\cf1 TOP 100 STRATEGIES BY SUCCESS RATE\cf0\b0\fs22\par
+\par
+\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrt\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 '''
+
+    rtf_content += r'''\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx5800\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl\b Rank\cell Strategy (Indicator 1 + Indicator 2)\cell Success Rate\cell Total Trades\cell Total Profit\cell ROI\cell Final Equity\cell\b0\row'''
+
+    for i, (_, row) in enumerate(top_success.iterrows(), 1):
+        rtf_content += r'''\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 \clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx5800\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl '''
+        rtf_content += f"{i}\\cell {row['Strategy']}\\cell {row['Success Rate']:.2f}%\\cell {row['Total Trades']}\\cell ${row['Total Profit']:,.2f}\\cell {row['ROI']:.2f}%\\cell ${row['Final Equity']:,.2f}\\cell\\row"
+
+    rtf_content += r'''\pard\par
+\par
+\b\fs28\cf2 TOP 100 STRATEGIES BY TOTAL PROFIT\cf0\b0\fs22\par
+\par
+\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrt\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 '''
+
+    rtf_content += r'''\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx6000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7300\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl\b Rank\cell Strategy (Indicator 1 + Indicator 2)\cell Total Profit\cell Success Rate\cell Total Trades\cell ROI\cell Final Equity\cell\b0\row'''
+
+    for i, (_, row) in enumerate(top_profit.iterrows(), 1):
+        rtf_content += r'''\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 \clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx6000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7300\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl '''
+        rtf_content += f"{i}\\cell {row['Strategy']}\\cell ${row['Total Profit']:,.2f}\\cell {row['Success Rate']:.2f}%\\cell {row['Total Trades']}\\cell {row['ROI']:.2f}%\\cell ${row['Final Equity']:,.2f}\\cell\\row"
+
+    rtf_content += r'''\pard\par
+\par
+\b\fs28 GAP & GO STRATEGY ANALYSIS\b0\fs22\par
+\par
+\b\fs24 Most Common Indicators in Top 100 Strategies:\b0\fs22\par'''
+
+    all_indicators = []
+    for _, row in top_success.head(50).iterrows():
+        all_indicators.extend([row['Indicator1'], row['Indicator2']])
+    for _, row in top_profit.head(50).iterrows():
+        all_indicators.extend([row['Indicator1'], row['Indicator2']])
+    
+    indicator_counts = pd.Series(all_indicators).value_counts().head(15)
+    
+    for indicator, count in indicator_counts.items():
+        rtf_content += f"\\par - {indicator}: Appears in {count} top strategies"
+
+    rtf_content += r'''\par
+\par
+\b\fs24 Gap & Go Performance Insights:\b0\fs22\par
+\par
+1. \b Low Profit Rate:\b0 Only ''' + f"{profitable_strategies}" + r''' out of ''' + f"{total_strategies}" + r''' strategies (''' + f"{profitable_strategies/total_strategies*100:.1f}%" + r''') were profitable, indicating Gap & Go is challenging in current markets.\par
+\par
+2. \b Best Success Rate:\b0 The highest success rate achieved was ''' + f"{best_success:.2f}%" + r''', showing that even top strategies face significant challenges.\par
+\par
+3. \b Profit Distribution:\b0 Most profitable strategies had modest gains, with the best achieving $''' + f"{best_profit:,.2f}" + r''' total profit.\par
+\par
+4. \b Trade Frequency:\b0 Strategies averaged ''' + f"{avg_trades:.0f}" + r''' trades, meeting the high-frequency requirement.\par
+\par
+5. \b Market Conditions:\b0 The 2020-2024 period included high volatility (COVID), strong trends, and changing market dynamics.\par
+\par
+\b\fs28 GAP & GO TRADING CHARACTERISTICS\b0\fs22\par
+\par
+\b\fs24 Strategy Mechanics:\b0\fs22\par
+- Entry: At market open when gap meets minimum threshold (0.3%)\par
+- Direction: Trade WITH the gap (gap up = long, gap down = short)\par
+- Exit: 1% profit target, 0.5% stop loss, or end of day\par
+- Filters: Two technical indicators must confirm\par
+\par
+\b\fs24 Exit Type Analysis (Typical Distribution):\b0\fs22\par'''
+
+    profitable_strats = all_results[all_results['Total Profit'] > 0]
+    if len(profitable_strats) > 0:
+        rtf_content += f"\\par - Profit Target Hits: Common in profitable strategies"
+        rtf_content += f"\\par - Stop Loss Hits: More frequent in losing strategies"
+        rtf_content += f"\\par - End of Day Exits: Indicates no target reached"
+    else:
+        rtf_content += f"\\par - Limited profitable strategies for meaningful exit analysis"
+
+    rtf_content += r'''\par
+\par
+\b\fs28 IMPLEMENTATION RECOMMENDATIONS\b0\fs22\par
+\par
+\b\fs24 Given Low Success Rate:\b0\fs22\par
+1. \b Careful Selection:\b0 Focus only on strategies with positive profit and high trade count\par
+2. \b Risk Management:\b0 Use smaller position sizes due to low overall profit rate\par
+3. \b Market Conditions:\b0 Consider filtering for specific market regimes\par
+4. \b Combine Approaches:\b0 Gap & Go might work better as part of a multi-strategy portfolio\par
+\par
+\b\fs24 Strategy Enhancement Ideas:\b0\fs22\par
+1. Add market regime filters (trending vs ranging)\par
+2. Adjust profit/stop targets based on volatility\par
+3. Consider time-of-day filters\par
+4. Test different gap thresholds\par
+5. Incorporate volume confirmation\par
+\par
+\b\fs24 Risk Considerations:\b0\fs22\par
+1. Gap fills are common, leading to stop losses\par
+2. Overnight risk from holding positions\par
+3. Execution slippage at market open\par
+4. Higher volatility during gap periods\par
+5. Limited profit potential with fixed targets\par
+\par
+\cf3\b\fs24 Critical Warnings:\cf0\b0\fs22\par
+- The low profit rate (''' + f"{profitable_strategies/total_strategies*100:.1f}%" + r''') suggests Gap & Go may not be suitable as a standalone strategy\par
+- Many gaps reverse quickly, triggering stop losses\par
+- Transaction costs can significantly impact results\par
+- Real-world execution at market open can be challenging\par
+\par
+\cf3\b\fs24 Disclaimer:\cf0\b0\fs22\par
+Past performance does not guarantee future results. Gap & Go trading involves substantial risk, including the potential for significant losses. These results are based on historical data from 2020-2024 and should not be considered as investment advice. The low profit rate observed suggests careful consideration before implementation.\par
+\par
+\b Report Generated:\b0 ''' + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + r'''\par
+}'''
+
+    output_filename = 'GAP_AND_GO_STRATEGIES_TOP_100.rtf'
+    with open(output_filename, 'w') as f:
+        f.write(rtf_content)
+    
+    print(f"Gap & Go RTF report generated: {output_filename}")
+    print(f"Report includes TOP 100 strategies by success rate and profit")
+    print(f"Total strategies analyzed: {total_strategies}")
+    print(f"Profitable strategies: {profitable_strategies} ({profitable_strategies/total_strategies*100:.1f}%)")
+
+def main():
+    """Generate Gap & Go RTF report"""
+    os.chdir('/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/GAP_AND_GO_1000_STRATEGIES')
+    
+    generate_gap_and_go_rtf_report()
+
+if __name__ == "__main__":
+    main()

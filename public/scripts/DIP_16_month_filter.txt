@@ -1,0 +1,143 @@
+import pandas as pd
+import numpy as np
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_rolling_average_drop(df, window=21):
+    """Calculate rolling average of drops on red days."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=window).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def analyze_dip_by_month(df, initial_investment=16000, rolling_window=21, target_months=[1, 2, 3]):
+    """Implement DIP strategy only in specific months."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df, window=rolling_window)
+    
+    df['Month'] = df['Date'].dt.month
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i == 0:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        month = current_day['Month']
+        
+        if avg_drop <= 0:
+            continue
+        
+        if month not in target_months:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            trades.append({
+                'Date': current_day['Date'],
+                'Month': month,
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'Profit/Loss': profit_loss
+            })
+    
+    return pd.DataFrame(trades)
+
+def optimize_months(file_name, initial_investment=16000):
+    """Find best months for DIP strategy."""
+    df = load_data(file_name)
+    
+    best_months = None
+    best_success_rate = 0
+    results = []
+    month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    
+    for month in range(1, 13):
+        trades_df = analyze_dip_by_month(df, initial_investment, 21, [month])
+        
+        total_trades = len(trades_df)
+        if total_trades >= 20:  # Lower threshold for monthly analysis
+            winning_trades = len(trades_df[trades_df['Profit/Loss'] > 0])
+            success_rate = winning_trades / total_trades if total_trades > 0 else 0
+            total_profit = trades_df['Profit/Loss'].sum()
+            
+            results.append({
+                'Months': month_names[month-1],
+                'Total Trades': total_trades,
+                'Success Rate': success_rate,
+                'Total Profit': total_profit,
+                'Avg Profit': total_profit / total_trades if total_trades > 0 else 0
+            })
+    
+    quarters = [
+        ([1, 2, 3], 'Q1'),
+        ([4, 5, 6], 'Q2'),
+        ([7, 8, 9], 'Q3'),
+        ([10, 11, 12], 'Q4')
+    ]
+    
+    for months, quarter_name in quarters:
+        trades_df = analyze_dip_by_month(df, initial_investment, 21, months)
+        
+        total_trades = len(trades_df)
+        if total_trades >= 100:  # Need 100+ trades for quarters
+            winning_trades = len(trades_df[trades_df['Profit/Loss'] > 0])
+            success_rate = winning_trades / total_trades if total_trades > 0 else 0
+            total_profit = trades_df['Profit/Loss'].sum()
+            
+            results.append({
+                'Months': quarter_name,
+                'Total Trades': total_trades,
+                'Success Rate': success_rate,
+                'Total Profit': total_profit,
+                'Avg Profit': total_profit / total_trades if total_trades > 0 else 0
+            })
+            
+            if success_rate > best_success_rate:
+                best_success_rate = success_rate
+                best_months = (months, quarter_name)
+    
+    results_df = pd.DataFrame(results)
+    print("=== Month/Quarter Optimization Results ===")
+    print(results_df.sort_values('Success Rate', ascending=False))
+    
+    if best_months:
+        print(f"\nBest Period: {best_months[1]}")
+        print(f"Best Success Rate: {best_success_rate:.2%}")
+        
+        final_trades = analyze_dip_by_month(df, initial_investment, 21, best_months[0])
+        print(f"\nFinal Results trading in {best_months[1]}:")
+        print(f"Total Trades: {len(final_trades)}")
+        print(f"Total Profit: ${final_trades['Profit/Loss'].sum():,.2f}")
+    
+    return best_months, best_success_rate
+
+if __name__ == "__main__":
+    file_name = "../7J0OK1VR.csv"
+    initial_investment = 16000
+    best_months, best_rate = optimize_months(file_name, initial_investment)

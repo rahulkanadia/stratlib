@@ -1,0 +1,288 @@
+"""
+Gapandgosuccess Rate64Strategy - Standalone Trading Strategy
+
+Trading strategy
+
+This strategy is completely self-contained and can be run from anywhere.
+No external dependencies required!
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+
+def load_data(file_path):
+    """Load trading data from CSV file"""
+    try:
+        df = pd.read_csv(file_path, parse_dates=['Date'])
+        df.sort_values('Date', inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        return df
+    except FileNotFoundError:
+        print(f"Warning: Could not find {file_path}")
+        print("Using sample data instead...")
+        return create_sample_data()
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        print("Using sample data instead...")
+        return create_sample_data()
+
+def create_sample_data():
+    """Create sample SPY data for testing"""
+    dates = pd.date_range(start='2024-01-01', end='2024-01-31', freq='B')
+    np.random.seed(42)
+    
+    data = []
+    price = 470.0
+    
+    for date in dates:
+        daily_return = np.random.normal(0.0002, 0.01)  # 0.02% mean, 1% std
+        open_price = price * (1 + np.random.normal(0, 0.002))
+        high_price = open_price * (1 + abs(np.random.normal(0, 0.005)))
+        low_price = open_price * (1 - abs(np.random.normal(0, 0.005)))
+        close_price = open_price * (1 + daily_return)
+        volume = int(np.random.normal(80000000, 20000000))
+        
+        data.append({
+            'Date': date,
+            'Open': round(open_price, 2),
+            'High': round(max(high_price, open_price, close_price), 2),
+            'Low': round(min(low_price, open_price, close_price), 2),
+            'Close': round(close_price, 2),
+            'Volume': max(volume, 1000000)
+        })
+        
+        price = close_price
+    
+    return pd.DataFrame(data)
+
+def calculate_returns(prices):
+    """Calculate simple returns from price series"""
+    return prices.pct_change().fillna(0)
+
+def calculate_sharpe_ratio(returns, risk_free_rate=0.02, periods_per_year=252):
+    """Calculate Sharpe Ratio"""
+    if len(returns) < 2:
+        return 0
+    
+    excess_returns = returns - risk_free_rate / periods_per_year
+    if excess_returns.std() == 0:
+        return 0
+    
+    return np.sqrt(periods_per_year) * excess_returns.mean() / excess_returns.std()
+
+def calculate_max_drawdown(equity_curve):
+    """Calculate maximum drawdown from equity curve"""
+    if len(equity_curve) < 2:
+        return 0
+        
+    rolling_max = equity_curve.expanding().max()
+    drawdown = (equity_curve - rolling_max) / rolling_max
+    return abs(drawdown.min() * 100)
+
+def calculate_performance_metrics(trades, initial_capital=10000):
+    """Calculate all performance metrics"""
+    if not trades:
+        return {
+            'total_trades': 0,
+            'win_rate': 0,
+            'total_profit': 0,
+            'sharpe_ratio': 0,
+            'max_drawdown': 0,
+            'win_loss_ratio': 0
+        }
+    
+    df = pd.DataFrame(trades)
+    
+    total_trades = len(df)
+    winning_trades = len(df[df['profit_loss'] > 0])
+    losing_trades = len(df[df['profit_loss'] < 0])
+    
+    win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+    total_profit = df['profit_loss'].sum()
+    
+    avg_win = df[df['profit_loss'] > 0]['profit_loss'].mean() if winning_trades > 0 else 0
+    avg_loss = abs(df[df['profit_loss'] < 0]['profit_loss'].mean()) if losing_trades > 0 else 0
+    win_loss_ratio = (avg_win / avg_loss) if avg_loss > 0 else float('inf') if avg_win > 0 else 0
+    
+    equity_curve = initial_capital + df['profit_loss'].cumsum()
+    returns = calculate_returns(equity_curve)
+    
+    sharpe_ratio = calculate_sharpe_ratio(returns)
+    max_drawdown = calculate_max_drawdown(equity_curve)
+    
+    return {
+        'total_trades': total_trades,
+        'win_rate': round(win_rate, 1),
+        'total_profit': round(total_profit, 2),
+        'sharpe_ratio': round(sharpe_ratio, 2),
+        'max_drawdown': round(max_drawdown, 1),
+        'win_loss_ratio': round(win_loss_ratio, 2)
+    }
+
+
+class Gapandgosuccessrate64StrategyStrategy:
+    """
+    Gapandgosuccess Rate64Strategy
+    
+    A trading strategy implementation
+    """
+    
+    def __init__(self, data=None):
+        self.name = "Gapandgosuccess Rate64Strategy"
+        self.data = data
+        
+        self.min_gap_percent = 0.5
+        self.max_gap_percent = 5.0
+        
+    def load_data_with_fallback(self, file_path=None):
+        """Load data with automatic fallback to sample data"""
+        if file_path:
+            self.data = load_data(file_path)
+        else:
+            possible_paths = [
+                "7J0OK1VR.csv",
+                "data/7J0OK1VR.csv",
+                "../data/7J0OK1VR.csv",
+                "../../data/7J0OK1VR.csv",
+                "/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/clean_strategies/data/7J0OK1VR.csv"
+            ]
+            
+            data_loaded = False
+            for path in possible_paths:
+                if os.path.exists(path):
+                    print(f"Found data at: {path}")
+                    self.data = load_data(path)
+                    data_loaded = True
+                    break
+            
+            if not data_loaded:
+                print("No data file found, using sample data")
+                self.data = create_sample_data()
+        
+        return self.data
+    
+    def calculate_indicators(self):
+        """Calculate required indicators"""
+        df = self.data.copy()
+        
+        
+        df['Gap'] = df['Open'] - df['Close'].shift(1)
+        df['Gap_Percent'] = (df['Gap'] / df['Close'].shift(1)) * 100
+        
+        return df
+    
+    def generate_signals(self):
+        """Generate trading signals"""
+        df = self.calculate_indicators()
+        signals = []
+        
+        
+        for i in range(1, len(df)):
+            curr_day = df.iloc[i]
+            prev_day = df.iloc[i-1]
+            
+            gap_percent = curr_day['Gap_Percent']
+            
+            if pd.isna(gap_percent) or abs(gap_percent) < self.min_gap_percent:
+                continue
+            if abs(gap_percent) > self.max_gap_percent:
+                continue
+            
+            if gap_percent > 0:  # Gap up - SHORT
+                direction = 'SHORT'
+                entry_price = curr_day['Open']
+                
+                if curr_day['Low'] <= prev_day['Close']:
+                    exit_price = prev_day['Close']
+                else:
+                    exit_price = curr_day['Close']
+            else:  # Gap down - LONG
+                direction = 'LONG'
+                entry_price = curr_day['Open']
+                
+                if curr_day['High'] >= prev_day['Close']:
+                    exit_price = prev_day['Close']
+                else:
+                    exit_price = curr_day['Close']
+            
+            signal = {
+                'date': curr_day['Date'],
+                'direction': direction,
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'gap_percent': gap_percent
+            }
+            signals.append(signal)
+        
+        return signals
+    
+    def run_backtest(self, initial_capital=10000):
+        """Run the backtest and calculate performance"""
+        if self.data is None:
+            self.load_data_with_fallback()
+        
+        signals = self.generate_signals()
+        trades = []
+        
+        for signal in signals:
+            if signal['direction'] == 'LONG':
+                profit_loss = (signal['exit_price'] - signal['entry_price']) / signal['entry_price'] * initial_capital
+            else:  # SHORT
+                profit_loss = (signal['entry_price'] - signal['exit_price']) / signal['entry_price'] * initial_capital
+            
+            trade = {
+                'date': signal['date'],
+                'direction': signal['direction'],
+                'entry_price': signal['entry_price'],
+                'exit_price': signal['exit_price'],
+                'profit_loss': profit_loss
+            }
+            trades.append(trade)
+        
+        return trades, calculate_performance_metrics(trades, initial_capital)
+
+
+def main():
+    """Run the strategy"""
+    print("=" * 60)
+    print("GAPANDGOSUCCESS RATE64STRATEGY")
+    print("=" * 60)
+    print()
+    print("This strategy trades based on technical indicators")
+    print("=" * 60)
+    
+    strategy = Gapandgosuccessrate64StrategyStrategy()
+    
+    print("\nLoading data...")
+    strategy.load_data_with_fallback()
+    print(f"Data loaded: {len(strategy.data)} days")
+    
+    print("\nRunning backtest...")
+    trades, metrics = strategy.run_backtest(initial_capital=10000)
+    
+    print("\n" + "=" * 60)
+    print("STRATEGY RESULTS")
+    print("=" * 60)
+    print(f"Total Trades:    {metrics['total_trades']}")
+    print(f"Win Rate:        {metrics['win_rate']}%")
+    print(f"Total Profit:    ${metrics['total_profit']:,.2f}")
+    print(f"Sharpe Ratio:    {metrics['sharpe_ratio']}")
+    print(f"Max Drawdown:    {metrics['max_drawdown']}%")
+    print(f"Win/Loss Ratio:  {metrics['win_loss_ratio']}")
+    print("=" * 60)
+    
+    if trades:
+        print("\nSample Trades (First 5):")
+        print("-" * 60)
+        for i, trade in enumerate(trades[:5]):
+            print(f"Trade {i+1}: {trade['date'].strftime('%Y-%m-%d')} "
+                  f"{trade['direction']} "
+                  f"${trade['entry_price']:.2f} -> ${trade['exit_price']:.2f} "
+                  f"P&L: ${trade['profit_loss']:.2f}")
+
+if __name__ == "__main__":
+    main()

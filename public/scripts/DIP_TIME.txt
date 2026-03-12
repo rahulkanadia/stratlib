@@ -1,0 +1,186 @@
+import pandas as pd
+import numpy as np
+import warnings
+from itertools import product
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+def load_5min_data(file_name):
+    """
+    טוען את קובץ ה-5 דקות לתוך DataFrame:
+    - ממיר את עמודת Time לפורמט תאריך-ושעה.
+    - ממיין על פי זמן כרונולוגי.
+    - מאפס אינדקס.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Time'])
+    df.sort_values('Time', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_rolling_average_drop_5min(df, window=21):
+    """
+    1. מגדיר 'בר אדום' אם המחיר האחרון (Last) < המחיר הפותח (Open).
+    2. מחשב Drop = (Open - Last) עבור בר אדום, ואפס עבור בר ירוק.
+    3. מחשב ממוצע נע של Drop ל-window נרות אחורה (עם shift(1) למניעת הצצה).
+    """
+    df['IsRedBar'] = df['Last'] < df['Open']
+    df['Drop'] = np.where(df['IsRedBar'], df['Open'] - df['Last'], 0.0)
+    
+    df['RollingAvgDrop'] = (
+        df['Drop']
+        .rolling(window=window)
+        .mean()
+        .shift(1)  # shift(1) כדי לא להשתמש בנתוני הנר הנוכחי.
+    )
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """
+    מחשב רווח/הפסד עבור פוזיציית לונג:
+      (exit_price - entry_price) * מספר מניות,
+    כאשר מספר המניות = position_size / entry_price (אם entry_price>0).
+    """
+    if entry_price <= 0:
+        return 0.0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def build_trades_with_time_of_day(df, initial_investment=16000, rolling_window=21, time_of_day=None):
+    """
+    בונה טריידים לפי הלוגיקה הבאה:
+      1. מחשבים RollingAvgDrop ל-window נרות אחרונים.
+      2. אם time_of_day אינו None, נסנן את הנתונים רק לנרות שהשעה:דקה שלהם תואמת.
+      3. אם בנר הנוכחי RollingAvgDrop > 0, נבדוק אם Low <= (Open - RollingAvgDrop).
+         - כניסה בלונג באותו מחיר (Open - RollingAvgDrop).
+         - יציאה במחיר Last של אותו נר.
+      4. נחזיר DataFrame של הטריידים עם רווח/הפסד ומידע נוסף.
+    """
+    df = df.copy()
+    df = calculate_rolling_average_drop_5min(df, window=rolling_window)
+    
+    df['TimeOfDay'] = df['Time'].dt.strftime('%H:%M')
+    
+    if time_of_day is not None:
+        df = df[df['TimeOfDay'] == time_of_day].copy()
+        if df.empty:
+            return pd.DataFrame()  # אין נרות בשעה:דקה הזו
+    
+    trades = []
+    
+    for i in range(1, len(df)):
+        current_bar = df.iloc[i]
+        avg_drop = current_bar['RollingAvgDrop']
+        
+        if avg_drop <= 0:
+            continue
+        
+        open_price = current_bar['Open']
+        low_price = current_bar['Low']
+        last_price = current_bar['Last']  # המחיר לסגירת הפוזיציה
+        time_stamp = current_bar['Time']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = last_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            trades.append({
+                'Time': time_stamp,
+                'TimeOfDay': current_bar['TimeOfDay'],
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'Open': open_price,
+                'Low': low_price,
+                'Last': last_price,
+                'Rolling Avg Drop': avg_drop,
+                'Profit/Loss': profit_loss
+            })
+    
+    return pd.DataFrame(trades)
+
+def optimize_time_of_day_and_rolling(
+    file_5min,
+    initial_investment=16000,
+    rolling_values=[5, 10, 21, 30],
+    min_occurrences=5,
+    top_n=30
+):
+    """
+    1. טוען נתוני 5 דקות.
+    2. שולף רשימת TimeOfDay ייחודית.
+    3. מריץ build_trades_with_time_of_day על כל קומבינציה (rolling_window, time_of_day).
+    4. מחשב תוצאות לכל קומבינציה:
+       - כמות טריידים (OccurrenceCount)
+       - כמות הצלחות (SuccessCount)
+       - אחוז הצלחה (SuccessRate)
+       - רווח כולל (TotalProfit)
+    5. מסנן רק קומבינציות שעוברות את סף min_occurrences.
+    6. ממיין לפי SuccessRate (יורד) ואז לפי TotalProfit (יורד).
+    7. מחזיר ומציג את 30 התוצאות הטובות ביותר (או לפי top_n).
+    """
+    df_5min = load_5min_data(file_5min)
+    
+    all_times_of_day = sorted(df_5min['Time'].dt.strftime('%H:%M').unique())
+    
+    results = []
+    
+    for r_win, t_of_day in product(rolling_values, all_times_of_day):
+        trades_df = build_trades_with_time_of_day(
+            df_5min,
+            initial_investment=initial_investment,
+            rolling_window=r_win,
+            time_of_day=t_of_day
+        )
+        
+        if trades_df.empty:
+            continue
+        
+        occurrence_count = len(trades_df)
+        profit_array = trades_df['Profit/Loss'].values
+        success_count = (profit_array > 0).sum()
+        total_profit = profit_array.sum()
+        success_rate = success_count / occurrence_count if occurrence_count > 0 else 0.0
+        
+        results.append({
+            'RollingWindow': r_win,
+            'TimeOfDay': t_of_day,
+            'OccurrenceCount': occurrence_count,
+            'SuccessCount': success_count,
+            'SuccessRate': success_rate,
+            'TotalProfit': total_profit
+        })
+    
+    results_df = pd.DataFrame(results)
+    
+    results_df = results_df[results_df['OccurrenceCount'] >= min_occurrences]
+    if results_df.empty:
+        print("No combinations passed the min_occurrences filter.")
+        return None
+    
+    results_df.sort_values(by=['SuccessRate', 'TotalProfit'], ascending=[False, False], inplace=True)
+    results_df.reset_index(drop=True, inplace=True)
+    
+    top_df = results_df.head(top_n).copy()
+    
+    print(f"\n=== Top {top_n} Combinations (Filtered by Min Occurrences) ===")
+    print(top_df.to_string(index=False))
+    
+    return top_df
+
+if __name__ == "__main__":
+    file_5min = "5_MINUTES_DATA.csv"
+    
+    top_combos = optimize_time_of_day_and_rolling(
+        file_5min=file_5min,
+        initial_investment=16000,
+        rolling_values=[5, 10, 21, 30],  # אפשר לשנות/להרחיב
+        min_occurrences=10,             # מספר מינימלי של טריידים כדי להיכלל בתוצאות
+        top_n=30                        # הצגת 30 התוצאות הטובות ביותר
+    )
+    
+    if top_combos is not None:
+        top_combos.to_csv("best_time_of_day.csv", index=False)

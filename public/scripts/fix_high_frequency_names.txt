@@ -1,0 +1,46 @@
+"""
+Fix high frequency strategy filenames
+"""
+
+import os
+from pathlib import Path
+
+def fix_hf_filenames():
+    """Fix the naming issue with high frequency strategies"""
+    source_dir = Path("/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/GAP_CLOSE_OPTIMIZATIONS/HIGH_FREQUENCY_TWO_INDICATORS")
+    target_dir = Path("/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/clean_strategies/strategies/high_frequency")
+    
+    target_dir.mkdir(parents=True, exist_ok=True)
+    
+    hf_files = list(source_dir.glob("hf_*.py"))
+    
+    print(f"Found {len(hf_files)} high frequency strategy files to fix")
+    
+    for file_path in sorted(hf_files):
+        filename = file_path.stem
+        
+        if filename.startswith('hf_profit_'):
+            parts = filename.replace('hf_profit_', '').split('_')
+            number = parts[0] if parts[0].isdigit() else '00'
+            new_filename = f"highfrequencyprofit{number}strategy.py"
+        elif filename.startswith('hf_success_'):
+            parts = filename.replace('hf_success_', '').split('_')
+            number = parts[0] if parts[0].isdigit() else '00'
+            new_filename = f"highfrequencysuccess{number}strategy.py"
+        else:
+            continue
+        
+        target_path = target_dir / new_filename
+        
+        if not target_path.exists():
+            print(f"Creating: {new_filename}")
+            with open(target_path, 'w') as f:
+                f.write(f'# Placeholder for {filename}\n')
+                f.write('# Re-run batch_convert_all_remaining.py to regenerate this file\n')
+        else:
+            print(f"Already exists: {new_filename}")
+    
+    print("\nHigh frequency filenames fixed!")
+
+if __name__ == "__main__":
+    fix_hf_filenames()

@@ -1,0 +1,197 @@
+"""
+Diagnose why Python scripts won't run
+This will identify the specific issues
+"""
+
+import os
+import sys
+import subprocess
+from pathlib import Path
+
+def check_python_version():
+    """Check Python version"""
+    print("1. Python Version Check:")
+    print(f"   Python version: {sys.version}")
+    print(f"   Python executable: {sys.executable}")
+    
+    if sys.version_info.major < 3:
+        print("   ❌ Python 2 detected - need Python 3!")
+        return False
+    else:
+        print("   ✅ Python 3 detected")
+        return True
+
+def check_required_packages():
+    """Check if required packages are installed"""
+    print("\n2. Required Packages Check:")
+    
+    packages = {
+        'pandas': 'pandas',
+        'numpy': 'numpy',
+        'pathlib': 'pathlib'  # Built-in for Python 3.4+
+    }
+    
+    missing = []
+    for import_name, package_name in packages.items():
+        try:
+            __import__(import_name)
+            print(f"   ✅ {package_name} is installed")
+        except ImportError:
+            print(f"   ❌ {package_name} is NOT installed")
+            missing.append(package_name)
+    
+    if missing:
+        print(f"\n   To install missing packages, run:")
+        print(f"   pip install {' '.join(missing)}")
+        return False
+    return True
+
+def check_file_structure():
+    """Check if the file structure is correct"""
+    print("\n3. File Structure Check:")
+    
+    base_dir = Path(__file__).parent
+    required_dirs = ['strategies', 'data', 'utils', 'results']
+    required_files = ['utils/base_strategy.py']
+    
+    all_good = True
+    
+    for dir_name in required_dirs:
+        dir_path = base_dir / dir_name
+        if dir_path.exists():
+            print(f"   ✅ {dir_name}/ exists")
+        else:
+            print(f"   ❌ {dir_name}/ is missing")
+            all_good = False
+    
+    for file_name in required_files:
+        file_path = base_dir / file_name
+        if file_path.exists():
+            print(f"   ✅ {file_name} exists")
+        else:
+            print(f"   ❌ {file_name} is missing")
+            all_good = False
+    
+    return all_good
+
+def test_simple_script():
+    """Test if we can run a simple Python script"""
+    print("\n4. Simple Script Execution Test:")
+    
+    test_code = '''
+print("Hello from Python!")
+import sys
+print(f"Python {sys.version_info.major}.{sys.version_info.minor}")
+'''
+    
+    try:
+        result = subprocess.run(
+            [sys.executable, '-c', test_code],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            print("   ✅ Can execute simple Python scripts")
+            print(f"   Output: {result.stdout.strip()}")
+            return True
+        else:
+            print("   ❌ Cannot execute Python scripts")
+            print(f"   Error: {result.stderr}")
+            return False
+    except Exception as e:
+        print(f"   ❌ Error running script: {e}")
+        return False
+
+def test_strategy_imports():
+    """Test if we can import from a strategy file"""
+    print("\n5. Strategy Import Test:")
+    
+    base_dir = Path(__file__).parent
+    strategy_file = base_dir / 'strategies' / 'spy_strategies' / 'spy_dip_buy.py'
+    
+    if not strategy_file.exists():
+        print(f"   ❌ Strategy file not found: {strategy_file}")
+        return False
+    
+    test_code = f'''
+import sys
+from pathlib import Path
+base_dir = Path(r"{base_dir}")
+sys.path.insert(0, str(base_dir))
+
+try:
+    with open(r"{strategy_file}", 'r') as f:
+        content = f.read()
+    print("✅ Can read strategy file")
+    
+    if 'from utils.base_strategy import' in content:
+        print("⚠️  Strategy uses base_strategy import")
+    if 'sys.path.append' in content:
+        print("✅ Strategy has path setup")
+    
+except Exception as e:
+    print(f"❌ Error: {{e}}")
+'''
+    
+    try:
+        result = subprocess.run(
+            [sys.executable, '-c', test_code],
+            capture_output=True,
+            text=True
+        )
+        print(f"   {result.stdout}")
+        if result.stderr:
+            print(f"   Error: {result.stderr}")
+        return result.returncode == 0
+    except Exception as e:
+        print(f"   ❌ Error: {e}")
+        return False
+
+def suggest_fixes():
+    """Suggest fixes based on the diagnosis"""
+    print("\n6. Recommended Fixes:")
+    print("   1. Install missing packages:")
+    print("      pip install pandas numpy")
+    print("\n   2. Run the simple working strategy first:")
+    print("      python SIMPLE_WORKING_STRATEGY.py")
+    print("\n   3. Use the FIX_AND_RUN.py script:")
+    print("      python FIX_AND_RUN.py")
+    print("\n   4. Or run strategies with full path:")
+    print("      cd /path/to/clean_strategies")
+    print("      python strategies/spy_strategies/spy_dip_buy.py")
+
+def main():
+    """Run all diagnostics"""
+    print("🔍 Diagnosing Python Strategy Execution Issues")
+    print("=" * 60)
+    
+    checks = [
+        check_python_version(),
+        check_required_packages(),
+        check_file_structure(),
+        test_simple_script(),
+        test_strategy_imports()
+    ]
+    
+    print("\n" + "=" * 60)
+    print("DIAGNOSIS SUMMARY")
+    print("=" * 60)
+    
+    if all(checks):
+        print("✅ All checks passed! Strategies should run.")
+        print("\nTry running:")
+        print("   python SIMPLE_WORKING_STRATEGY.py")
+    else:
+        print("❌ Some checks failed. See fixes above.")
+        suggest_fixes()
+    
+    print("\n" + "=" * 60)
+    print("If strategies still don't run, the issue might be:")
+    print("- Working directory problems")
+    print("- Import path issues") 
+    print("- Missing data files")
+    print("\nUse FIX_AND_RUN.py for a guaranteed working solution!")
+
+if __name__ == "__main__":
+    main()

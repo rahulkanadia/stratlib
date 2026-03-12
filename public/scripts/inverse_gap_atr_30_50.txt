@@ -1,0 +1,357 @@
+import pandas as pd
+import numpy as np
+import warnings
+import os
+from itertools import product
+from multiprocessing import Pool, cpu_count
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', None)      # Display all rows
+pd.set_option('display.max_columns', None)   # Display all columns
+pd.set_option('display.width', None)         # Adjust display width
+pd.set_option('display.max_colwidth', None)  # Display full content in each column
+
+def load_data(file_name):
+    """
+    Loads the CSV file into a DataFrame, sorts it by date, and resets the index.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_day_range(day):
+    """
+    Calculates the trading range of a day (High - Low).
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    Calculates the gap between the previous day's close and the current day's open.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range, gap_barrier):
+    """
+    For the 'inverse' Gap & Go condition:
+    1) Absolute gap of at least $0.20
+    2) gap_percentage >= gap_barrier
+       (where 0.85 <= gap_barrier <= 2.0, and gap_percentage = abs(gap)/prev_range)
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return gap_percentage >= gap_barrier
+
+def determine_trade_direction(gap):
+    """
+    For the inverse Gap & Go:
+    - Gap up: Long position
+    - Gap down: Short position
+    """
+    return 'Long' if gap > 0 else 'Short'
+
+def determine_exit_price(curr_day):
+    """
+    Exit at day's close.
+    """
+    return curr_day['Close']
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    Calculates the profit or loss of a trade, assuming we allocate
+    'position_size' dollars to each trade.
+    """
+    number_of_shares = position_size / entry_price
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:  # Short position
+        profit_loss = number_of_shares * (entry_price - exit_price)
+    return profit_loss
+
+def precompute_trades(df, initial_investment, gap_barrier):
+    """
+    Precomputes all valid trades according to the inverse Gap & Go conditions,
+    using a single 'gap_barrier' parameter. Returns a DataFrame containing all trades.
+    """
+    trades = []
+    total_days = len(df)
+
+    for i_day in range(1, total_days):
+        prev_day = df.iloc[i_day - 1]
+        curr_day = df.iloc[i_day]
+        prev_range = calculate_day_range(prev_day)
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+
+        if is_gap_valid(gap, prev_range, gap_barrier):
+            trade_direction = determine_trade_direction(gap)
+            entry_price = curr_day['Open']
+            exit_price = determine_exit_price(curr_day)
+            profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+
+            trades.append({
+                'Date': curr_day['Date'],
+                'Trade Direction': trade_direction,
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'GapPct': abs(gap) / prev_range,  # Just for reference
+                'Profit/Loss': profit_loss
+            })
+
+    trades_df = pd.DataFrame(trades)
+    return trades_df
+
+def calculate_atr(df, n):
+    """
+    Calculates the Average True Range (ATR) over 'n' consecutive days.
+    """
+    df = df.copy()
+    df['Previous Close'] = df['Close'].shift(1)
+    df['High-Low'] = df['High'] - df['Low']
+    df['High-PrevClose'] = (df['High'] - df['Previous Close']).abs()
+    df['Low-PrevClose'] = (df['Low'] - df['Previous Close']).abs()
+    df['TR'] = df[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+    df['ATR'] = df['TR'].rolling(window=n).mean()
+    return df
+
+def compute_atr_metrics_sequential(args):
+    """
+    Calculates occurrence_count, success_rate, and total_profit
+    for a given (n, T) combination, filtering trades by ATR >= T.
+    """
+    trades_df, df, n, T, initial_investment = args
+    df_with_atr = calculate_atr(df.copy(), n)
+    trades_with_atr = trades_df.merge(df_with_atr[['Date', 'ATR']], on='Date', how='left')
+    trades_with_atr = trades_with_atr.dropna(subset=['ATR'])
+
+    trades_filtered = trades_with_atr[trades_with_atr['ATR'] >= T]
+
+    if not trades_filtered.empty:
+        occurrence_count = trades_filtered.shape[0]
+        profit_losses = trades_filtered['Profit/Loss'].values
+        success_count = (profit_losses > 0).sum()
+        total_profit = profit_losses.sum()
+        success_rate = success_count / occurrence_count if occurrence_count > 0 else 0.0
+    else:
+        occurrence_count = 0
+        success_count = 0
+        total_profit = 0.0
+        success_rate = 0.0
+
+    return (n, T, occurrence_count, success_count, success_rate, total_profit)
+
+def optimize_atr_parameters(trades_df, df, initial_investment, n_values, T_values, atr_min_occurrence_count=10):
+    """
+    ATR optimization based on maximizing success rate,
+    requiring at least 'atr_min_occurrence_count' occurrences.
+    """
+    param_combinations = list(product(n_values, T_values))
+    args_list = [(trades_df.copy(), df.copy(), n, T, initial_investment) for n, T in param_combinations]
+
+    with Pool(processes=cpu_count()) as pool:
+        results = pool.map(compute_atr_metrics_sequential, args_list)
+
+    results_df = pd.DataFrame(results, columns=['n', 'T', 'OccurrenceCount', 'SuccessCount', 'SuccessRate', 'TotalProfit'])
+
+    results_df = results_df[results_df['OccurrenceCount'] >= atr_min_occurrence_count]
+
+    results_df_sorted = results_df.sort_values(
+        by=['SuccessRate', 'OccurrenceCount', 'TotalProfit'],
+        ascending=[False, False, False]
+    ).reset_index(drop=True)
+
+    return results_df_sorted
+
+def find_best_gap_barrier(df, initial_investment, gap_min=0.85, gap_max=2.0, gap_step=0.05, min_occurrence_count=30):
+    """
+    Scans through possible gap_barrier values in [gap_min, gap_max] with step=gap_step,
+    returns a DataFrame sorted by success rate. We require at least 'min_occurrence_count' occurrences.
+    """
+    results = []
+    gap_values = np.round(np.arange(gap_min, gap_max + gap_step, gap_step), 2)
+
+    for barrier in gap_values:
+        trades_df = precompute_trades(df, initial_investment, barrier)
+        occurrence_count = len(trades_df)
+        if occurrence_count == 0:
+            results.append((barrier, occurrence_count, 0, 0.0, 0.0))
+            continue
+
+        profit_losses = trades_df['Profit/Loss'].values
+        success_count = (profit_losses > 0).sum()
+        success_rate = success_count / occurrence_count
+        total_profit = profit_losses.sum()
+
+        results.append((barrier, occurrence_count, success_count, success_rate, total_profit))
+
+    results_df = pd.DataFrame(results, columns=['GapBarrier', 'OccurrenceCount', 'SuccessCount', 'SuccessRate', 'TotalProfit'])
+    results_df = results_df[results_df['OccurrenceCount'] >= min_occurrence_count]
+    results_df_sorted = results_df.sort_values(
+        by=['SuccessRate', 'OccurrenceCount', 'TotalProfit'],
+        ascending=[False, False, False]
+    ).reset_index(drop=True)
+
+    return results_df_sorted
+
+def run_full_optimization(df, initial_investment, 
+                          gap_min, gap_max, gap_step,
+                          atr_n_min, atr_n_max, atr_T_min, atr_T_max, atr_T_step,
+                          min_occurrence_count):
+    """
+    1) Finds the best gap_barrier(s) by success rate, 
+    2) Then runs ATR optimization for the top 3 gap barriers.
+    """
+    print(f"\n--- Running Optimization with min_occurrence_count={min_occurrence_count} ---\n")
+
+    all_gap_results_sorted = find_best_gap_barrier(
+        df=df,
+        initial_investment=initial_investment,
+        gap_min=gap_min,
+        gap_max=gap_max,
+        gap_step=gap_step,
+        min_occurrence_count=min_occurrence_count
+    )
+
+    if all_gap_results_sorted.empty:
+        print("No suitable gap barriers found (no results passed min_occurrence_count).")
+        return
+
+    print(f"Top gap barriers (showing up to 10):\n{all_gap_results_sorted.head(10).to_string(index=False)}")
+
+    top_3_gaps = all_gap_results_sorted.head(3)
+    final_summaries = []
+
+    for idx, row in top_3_gaps.iterrows():
+        barrier = row['GapBarrier']
+        success_rate_gap = row['SuccessRate']
+        occurrences_gap = row['OccurrenceCount']
+        total_profit_gap = row['TotalProfit']
+
+        print(f"\n>>> Checking Gap Barrier #{idx+1}: {barrier}")
+        print(f"    (SuccessRate={success_rate_gap:.2f}, Occurrences={occurrences_gap}, TotalProfit={total_profit_gap:.2f})")
+
+        trades_gap = precompute_trades(df, initial_investment, barrier)
+        if trades_gap.empty:
+            print("No trades found for this gap barrier.")
+            continue
+
+        n_values = range(atr_n_min, atr_n_max + 1)
+        T_values = np.round(np.arange(atr_T_min, atr_T_max + atr_T_step, atr_T_step), 1)
+
+        all_atr_results_sorted = optimize_atr_parameters(
+            trades_df=trades_gap,
+            df=df,
+            initial_investment=initial_investment,
+            n_values=n_values,
+            T_values=T_values,
+            atr_min_occurrence_count=10  # you can tweak this if you like
+        )
+
+        if all_atr_results_sorted.empty:
+            print("No suitable ATR parameters found (didn't pass ATR min occurrence).")
+            continue
+
+        top_3_atr = all_atr_results_sorted.head(3)
+        print("\nTop 3 ATR results (OccurrenceCount >= 10):")
+        print(top_3_atr.to_string(index=False))
+
+        for idx_atr, row_atr in top_3_atr.iterrows():
+            best_n = int(row_atr['n'])
+            best_T = row_atr['T']
+            best_occurrences = row_atr['OccurrenceCount']
+            best_success_rate = row_atr['SuccessRate']
+            best_total_profit = row_atr['TotalProfit']
+
+            print(f"\n--- ATR condition #{idx_atr+1} for gap barrier={barrier} ---")
+            print(f"n={best_n}, T={best_T}, Occ={best_occurrences}, SuccessRate={best_success_rate:.2f}, Profit={best_total_profit:.2f}")
+
+            df_with_atr = calculate_atr(df.copy(), best_n)
+            trades_final = trades_gap.merge(df_with_atr[['Date', 'ATR']], on='Date', how='left')
+            trades_final = trades_final[trades_final['ATR'] >= best_T]
+
+            if not trades_final.empty:
+                total_profit_final = trades_final['Profit/Loss'].sum()
+                occurrence_count_final = len(trades_final)
+                success_count_final = (trades_final['Profit/Loss'] > 0).sum()
+                success_rate_final = success_count_final / occurrence_count_final
+            else:
+                total_profit_final = 0.0
+                occurrence_count_final = 0
+                success_count_final = 0
+                success_rate_final = 0.0
+
+            print(f"Final (filtered) Results for barrier={barrier}, n={best_n}, T={best_T}:")
+            print(f"Occurrences: {occurrence_count_final}, Successes: {success_count_final}, SuccessRate: {success_rate_final:.2f}, TotalProfit: {total_profit_final:.2f}\n")
+
+            final_summaries.append({
+                'GapBarrier': barrier,
+                'n': best_n,
+                'T': best_T,
+                'Occ(Barrier)': occurrences_gap,
+                'SuccRate(Barrier)': success_rate_gap,
+                'Profit(Barrier)': total_profit_gap,
+                'Occ(ATR)': best_occurrences,
+                'SuccRate(ATR)': best_success_rate,
+                'Profit(ATR)': best_total_profit,
+                'Occ(Final)': occurrence_count_final,
+                'SuccRate(Final)': success_rate_final,
+                'Profit(Final)': total_profit_final
+            })
+
+    print(f"\n=== Summary for top 3 gap barriers & top 3 ATR combos (with min_occurrence_count={min_occurrence_count}) ===")
+    if final_summaries:
+        summary_df = pd.DataFrame(final_summaries)
+        summary_df_sorted = summary_df.sort_values(
+            by=['SuccRate(Final)', 'Occ(Final)', 'Profit(Final)'],
+            ascending=[False, False, False]
+        ).reset_index(drop=True)
+        print(summary_df_sorted.to_string(index=False))
+    else:
+        print("No final summaries to display.")
+
+def analyze_spy_gaps_with_barrier(main_file, initial_investment=16000, 
+                                  gap_min=0.85, gap_max=2.0, gap_step=0.05,
+                                  atr_n_min=2, atr_n_max=20, 
+                                  atr_T_min=2.0, atr_T_max=20.0, atr_T_step=0.5):
+    """
+    This function checks the *top 3 gap barriers* (by success rate) for each
+    min_occurrence_count (e.g. 30 and 50). For each barrier, we then pick the
+    *top 3* ATR parameters that have at least 10 occurrences.
+    """
+    if not os.path.exists(main_file):
+        print(f"Error: Main data file '{main_file}' not found.")
+        return
+
+    print("Loading data...")
+    df = load_data(main_file)
+
+    run_full_optimization(df, initial_investment,
+                          gap_min, gap_max, gap_step,
+                          atr_n_min, atr_n_max,
+                          atr_T_min, atr_T_max, atr_T_step,
+                          min_occurrence_count=30)
+
+    run_full_optimization(df, initial_investment,
+                          gap_min, gap_max, gap_step,
+                          atr_n_min, atr_n_max,
+                          atr_T_min, atr_T_max, atr_T_step,
+                          min_occurrence_count=50)
+
+if __name__ == "__main__":
+    main_file = 'D6CK32X6.csv'
+    initial_investment = 16000  # example
+    analyze_spy_gaps_with_barrier(
+        main_file=main_file,
+        initial_investment=initial_investment,
+        gap_min=0.65,
+        gap_max=2.0,
+        gap_step=0.01,
+        atr_n_min=2,
+        atr_n_max=20,
+        atr_T_min=2.0,
+        atr_T_max=20.0,
+        atr_T_step=0.1
+    )

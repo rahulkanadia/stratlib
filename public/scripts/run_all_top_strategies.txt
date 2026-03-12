@@ -1,0 +1,114 @@
+import os
+import sys
+import pandas as pd
+import importlib.util
+from datetime import datetime
+
+def run_all_strategies():
+    """Run all strategy files and compile results"""
+    
+    strategy_files = [f for f in os.listdir('.') if f.endswith('.py') 
+                     and f.startswith(('0', '1')) 
+                     and '_' in f]
+    strategy_files.sort()
+    
+    print("="*80)
+    print("RUNNING ALL TOP GAP TRADING STRATEGIES")
+    print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*80)
+    
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv') 
+                and f not in ['gap_strategies_all_results.csv', 
+                             'gap_strategies_top10_profit.csv', 
+                             'gap_strategies_top10_success_rate.csv']]
+    
+    if not csv_files:
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_file = os.path.join(parent_dir, '..', '7J0OK1VR.csv')
+        if not os.path.exists(data_file):
+            print("Error: No CSV data file found.")
+            return
+    else:
+        data_file = csv_files[0]
+    
+    print(f"\nUsing data file: {data_file}")
+    print(f"Found {len(strategy_files)} strategy files to test\n")
+    
+    results = []
+    
+    for i, strategy_file in enumerate(strategy_files, 1):
+        print(f"\n[{i}/{len(strategy_files)}] Running {strategy_file}...")
+        
+        try:
+            module_name = strategy_file.replace('.py', '')
+            spec = importlib.util.spec_from_file_location(module_name, strategy_file)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            
+            strategy_classes = [
+                attr for attr in dir(module) 
+                if attr.endswith('Strategy') and attr != 'GapStrategy'
+            ]
+            
+            if not strategy_classes:
+                print(f"Warning: No strategy class found in {strategy_file}")
+                continue
+            
+            StrategyClass = getattr(module, strategy_classes[0])
+            strategy = StrategyClass()
+            
+            stats, trades_df = strategy.run_strategy(data_file)
+            
+            result = {
+                'File': strategy_file,
+                'Strategy': stats['Strategy'],
+                'Success Rate': stats['Success Rate'],
+                'Total Trades': stats['Total Trades'],
+                'Total Profit': stats['Total Profit'],
+                'ROI': stats['ROI'],
+                'Average Win': stats['Average Win'],
+                'Average Loss': stats['Average Loss'],
+                'Max Win': stats['Max Win'],
+                'Max Loss': stats['Max Loss'],
+                'Final Equity': stats['Final Equity']
+            }
+            results.append(result)
+            
+            print(f"✓ {stats['Strategy']}: {stats['Success Rate']}% success, "
+                  f"${stats['Total Profit']:,.2f} profit")
+            
+        except Exception as e:
+            print(f"✗ Error in {strategy_file}: {e}")
+            continue
+    
+    results_df = pd.DataFrame(results)
+    
+    results_df.to_csv('top_strategies_comprehensive_results.csv', index=False)
+    
+    print("\n" + "="*80)
+    print("SUMMARY OF ALL STRATEGIES")
+    print("="*80)
+    
+    print("\nTop 5 by Success Rate:")
+    top_success = results_df.nlargest(5, 'Success Rate')
+    print(top_success[['Strategy', 'Success Rate', 'Total Trades', 'Total Profit']].to_string(index=False))
+    
+    print("\nTop 5 by Total Profit:")
+    top_profit = results_df.nlargest(5, 'Total Profit')
+    print(top_profit[['Strategy', 'Total Profit', 'Success Rate', 'Total Trades']].to_string(index=False))
+    
+    print("\nTop 5 by ROI:")
+    top_roi = results_df.nlargest(5, 'ROI')
+    print(top_roi[['Strategy', 'ROI', 'Total Profit', 'Success Rate']].to_string(index=False))
+    
+    print(f"\nOverall Statistics:")
+    print(f"Average Success Rate: {results_df['Success Rate'].mean():.2f}%")
+    print(f"Average Total Profit: ${results_df['Total Profit'].mean():,.2f}")
+    print(f"Average ROI: {results_df['ROI'].mean():.2f}%")
+    print(f"Total Combined Profit: ${results_df['Total Profit'].sum():,.2f}")
+    
+    print(f"\nResults saved to: top_strategies_comprehensive_results.csv")
+    print("="*80)
+
+if __name__ == "__main__":
+    run_all_strategies()

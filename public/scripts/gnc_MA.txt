@@ -1,0 +1,335 @@
+"""
+MA 5/10 CROSS STRATEGY - SIMPLE VERSION
+=======================================
+Initial Investment: $16,000
+
+STRATEGY OVERVIEW:
+-----------------
+Simple implementation of the MA 5/10 Cross strategy. Trades gaps when the 5-day MA 
+is above the 10-day MA, indicating bullish momentum.
+
+KEY PARAMETERS:
+--------------
+- Fast MA: 5 days
+- Slow MA: 10 days  
+- Minimum Gap Size: $0.20
+- Exit: Gap closure or market close
+"""
+
+import pandas as pd
+import numpy as np
+import warnings
+from datetime import datetime
+import matplotlib.pyplot as plt
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+pd.set_option('display.max_colwidth', None)
+pd.set_option('display.float_format', '{:.2f}'.format)
+
+def load_data(file_name):
+    """Load and prepare stock data"""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_moving_averages(df, fast_period=5, slow_period=10):
+    """Calculate moving averages with shift to avoid look-ahead bias"""
+    df['SMA_5'] = df['Close'].rolling(window=fast_period).mean().shift(1)
+    df['SMA_10'] = df['Close'].rolling(window=slow_period).mean().shift(1)
+    
+    df['MA_Diff'] = df['SMA_5'] - df['SMA_10']
+    df['MA_Diff_Pct'] = (df['MA_Diff'] / df['SMA_10'] * 100).fillna(0)
+    
+    df['Bullish_Momentum'] = df['SMA_5'] > df['SMA_10']
+    
+    return df
+
+def calculate_day_range(day):
+    """Calculate the range of a trading day"""
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """Calculate the gap between previous close and current open"""
+    return curr_open - prev_close
+
+def determine_trade_direction(gap):
+    """Determine trade direction - fade the gap"""
+    return 'SHORT' if gap > 0 else 'LONG'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """Check if gap closed and determine exit price"""
+    if trade_direction == 'SHORT':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # LONG
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """Calculate profit/loss for a trade"""
+    number_of_shares = position_size / entry_price
+    if trade_direction == 'LONG':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:  # SHORT
+        profit_loss = number_of_shares * (entry_price - exit_price)
+    return profit_loss, number_of_shares
+
+def run_ma510_strategy(df, initial_investment, min_gap=0.20):
+    """Run the MA 5/10 Cross strategy - simple version"""
+    
+    print(f"\n{'='*80}")
+    print("MA 5/10 CROSS STRATEGY - SIMPLE VERSION")
+    print(f"{'='*80}")
+    print(f"Initial Investment: ${initial_investment:,.2f}")
+    print(f"Minimum Gap: ${min_gap}")
+    print(f"\nCalculating indicators...")
+    
+    df = calculate_moving_averages(df)
+    
+    trades = []
+    current_equity = initial_investment
+    equity_curve = [{'Date': df.iloc[0]['Date'], 'Equity': initial_investment}]
+    
+    start_idx = 10  # Need at least 10 days for MA_10
+    
+    print(f"Running strategy from {df.iloc[start_idx]['Date'].date()} to {df.iloc[-1]['Date'].date()}...")
+    print("Processing trades...\n")
+    
+    for i in range(start_idx, len(df)):
+        prev_day = df.iloc[i-1]
+        curr_day = df.iloc[i]
+        
+        if not prev_day['Bullish_Momentum']:
+            continue
+        
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        
+        if abs(gap) < min_gap:
+            continue
+        
+        trade_direction = determine_trade_direction(gap)
+        
+        entry_price = curr_day['Open']
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+        profit_loss, shares = calculate_profit_loss(trade_direction, entry_price, exit_price, current_equity)
+        
+        current_equity += profit_loss
+        equity_curve.append({'Date': curr_day['Date'], 'Equity': current_equity})
+        
+        trade_num = len(trades) + 1
+        
+        trade_record = {
+            'Trade_Num': trade_num,
+            'Date': curr_day['Date'],
+            'Day_of_Week': curr_day['Date'].strftime('%A'),
+            'SMA_5': prev_day['SMA_5'],
+            'SMA_10': prev_day['SMA_10'],
+            'MA_Separation': prev_day['MA_Diff_Pct'],
+            'Gap': gap,
+            'Gap_Percent': (gap / prev_day['Close']) * 100,
+            'Trade_Direction': trade_direction,
+            'Entry_Price': entry_price,
+            'Exit_Price': exit_price,
+            'Gap_Closed': gap_closed,
+            'Shares': shares,
+            'Profit_Loss': profit_loss,
+            'Profit_Percent': (profit_loss / (shares * entry_price)) * 100,
+            'Cumulative_PL': current_equity - initial_investment,
+            'Account_Value': current_equity
+        }
+        
+        trades.append(trade_record)
+    
+    trades_df = pd.DataFrame(trades)
+    equity_df = pd.DataFrame(equity_curve)
+    
+    print(f"Strategy execution complete. Total trades: {len(trades_df)}")
+    
+    return trades_df, equity_df
+
+def print_comprehensive_summary(trades_df, equity_df, initial_investment):
+    """Print comprehensive summary statistics"""
+    
+    print(f"\n{'='*80}")
+    print("STRATEGY PERFORMANCE SUMMARY")
+    print(f"{'='*80}")
+    
+    if trades_df.empty:
+        print("\nNo trades executed!")
+        return
+    
+    total_trades = len(trades_df)
+    winning_trades = len(trades_df[trades_df['Profit_Loss'] > 0])
+    losing_trades = len(trades_df[trades_df['Profit_Loss'] < 0])
+    win_rate = (winning_trades / total_trades) * 100
+    
+    print(f"\n📊 TRADE STATISTICS:")
+    print(f"  • Total Trades: {total_trades}")
+    print(f"  • Winning Trades: {winning_trades} ({winning_trades/total_trades*100:.1f}%)")
+    print(f"  • Losing Trades: {losing_trades} ({losing_trades/total_trades*100:.1f}%)")
+    print(f"  • Win Rate: {win_rate:.2f}%")
+    print(f"  • Average Trades/Month: {total_trades / ((trades_df['Date'].max() - trades_df['Date'].min()).days / 30):.1f}")
+    
+    total_profit = trades_df['Profit_Loss'].sum()
+    avg_profit = trades_df['Profit_Loss'].mean()
+    winning_df = trades_df[trades_df['Profit_Loss'] > 0]
+    losing_df = trades_df[trades_df['Profit_Loss'] < 0]
+    avg_win = winning_df['Profit_Loss'].mean() if len(winning_df) > 0 else 0
+    avg_loss = losing_df['Profit_Loss'].mean() if len(losing_df) > 0 else 0
+    
+    total_wins = winning_df['Profit_Loss'].sum() if len(winning_df) > 0 else 0
+    total_losses = abs(losing_df['Profit_Loss'].sum()) if len(losing_df) > 0 else 1
+    profit_factor = total_wins / total_losses
+    
+    print(f"\n💰 PROFIT ANALYSIS:")
+    print(f"  • Total P&L: ${total_profit:,.2f}")
+    print(f"  • Average Trade: ${avg_profit:.2f}")
+    print(f"  • Average Win: ${avg_win:.2f}")
+    print(f"  • Average Loss: ${avg_loss:.2f}")
+    print(f"  • Profit Factor: {profit_factor:.2f}")
+    print(f"  • Win/Loss Ratio: {abs(avg_win/avg_loss):.2f}" if avg_loss != 0 else "  • Win/Loss Ratio: N/A")
+    
+    final_equity = initial_investment + total_profit
+    roi = (total_profit / initial_investment) * 100
+    days = (trades_df['Date'].max() - trades_df['Date'].min()).days
+    annualized_return = ((final_equity / initial_investment) ** (365 / days) - 1) * 100 if days > 0 else 0
+    
+    print(f"\n📈 RETURN METRICS:")
+    print(f"  • Initial Capital: ${initial_investment:,.2f}")
+    print(f"  • Final Capital: ${final_equity:,.2f}")
+    print(f"  • Total Return: {roi:.2f}%")
+    print(f"  • Annualized Return: {annualized_return:.2f}%")
+    
+    returns = trades_df['Profit_Percent']
+    sharpe_ratio = (returns.mean() / returns.std() * np.sqrt(252)) if returns.std() > 0 else 0
+    max_win = trades_df['Profit_Loss'].max()
+    max_loss = trades_df['Profit_Loss'].min()
+    
+    trades_df['Win'] = trades_df['Profit_Loss'] > 0
+    max_consec_wins = trades_df['Win'].groupby((~trades_df['Win']).cumsum()).cumsum().max()
+    max_consec_losses = (~trades_df['Win']).groupby(trades_df['Win'].cumsum()).cumsum().max()
+    
+    print(f"\n⚠️ RISK METRICS:")
+    print(f"  • Largest Win: ${max_win:.2f}")
+    print(f"  • Largest Loss: ${max_loss:.2f}")
+    print(f"  • Sharpe Ratio: {sharpe_ratio:.2f}")
+    print(f"  • Max Consecutive Wins: {max_consec_wins}")
+    print(f"  • Max Consecutive Losses: {max_consec_losses}")
+    
+    gaps_closed = trades_df['Gap_Closed'].sum()
+    gap_closure_rate = (gaps_closed / total_trades) * 100
+    avg_gap = trades_df['Gap'].abs().mean()
+    avg_gap_pct = trades_df['Gap_Percent'].abs().mean()
+    
+    gaps_closed_wins = len(trades_df[trades_df['Gap_Closed'] & (trades_df['Profit_Loss'] > 0)])
+    gaps_not_closed_wins = len(trades_df[~trades_df['Gap_Closed'] & (trades_df['Profit_Loss'] > 0)])
+    win_rate_closed = (gaps_closed_wins / gaps_closed * 100) if gaps_closed > 0 else 0
+    win_rate_not_closed = (gaps_not_closed_wins / (total_trades - gaps_closed) * 100) if (total_trades - gaps_closed) > 0 else 0
+    
+    print(f"\n🎯 GAP ANALYSIS:")
+    print(f"  • Gaps Closed: {gaps_closed}/{total_trades} ({gap_closure_rate:.1f}%)")
+    print(f"  • Average Gap: ${avg_gap:.2f} ({avg_gap_pct:.2f}%)")
+    print(f"  • Win Rate (Gap Closed): {win_rate_closed:.1f}%")
+    print(f"  • Win Rate (Gap Not Closed): {win_rate_not_closed:.1f}%")
+    
+    print(f"\n📅 DAY OF WEEK ANALYSIS:")
+    print(f"{'Day':<12} {'Trades':<8} {'Total P&L':<12} {'Avg P&L':<12} {'Win Rate':<10}")
+    print("-" * 60)
+    
+    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+    for day in day_order:
+        day_trades = trades_df[trades_df['Day_of_Week'] == day]
+        if len(day_trades) > 0:
+            day_total = day_trades['Profit_Loss'].sum()
+            day_avg = day_trades['Profit_Loss'].mean()
+            day_wins = len(day_trades[day_trades['Profit_Loss'] > 0])
+            day_win_rate = (day_wins / len(day_trades) * 100)
+            print(f"{day:<12} {len(day_trades):<8} ${day_total:>10.2f} ${day_avg:>10.2f} {day_win_rate:>8.1f}%")
+    
+    print(f"\n📊 MONTHLY PERFORMANCE:")
+    trades_df['Month'] = trades_df['Date'].dt.to_period('M')
+    print(f"{'Month':<10} {'Trades':<8} {'P&L':<12} {'Avg Trade':<12} {'Win Rate':<10} {'Cum P&L':<12}")
+    print("-" * 75)
+    
+    cum_pl = 0
+    for month in trades_df['Month'].unique():
+        month_trades = trades_df[trades_df['Month'] == month]
+        month_pl = month_trades['Profit_Loss'].sum()
+        month_avg = month_trades['Profit_Loss'].mean()
+        month_wins = len(month_trades[month_trades['Profit_Loss'] > 0])
+        month_win_rate = (month_wins / len(month_trades) * 100)
+        cum_pl += month_pl
+        print(f"{str(month):<10} {len(month_trades):<8} ${month_pl:>10.2f} ${month_avg:>10.2f} {month_win_rate:>8.1f}% ${cum_pl:>10.2f}")
+    
+    print(f"\n📈 YEARLY PERFORMANCE:")
+    trades_df['Year'] = trades_df['Date'].dt.year
+    yearly_summary = trades_df.groupby('Year').agg({
+        'Profit_Loss': ['count', 'sum', 'mean'],
+        'Gap_Closed': lambda x: (x == True).sum()
+    }).round(2)
+    yearly_summary.columns = ['Trades', 'Total P&L', 'Avg P&L', 'Gaps Closed']
+    print(yearly_summary.to_string())
+    
+    print(f"\n🏆 TOP 10 BEST TRADES:")
+    best_trades = trades_df.nlargest(10, 'Profit_Loss')[['Date', 'Gap', 'Entry_Price', 'Exit_Price', 'Gap_Closed', 'Profit_Loss']]
+    print(best_trades.to_string(index=False))
+    
+    print(f"\n💥 TOP 10 WORST TRADES:")
+    worst_trades = trades_df.nsmallest(10, 'Profit_Loss')[['Date', 'Gap', 'Entry_Price', 'Exit_Price', 'Gap_Closed', 'Profit_Loss']]
+    print(worst_trades.to_string(index=False))
+
+def save_results(trades_df, equity_df, initial_investment):
+    """Save results to files"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    trades_file = f"ma_510_simple_trades_{timestamp}.csv"
+    trades_df.to_csv(trades_file, index=False)
+    
+    equity_file = f"ma_510_simple_equity_{timestamp}.csv"
+    equity_df.to_csv(equity_file, index=False)
+    
+    print(f"\n📁 FILES SAVED:")
+    print(f"✓ Trades saved to: {trades_file}")
+    print(f"✓ Equity curve saved to: {equity_file}")
+
+if __name__ == "__main__":
+    initial_investment = 16000  # $16,000 initial investment
+    main_file = '7J0OK1VR.csv'  # Your data file
+    
+    try:
+        print("\nMA 5/10 CROSS STRATEGY - SIMPLE VERSION")
+        print("=" * 50)
+        
+        df = load_data(main_file)
+        print(f"Data loaded: {len(df)} trading days")
+        print(f"Date range: {df['Date'].min().date()} to {df['Date'].max().date()}")
+        
+        trades_df, equity_df = run_ma510_strategy(df, initial_investment)
+        
+        print_comprehensive_summary(trades_df, equity_df, initial_investment)
+        
+        save_results(trades_df, equity_df, initial_investment)
+        
+        print("\n✅ BACKTEST COMPLETED!")
+        print("=" * 50)
+        
+    except FileNotFoundError:
+        print(f"Error: Data file '{main_file}' not found.")
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()

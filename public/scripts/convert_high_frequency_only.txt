@@ -1,0 +1,68 @@
+"""
+Convert only the high frequency strategies with proper naming
+"""
+
+from pathlib import Path
+import os
+import sys
+
+sys.path.append(str(Path(__file__).parent))
+from batch_convert_all_remaining import StrategyConverter
+
+def main():
+    """Convert only high frequency strategies"""
+    source_base = "/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024"
+    target_base = "/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/clean_strategies"
+    
+    converter = StrategyConverter(source_base, target_base)
+    
+    original_convert = converter.convert_file
+    
+    def fixed_convert_file(source_path, target_folder):
+        """Fixed version that properly handles HF strategy naming"""
+        try:
+            if source_path.name.startswith('hf_'):
+                strategy_info = converter.parse_high_frequency_strategy(source_path)
+                target_subfolder = 'high_frequency'
+                
+                target_dir = converter.target_base / target_folder / target_subfolder
+                target_dir.mkdir(parents=True, exist_ok=True)
+                
+                clean_filename = f"{strategy_info['class_name'].lower()}.py"
+                target_path = target_dir / clean_filename
+                
+                content = converter.create_strategy_template(strategy_info)
+                
+                with open(target_path, 'w') as f:
+                    f.write(content)
+                
+                converter.converted_count += 1
+                print(f"✓ Fixed: {source_path.name} -> {target_subfolder}/{clean_filename}")
+                return True
+            else:
+                return original_convert(source_path, target_folder)
+                
+        except Exception as e:
+            error_msg = f"Error converting {source_path.name}: {str(e)}"
+            converter.errors.append(error_msg)
+            print(f"✗ {error_msg}")
+            return False
+    
+    converter.convert_file = fixed_convert_file
+    
+    print("Converting High Frequency strategies with proper naming...")
+    print("="*60)
+    
+    source_dir = Path(source_base) / 'GAP_CLOSE_OPTIMIZATIONS' / 'HIGH_FREQUENCY_TWO_INDICATORS'
+    
+    if source_dir.exists():
+        files = list(source_dir.glob('hf_*.py'))
+        print(f"Found {len(files)} high frequency strategy files")
+        
+        for file_path in sorted(files):
+            converter.convert_file(file_path, 'strategies')
+    
+    print(f"\n✅ Fixed {converter.converted_count} high frequency strategies")
+
+if __name__ == "__main__":
+    main()

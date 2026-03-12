@@ -1,0 +1,262 @@
+
+> 策略名称
+
+TradingView信号-带止盈
+
+> 策略作者
+
+JKMCHEN
+
+> 策略描述
+
+相关文章：https:
+
+上面文章来自小小梦，讲的是原理。
+我是以他的脚本为参考，用gpt-4修改出来的。添加了止盈，根据保证金控制开单数量。
+
+
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|TakeProfitPercentage|0.3|止盈百分比|
+|Leverage|5|杠杆（5-10）|
+
+
+> 源码 (javascript)
+
+``` javascript
+
+
+
+var takeProfitOrderId;
+
+
+
+var position;
+var baseMargin;
+var assetPrecision;
+var pricePrecision; 
+var DEFAULT_ASSET_PRECISION = 2;
+var DEFAULT_PRICE_PRECISION = 2; 
+
+
+
+function fixPricePrecision(price, precision) {
+    return parseFloat(price.toFixed(precision));
+}
+
+function getPricePrecision() {
+    return DEFAULT_PRICE_PRECISION;
+}
+
+function fixAmountPrecision(amount, precision) {
+    return parseFloat(amount.toFixed(precision));
+}
+
+function getAssetPrecision() {
+    return DEFAULT_ASSET_PRECISION;
+}
+
+
+
+
+function getMargin() {
+    var account = exchange.GetAccount();
+    return account.Balance + account.FrozenBalance;
+}
+
+function updatePosition() {
+    position = exchange.GetPosition();
+}
+
+function updateMargin() {
+    baseMargin = getMargin();
+}
+
+
+function checkTakeProfitOrder() {
+    var order = exchange.GetOrder(takeProfitOrderId);
+    if (order.Status === ORDER_STATE_CLOSED || order.Status === ORDER_STATE_CANCELED) {
+        Log("止盈单已成交或取消");
+        takeProfitOrderId = null;
+    }
+}
+
+
+function openLong() {
+    try {
+        var account = exchange.GetAccount();
+        var ticker = exchange.GetTicker();
+        var amount = (account.Balance * Leverage) / ticker.Buy;
+        amount = fixAmountPrecision(amount, assetPrecision); 
+
+        exchange.SetDirection("buy"); 
+        exchange.Buy(-1, amount);
+        Log("开多量：", amount, "，开多价格：", ticker.Buy);
+
+        var takeProfitPrice = ticker.Buy * (1 + TakeProfitPercentage/100);
+        takeProfitPrice = fixPricePrecision(takeProfitPrice, pricePrecision); 
+        var takeProfitAmount = fixAmountPrecision(amount / 2, assetPrecision); 
+        exchange.SetDirection("closebuy"); 
+        takeProfitOrderId = exchange.Sell(takeProfitPrice, takeProfitAmount);
+        Log("挂止盈单，价格：", takeProfitPrice, "，数量：", takeProfitAmount);
+    } catch (error) {
+        Log("开多单失败：", error);
+    }
+}
+
+
+function closeLong() {
+    if (position.length === 0) return;
+
+    
+    if (takeProfitOrderId) {
+        exchange.CancelOrder(takeProfitOrderId);
+        Log("取消止盈单");
+        takeProfitOrderId = null;
+        Sleep(1000);
+    }
+
+    var ticker = exchange.GetTicker();
+    exchange.SetDirection("closebuy"); 
+    exchange.Sell(-1, position[0].Amount);
+    Log("平多量：", position[0].Amount, "，平多价格：", ticker.Sell);
+}
+
+function openShort() {
+    try {
+        var account = exchange.GetAccount();
+        var ticker = exchange.GetTicker();
+        var amount = (account.Balance * Leverage) / ticker.Sell;
+        amount = fixAmountPrecision(amount, assetPrecision); 
+
+        exchange.SetDirection("sell"); 
+        exchange.Sell(-1, amount);
+        Log("开空量：", amount, "，开空价格：", ticker.Sell);
+
+        var takeProfitPrice = ticker.Sell * (1 - TakeProfitPercentage/100);
+        takeProfitPrice = fixPricePrecision(takeProfitPrice, pricePrecision); 
+        var takeProfitAmount = fixAmountPrecision(amount / 2, assetPrecision); 
+        exchange.SetDirection("closesell"); 
+        takeProfitOrderId = exchange.Buy(takeProfitPrice, takeProfitAmount);
+        Log("挂止盈单，价格：", takeProfitPrice, "，数量：", takeProfitAmount);
+    } catch (error) {
+        Log("开空单失败：", error);
+    }
+}
+
+
+
+
+function closeShort() {
+    if (position.length === 0) return;
+
+    
+    if (takeProfitOrderId) {
+        exchange.CancelOrder(takeProfitOrderId);
+        Log("取消止盈单");
+        takeProfitOrderId = null;
+        Sleep(1000);
+    }
+
+    var ticker = exchange.GetTicker();
+    exchange.SetDirection("closesell"); 
+    exchange.Buy(-1, position[0].Amount);
+    Log("平空量：", position[0].Amount, "，平空价格：", ticker.Buy);
+}
+
+function tryCloseShort() {
+    if (position.length > 0) {
+        for (var i = 0; i < position.length; i++) {
+            if (position[i].Type === PD_SHORT) {
+                closeShort();
+            }
+        }
+    }
+}
+
+function tryCloseLong() {
+    if (position.length > 0) {
+        for (var i = 0; i < position.length; i++) {
+            if (position[i].Type === PD_LONG) {
+                closeLong();
+            }
+        }
+    }
+}
+
+
+
+
+
+
+
+function handleMessage(msg) {
+    
+    var commands = msg.split(',');
+    for (var i = 0; i < commands.length; i++) {
+        switch (commands[i]) {
+            case "long":
+                Log("收到消息：", msg); 
+                tryCloseShort();
+                Sleep(1000);
+                openLong();
+                break;
+            case "short":
+                Log("收到消息：", msg); 
+                tryCloseLong();
+                Sleep(1000);
+                openShort();
+                break;
+            case "closelong":
+                Log("收到消息：", msg); 
+                tryCloseLong();
+                break;
+            case "closeshort":
+                Log("收到消息：", msg); 
+                tryCloseShort();
+                break;
+        }
+        Sleep(1000); 
+    }
+}
+
+
+
+function main() {
+    exchange.SetContractType("swap");
+    assetPrecision = getAssetPrecision(); 
+    pricePrecision = getPricePrecision(); 
+    
+    
+    updateMargin();
+    Log("初始保证金：", baseMargin);
+    
+    while (true) {
+        updatePosition();
+        
+        if (takeProfitOrderId) {
+            checkTakeProfitOrder();
+        }
+        
+        var command = GetCommand();
+        if (command) {
+            handleMessage(command);
+        }
+        
+        Sleep(1000);
+    }
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2023-04-18 15:26:23

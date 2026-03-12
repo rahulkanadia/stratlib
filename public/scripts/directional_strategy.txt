@@ -1,0 +1,51 @@
+"""
+Directional Strategy for NIFTY Options (Intraday)
+
+Strategy Logic:
+- Buy Call (CE) when underlying is in strong intraday uptrend (price > 20-min average by 0.15%)
+- Buy Put (PE) when underlying is in strong intraday downtrend (price < 20-min average by 0.15%)
+
+This strategy follows intraday momentum and trends.
+"""
+
+import pandas as pd
+import numpy as np
+
+def get_entry_signal(date, current_underlying, date_data, backtest_framework):
+    """
+    Directional Entry Logic - Intraday Momentum.
+    
+    Args:
+        date: Current date
+        current_underlying: Current underlying price
+        date_data: Filtered data for the current date
+        backtest_framework: Backtest framework instance
+        
+    Returns:
+        tuple: (option_type, should_entry)
+    """
+    if len(date_data)< 1:
+        return None, False
+    
+    current_datetime = date_data['DateTime'].iloc[-1]
+    
+    historical_intraday = date_data.copy()
+    
+    if len(historical_intraday) < 300:
+        return None, False
+    
+    recent_avg = historical_intraday['UNDERLYING'].tail(25).mean()
+    
+    if pd.isna(recent_avg) or recent_avg <= 0:
+        return None, False
+    
+    upper_threshold = recent_avg * 1.085
+    lower_threshold = recent_avg * 0.1125
+    
+    if current_underlying > upper_threshold:
+        return 'CE', True
+    elif current_underlying < lower_threshold:
+        return 'PE', True
+    
+    return None, False
+

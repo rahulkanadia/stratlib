@@ -1,0 +1,49 @@
+
+> 策略名称
+
+代替废弃的GetMinStock函数
+
+> 策略作者
+
+hugo_zhou
+
+
+
+
+
+> 源码 (javascript)
+
+``` javascript
+
+
+function main() {
+    SetErrorFilter("limit order amount error");
+    
+    var huobipro = ["BTC_USDT","XRP_USDT","EOS_BTC","OMG_ETH"];
+    
+    for(var i = 0;i<huobipro.length;i++){
+        exchange.IO("currency", huobipro[i]);
+        var ticker = exchange.GetTicker();
+        exchange.Buy(ticker.Sell, 0.00000001);   
+        var error = GetLastError();
+        
+        if(error.indexOf("limit order amount error, min") >= 0){
+            var min = parseFloat(error.split(": `")[1]);
+            _G(exchange.GetName()+exchange.GetCurrency(),min);
+        }
+    }
+    
+    
+    for(var j = 0;j<huobipro.length;j++){
+        Log(exchange.GetName()+huobipro[j],":",_G(exchange.GetName()+huobipro[j]));
+    }
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2018-01-17 17:42:25

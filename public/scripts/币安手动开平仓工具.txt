@@ -1,0 +1,125 @@
+
+> 策略名称
+
+币安手动开平仓工具
+
+> 策略作者
+
+高频量化
+
+
+
+> 策略参数
+
+
+
+
+
+|按钮|默认值|描述|
+|----|----|----|
+|Symbols|ETC_USDT|产品|
+|CloseAll|__button__|全部平仓按钮|
+|CloseBuy|true|多单平仓N个数币|
+|CloseSell|true|空单平仓N个数币|
+|OpenBuy|true|多单开仓(N个数币)|
+|OpenSell|true|空单开仓(N个数币)|
+
+
+> 源码 (javascript)
+
+``` javascript
+var Symbols;
+
+
+function ButtonFun() {
+    
+    var cmd = GetCommand() 
+    if (cmd) {
+        
+        var arr = cmd.split(":")
+       
+       
+        if(arr[0] == "Symbols"){
+        exchange.SetCurrency(arr[1]) 
+        Symbols=arr[1]
+        Log("交易产品已经切换为：",arr[1])
+        }
+        if (arr[0] == "CloseAll") { 
+            let position = exchange.GetPosition() 
+            if (position.length > 0) {
+                if (position[0].Type == 0) { 
+                    exchange.SetDirection("closebuy")
+                    ticker = exchange.GetTicker() 
+                    let depth = exchange.GetDepth() 
+                    exchange.Sell(depth.Bids[20].Price, position[0].Amount)
+                    Log(Symbols + "多单手动全部平单" + position[0].Amount )
+                } else { 
+                    exchange.SetDirection("closesell")
+                    ticker = exchange.GetTicker() 
+                    let depth = exchange.GetDepth() 
+                    exchange.Buy(depth.Asks[20].Price, position[0].Amount)
+                    Log(Symbols + "空单手动全部平单" + position[0].Amount )
+                }
+            }
+        }
+
+        if (arr[0] == "CloseBuy") { 
+            
+            exchange.SetDirection("closebuy")
+            ticker = exchange.GetTicker() 
+            let depth = exchange.GetDepth() 
+            exchange.Sell(depth.Bids[20].Price, Number(arr[1]))
+            Log(Symbols, "多单手动部分平单" + arr[1])
+        }
+        if (arr[0] == "OpenBuy") { 
+            
+            exchange.SetDirection("buy")
+            ticker = exchange.GetTicker() 
+            let depth = exchange.GetDepth() 
+            exchange.Buy(depth.Asks[20].Price, Number(arr[1]))
+            Log(Symbols + "多单手动开单" + arr[1])
+        }
+
+        if (arr[0] == "CloseSell") { 
+            exchange.SetDirection("closesell")
+            ticker = exchange.GetTicker() 
+            let depth = exchange.GetDepth() 
+            exchange.Buy(depth.Asks[20].Price, Number(arr[1]))
+            Log(Symbols + "空单手动部分平单" + arr[1])
+        }
+        if (arr[0] == "OpenSell") { 
+            exchange.SetDirection("sell")
+            ticker = exchange.GetTicker() 
+            let depth = exchange.GetDepth() 
+            exchange.Sell(depth.Bids[20].Price, Number(arr[1]))
+            Log(Symbols + "空单手动开单" + arr[1])
+        }
+    }
+}
+
+
+
+
+function main() {
+    exchange.SetContractType("swap") 
+    
+    while (true) {
+        ButtonFun() 
+        let position = exchange.GetPosition() 
+        if (position.length > 0) {
+            LogStatus(_D(), "当前产品方向：", position[0].Type==0?"BUY":"SELL", "持有量：", position[0].Amount, "未平仓盈利：", position[0].Profit)
+        } else {
+            LogStatus(_D(), "当前产品持有量：", 0, "未平仓盈利：", 0)
+        }
+        Sleep(1000 *1); 
+    }
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2021-12-17 22:38:47

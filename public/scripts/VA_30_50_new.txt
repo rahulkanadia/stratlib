@@ -1,0 +1,341 @@
+import pandas as pd
+import numpy as np
+import os
+
+def load_daily_data(file_name):
+    """Load daily data with columns: Date, Open, High, Low, Close, etc."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    vix_df = pd.read_csv(vix_file)
+    vix_df.rename(columns={'DATE': 'Date', 'OPEN': 'VIX_Open'}, inplace=True)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'])  # parse dates
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+
+def calculate_gap(prev_close, curr_open):
+    """Gap = curr_open - prev_close."""
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range, gap_min=0.20, gap_min_ratio=0.15, gap_max_ratio=0.85):
+    """
+    Checks if the gap meets conditions:
+      - absolute gap >= gap_min
+      - gap is between gap_min_ratio and gap_max_ratio of prev_day's range
+    """
+    gap_abs = abs(gap)
+    if gap_abs < gap_min or prev_range == 0:
+        return False
+    gap_ratio = gap_abs / prev_range
+    return gap_min_ratio <= gap_ratio <= gap_max_ratio
+
+def determine_trade_direction(gap):
+    """If gap > 0, we consider a Short. If gap < 0, we consider a Long."""
+    return 'Short' if gap > 0 else 'Long'
+
+def calculate_day_range(day):
+    return day['High'] - day['Low']
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    position_size = nominal capital (e.g., $16,000).
+    """
+    shares = position_size / entry_price
+    if trade_direction == 'Long':
+        return shares * (exit_price - entry_price)
+    else:  # Short
+        return shares * (entry_price - exit_price)
+
+def compute_atr(daily_df, window=14):
+    """
+    Compute ATR using a common approach:
+      TR = max( High-Low, abs(High - PrevClose), abs(Low - PrevClose) )
+      ATR = SMA of TR over `window` days.
+    """
+    df = daily_df.copy()
+    df['PrevClose'] = df['Close'].shift(1)
+
+    df['TR'] = df.apply(
+        lambda row: max(
+            row['High'] - row['Low'],
+            abs(row['High'] - row['PrevClose']),
+            abs(row['Low'] - row['PrevClose'])
+        ), axis=1
+    )
+
+    df['ATR'] = df['TR'].rolling(window=window).mean()
+
+    df.drop(columns=['PrevClose','TR'], inplace=True)
+    return df
+
+def precompute_trades(daily_df, vix_df, initial_investment):
+    """
+    1. Merge daily data with VIX on Date so we have 'VIX_Open' (or whichever column).
+    2. For each day, check if there's a valid gap. If valid, store a potential trade.
+    3. We'll compute each trade's Profit/Loss (assuming hold to close).
+       - For demonstration, we assume entry at day's Open, exit at day's Close
+         (but adapt if your logic is different).
+    """
+    merged = pd.merge(
+        daily_df, vix_df[['Date','VIX_Open']], on='Date', how='left'
+    )
+    
+    potential_trades = []
+    for i in range(1, len(merged)):
+        prev_day = merged.iloc[i-1]
+        curr_day = merged.iloc[i]
+
+        prev_range = calculate_day_range(prev_day)
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+
+        entry_price = curr_day['Open']
+        exit_price = curr_day['Close']
+        profit_loss = calculate_profit_loss(
+            trade_direction, entry_price, exit_price, initial_investment
+        )
+
+        potential_trades.append({
+            'Date'           : curr_day['Date'],
+            'Trade Direction': trade_direction,
+            'Entry Price'    : entry_price,
+            'Exit Price'     : exit_price,
+            'VIX_Open'       : curr_day['VIX_Open'],
+            'ATR'            : np.nan,  # We'll fill this in after computing ATR
+            'Profit/Loss'    : profit_loss
+        })
+
+    return pd.DataFrame(potential_trades)
+
+def optimize_by_vix(trades_df, min_occurrence_count=30,
+                    i_min=10.0, i_max=30.0, j_min=10.0, j_max=30.0, step=0.1):
+    """
+    Find best i, j such that i < vix_open < j leads to highest success rate
+    (with minimum trades = min_occurrence_count).
+    """
+    i_values = np.round(np.arange(i_min, i_max+step, step),1)
+    j_values = np.round(np.arange(j_min, j_max+step, step),1)
+
+    pairs = [(iv, jv) for iv in i_values for jv in j_values if iv < jv]
+
+    best_i, best_j = None, None
+    best_success_rate = 0.0
+    best_total_profit = 0.0
+    best_occurrences = 0
+    best_successes = 0
+
+    results = []
+
+    profit_array = trades_df['Profit/Loss'].values
+    vix_array = trades_df['VIX_Open'].values
+
+    for (iv, jv) in pairs:
+        cond = (vix_array > iv) & (vix_array < jv)
+        subset = profit_array[cond]
+        occurrence_count = len(subset)
+        if occurrence_count >= min_occurrence_count and occurrence_count > 0:
+            success_count = (subset > 0).sum()
+            total_profit = subset.sum()
+            success_rate = success_count / occurrence_count
+            results.append((iv, jv, occurrence_count, success_count, success_rate, total_profit))
+
+            if success_rate > best_success_rate:
+                best_i, best_j = iv, jv
+                best_occurrences = occurrence_count
+                best_successes = success_count
+                best_success_rate = success_rate
+                best_total_profit = total_profit
+            elif abs(success_rate - best_success_rate) < 1e-9:
+                if occurrence_count > best_occurrences:
+                    best_i, best_j = iv, jv
+                    best_occurrences = occurrence_count
+                    best_successes = success_count
+                    best_success_rate = success_rate
+                    best_total_profit = total_profit
+                elif occurrence_count == best_occurrences and total_profit > best_total_profit:
+                    best_i, best_j = iv, jv
+                    best_occurrences = occurrence_count
+                    best_successes = success_count
+                    best_success_rate = success_rate
+                    best_total_profit = total_profit
+
+    results_df = pd.DataFrame(
+        results,
+        columns=['i','j','OccurrenceCount','SuccessCount','SuccessRate','TotalProfit']
+    )
+    results_df.sort_values(by=['SuccessRate','OccurrenceCount','TotalProfit'], 
+                           ascending=[False,False,False], 
+                           inplace=True)
+    results_df.reset_index(drop=True, inplace=True)
+
+    return best_i, best_j, best_occurrences, best_successes, best_success_rate, best_total_profit, results_df
+
+def compute_atr_for_trades(trades_df, daily_df, n):
+    """
+    1. Compute ATR on daily_df for a rolling window of n.
+    2. Merge ATR back to trades_df on 'Date'.
+    """
+    df_with_atr = compute_atr(daily_df, window=n)[['Date','ATR']]
+    merged = pd.merge(trades_df, df_with_atr, on='Date', how='left', suffixes=('','_daily'))
+    merged['ATR'] = merged['ATR_daily']
+    merged.drop(columns=['ATR_daily'], inplace=True)
+    return merged
+
+def optimize_by_atr(trades_df, daily_df, n_values, T_values):
+    """
+    For each n in n_values:
+      - recompute ATR for trades
+      - for each T in T_values, filter trades with ATR <= T
+      - compute total profit, success rate, etc.
+    Returns a DataFrame of results plus the best combination.
+    """
+    results = []
+    best_n, best_T = None, None
+    best_profit = -1e12
+    best_occurrences = 0
+    best_successes = 0
+    best_success_rate = 0.0
+
+    for n in n_values:
+        trades_with_atr = compute_atr_for_trades(trades_df, daily_df, n)
+        for T in T_values:
+            subset = trades_with_atr[trades_with_atr['ATR'] <= T]
+            if subset.empty:
+                continue
+            
+            occurrence_count = len(subset)
+            total_profit = subset['Profit/Loss'].sum()
+            success_count = (subset['Profit/Loss'] > 0).sum()
+            success_rate = success_count / occurrence_count
+
+            results.append((n, T, occurrence_count, success_count, success_rate, total_profit))
+
+            if total_profit > best_profit:
+                best_n, best_T = n, T
+                best_profit = total_profit
+                best_occurrences = occurrence_count
+                best_successes = success_count
+                best_success_rate = success_rate
+            elif abs(total_profit - best_profit) < 1e-9:
+                if success_rate > best_success_rate:
+                    best_n, best_T = n, T
+                    best_profit = total_profit
+                    best_occurrences = occurrence_count
+                    best_successes = success_count
+                    best_success_rate = success_rate
+
+    results_df = pd.DataFrame(
+        results,
+        columns=['n','T','OccurrenceCount','SuccessCount','SuccessRate','TotalProfit']
+    )
+    results_df.sort_values(by=['TotalProfit','SuccessRate','OccurrenceCount'], 
+                           ascending=[False,False,False], 
+                           inplace=True)
+    results_df.reset_index(drop=True, inplace=True)
+
+    return best_n, best_T, best_occurrences, best_successes, best_success_rate, best_profit, results_df
+
+def main():
+    main_file = 'D6CK32X6.csv'     # daily data with columns Date, Open, High, Low, Close, etc.
+    vix_file  = 'VIX_History.csv'   # daily VIX data with columns Date, VIX_Open, ...
+    initial_investment = 16000
+
+    if not os.path.exists(main_file):
+        print(f"Error: '{main_file}' not found.")
+        return
+    if not os.path.exists(vix_file):
+        print(f"Error: '{vix_file}' not found.")
+        return
+
+    print("Loading stock data...")
+    daily_df = load_daily_data(main_file)
+
+    print("Loading VIX data...")
+    vix_df = load_vix_data(vix_file)
+
+    print("\n--- Running Optimization with min_occurrence_count=30 ---")
+    trades_df = precompute_trades(daily_df, vix_df, initial_investment)
+    print(f"\nTotal Valid Trades: {len(trades_df)}")
+
+    best_i, best_j, best_occurrences, best_successes, best_success_rate, best_profit, vix_results_df = optimize_by_vix(
+        trades_df, min_occurrence_count=30
+    )
+
+    print(f"\n=== VIX Optimization Complete (Success-Based) with min_occurrence_count=30 ===")
+    if best_i is not None and best_j is not None:
+        print(f"Best VIX Conditions: i={best_i}, j={best_j}")
+        print(f"Occurrences: {best_occurrences}, Successes: {best_successes}, "
+              f"Success Rate: {best_success_rate:.2f}, Total Profit: ${best_profit:,.2f}")
+
+        print("\nTop 10 VIX Conditions (by SuccessRate, then OccurrenceCount):")
+        print(vix_results_df.head(10).to_string(index=False))
+    else:
+        print("No suitable VIX conditions found.")
+        return
+
+    trades_vix_filtered = trades_df[
+        (trades_df['VIX_Open'] > best_i) & (trades_df['VIX_Open'] < best_j)
+    ].copy()
+
+    n_values = [2, 3, 6, 8, 10, 14]
+    T_values = np.linspace(10, 30, 21)  # e.g. 10.0, 10.5, 11.0, ... up to 30.0
+
+    print("\n=== ATR Optimization Complete (Profit-Based) ===")
+    best_n, best_T, occ_count, succ_count, succ_rate, total_profit, atr_results_df = optimize_by_atr(
+        trades_vix_filtered, daily_df, n_values, T_values
+    )
+
+    if best_n is not None and best_T is not None:
+        print(f"Best ATR Parameters: n={best_n}, T={best_T}")
+        print(f"Occurrences: {occ_count}, Successes: {succ_count}, Success Rate: {succ_rate:.2f}, "
+              f"Total Profit: ${total_profit:,.2f}")
+        
+        print("\nTop 100 ATR Parameter Combinations (by TotalProfit):")
+        print(atr_results_df.head(100).to_string(index=False))
+    else:
+        print("No suitable ATR conditions found.")
+        return
+
+    trades_with_atr = compute_atr_for_trades(trades_vix_filtered, daily_df, best_n)
+    final_trades = trades_with_atr[trades_with_atr['ATR'] <= best_T].copy()
+
+    final_occurrences = len(final_trades)
+    final_profit = final_trades['Profit/Loss'].sum()
+    final_success_count = (final_trades['Profit/Loss'] > 0).sum()
+    final_success_rate = final_success_count / final_occurrences if final_occurrences > 0 else 0.0
+
+    print(f"\nAnalyzing trades with best VIX (i={best_i}, j={best_j}) and "
+          f"ATR (n={best_n}, T={best_T}) parameters")
+
+    print(f"\nFinal Results with min_occurrence_count=30:")
+    print(f"Occurrences: {final_occurrences}, Successes: {final_success_count}, "
+          f"Success Rate: {final_success_rate:.2f}, Total Profit: ${final_profit:,.2f}")
+
+    print(f"\nNumber of Winning Trades: {final_success_count}")
+    print(f"Number of Losing Trades: {final_occurrences - final_success_count}")
+
+    print("\nTrade Details:")
+    if not final_trades.empty:
+        print(final_trades.to_string(index=False))
+    else:
+        print("No final trades to display.")
+
+    print("\n=== Combined Optimization Summary ===")
+    print(f"Optimal VIX Conditions (Success-Based): i={best_i}, j={best_j}")
+    print(f"Optimal ATR Parameters (Profit-Based): n={best_n}, T={best_T}")
+    print(f"Occurrences: {final_occurrences}, Successes: {final_success_count}, "
+          f"Success Rate: {final_success_rate:.2f}, Total Profit: ${final_profit:,.2f}")
+
+
+
+if __name__ == "__main__":
+    main()

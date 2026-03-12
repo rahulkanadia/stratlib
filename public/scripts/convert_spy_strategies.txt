@@ -1,0 +1,631 @@
+"""
+Conversion script for SPY strategies to clean, standalone format
+"""
+
+import os
+import shutil
+from pathlib import Path
+
+import sys
+sys.path.append(str(Path(__file__).parent))
+from utils.base_strategy import BaseStrategy
+import utils.trading_utils as trading_utils
+
+def create_spy_gap_fade_strategy():
+    """Create clean SPY Gap Fade strategy"""
+    content = '''"""
+SPY Gap Fade Strategy
+
+This strategy trades against (fades) morning gaps in SPY:
+- When SPY gaps up: Takes SHORT position expecting price to fall back
+- When SPY gaps down: Takes LONG position expecting price to rise back
+
+Entry Rules:
+- Gap must be at least $0.20
+- Gap must be between 15-85% of previous day's range
+- Enter at market open
+
+Exit Rules:
+- Exit when gap closes (price returns to previous close)
+- If gap doesn't close, exit at market close
+
+Perfect for beginners to understand gap trading!
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from utils.base_strategy import BaseStrategy
+import utils.trading_utils as trading_utils
+
+class SPYGapFadeStrategy(BaseStrategy):
+    """
+    SPY Gap Fade Strategy - Trades against morning gaps
+    
+    What is a gap?
+    - A gap occurs when today's opening price is different from yesterday's closing price
+    - Gap Up: Today opens higher than yesterday's close
+    - Gap Down: Today opens lower than yesterday's close
+    """
+    
+    def __init__(self, data_path=None):
+        super().__init__(
+            name="SPY Gap Fade",
+            description="Fades morning gaps in SPY expecting reversion",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close']
+        )
+        
+        self.min_gap_size = 0.20  # Minimum gap in dollars
+        self.min_gap_percent = 0.15  # Gap must be at least 15% of previous day's range
+        self.max_gap_percent = 0.85  # Gap must be at most 85% of previous day's range
+        
+        if data_path:
+            self.load_data(data_path)
+    
+    def calculate_signals(self):
+        """Find valid gap fade opportunities"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.data.copy()
+        signals = []
+        
+        for i in range(1, len(df)):
+            prev_day = df.iloc[i-1]
+            curr_day = df.iloc[i]
+            
+            prev_range = prev_day['High'] - prev_day['Low']
+            if prev_range == 0:
+                continue
+            
+            gap = curr_day['Open'] - prev_day['Close']
+            gap_abs = abs(gap)
+            
+            if gap_abs < self.min_gap_size:
+                continue
+            
+            gap_percent = gap_abs / prev_range
+            if not (self.min_gap_percent <= gap_percent <= self.max_gap_percent):
+                continue
+            
+            if gap > 0:  # Gap up - go SHORT
+                direction = 'SHORT'
+                entry_price = curr_day['Open']
+                if curr_day['Low'] <= prev_day['Close']:
+                    exit_price = prev_day['Close']
+                    gap_closed = True
+                else:
+                    exit_price = curr_day['Close']
+                    gap_closed = False
+            else:  # Gap down - go LONG
+                direction = 'LONG'
+                entry_price = curr_day['Open']
+                if curr_day['High'] >= prev_day['Close']:
+                    exit_price = prev_day['Close']
+                    gap_closed = True
+                else:
+                    exit_price = curr_day['Close']
+                    gap_closed = False
+            
+            signal = {
+                'date': curr_day['Date'],
+                'direction': direction,
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'gap_size': gap,
+                'gap_percent': gap_percent * 100,
+                'gap_closed': gap_closed,
+                'prev_close': prev_day['Close'],
+                'signal_strength': 1.0
+            }
+            signals.append(signal)
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+    
+    def run_backtest(self, initial_capital=10000, position_size=1.0):
+        """Run backtest with clear trade tracking"""
+        return super().run_backtest(initial_capital, position_size)
+    
+    def get_summary_metrics(self):
+        """Get performance summary with gap-specific metrics"""
+        if self.performance_metrics is None:
+            return None
+        
+        metrics = self.performance_metrics.copy()
+        
+        if self.trades is not None and len(self.trades) > 0:
+            trades_df = pd.DataFrame(self.trades)
+            if 'gap_closed' in self.signals.columns:
+                gap_closed_trades = self.signals[self.signals['gap_closed'] == True]
+                metrics['gap_close_rate'] = len(gap_closed_trades) / len(self.signals) * 100 if len(self.signals) > 0 else 0
+        
+        return metrics
+
+def main():
+    """Example usage - simple and clear for beginners"""
+    print("=" * 60)
+    print("SPY GAP FADE STRATEGY")
+    print("=" * 60)
+    print("\\nThis strategy trades against morning gaps in SPY.")
+    print("When price gaps up, we SHORT. When price gaps down, we LONG.")
+    print("=" * 60)
+    
+    data_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    
+    strategy = SPYGapFadeStrategy(data_path)
+    
+    print("\\nSearching for gap fade opportunities...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} valid gap trades")
+    
+    print("\\nRunning backtest with $10,000 initial capital...")
+    strategy.run_backtest(initial_capital=10000, position_size=1.0)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\\n" + "=" * 60)
+    print("STRATEGY RESULTS")
+    print("=" * 60)
+    print(f"Total Trades: {metrics['total_trades']}")
+    print(f"Win Rate: {metrics['win_rate']:.1f}%")
+    print(f"Total Profit/Loss: ${metrics['total_profit']:.2f}")
+    
+    if 'sharpe_ratio' in metrics and metrics['sharpe_ratio'] is not None:
+        print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
+    
+    print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+    
+    if 'gap_close_rate' in metrics:
+        print(f"\\nGap Close Rate: {metrics['gap_close_rate']:.1f}%")
+    
+    if len(strategy.trades) > 0:
+        print("\\n" + "=" * 60)
+        print("EXAMPLE TRADES (First 5)")
+        print("=" * 60)
+        
+        for i, trade in enumerate(strategy.trades[:5]):
+            print(f"\\nTrade {i+1}:")
+            print(f"  Date: {trade['entry_date'].strftime('%Y-%m-%d')}")
+            print(f"  Direction: {trade['direction']}")
+            print(f"  Entry: ${trade['entry_price']:.2f}")
+            print(f"  Exit: ${trade['exit_price']:.2f}")
+            print(f"  Profit/Loss: ${trade['profit_loss']:.2f}")
+            print(f"  Gap Size: ${abs(signals.iloc[i]['gap_size']):.2f}")
+
+if __name__ == "__main__":
+    main()
+'''
+    
+    return content
+
+def create_spy_dip_buy_strategy():
+    """Create clean SPY Dip Buy strategy"""
+    content = '''"""
+SPY Dip Buy Strategy
+
+This strategy buys SPY when it dips based on average red day drops:
+- Calculates average drop size from recent red days (when Close < Open)
+- Enters LONG when price drops by this average amount from open
+- Exits at market close
+
+Perfect for beginners to understand mean reversion trading!
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from utils.base_strategy import BaseStrategy
+import utils.trading_utils as trading_utils
+
+class SPYDipBuyStrategy(BaseStrategy):
+    """
+    SPY Dip Buy Strategy - Buys dips based on historical patterns
+    
+    How it works:
+    1. Tracks average drop size on red days (Close < Open)
+    2. When price drops by this average amount, we buy
+    3. Hold until market close
+    """
+    
+    def __init__(self, data_path=None, lookback_days=21):
+        super().__init__(
+            name="SPY Dip Buy",
+            description="Buys SPY dips based on average red day drops",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close']
+        )
+        
+        self.lookback_days = lookback_days  # Days to calculate average drop
+        
+        if data_path:
+            self.load_data(data_path)
+    
+    def calculate_average_drops(self):
+        """Calculate rolling average of red day drops"""
+        df = self.data.copy()
+        
+        df['is_red_day'] = df['Close'] < df['Open']
+        
+        df['daily_drop'] = np.where(
+            df['is_red_day'], 
+            df['Open'] - df['Close'],  # Drop amount in dollars
+            0.0
+        )
+        
+        df['avg_drop'] = df['daily_drop'].rolling(
+            window=self.lookback_days
+        ).mean().shift(1)
+        
+        df['avg_drop'].fillna(0.0, inplace=True)
+        
+        return df
+    
+    def calculate_signals(self):
+        """Find dip buy opportunities"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.calculate_average_drops()
+        signals = []
+        
+        for i in range(self.lookback_days, len(df)):
+            curr_day = df.iloc[i]
+            
+            avg_drop = curr_day['avg_drop']
+            if avg_drop <= 0:
+                continue
+            
+            open_price = curr_day['Open']
+            target_entry = open_price - avg_drop
+            
+            if curr_day['Low'] <= target_entry:
+                entry_price = target_entry
+                exit_price = curr_day['Close']
+                
+                signal = {
+                    'date': curr_day['Date'],
+                    'direction': 'LONG',  # Always buying dips
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'open_price': open_price,
+                    'avg_drop': avg_drop,
+                    'actual_drop': open_price - curr_day['Low'],
+                    'signal_strength': 1.0
+                }
+                signals.append(signal)
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+    
+    def run_backtest(self, initial_capital=10000, position_size=1.0):
+        """Run backtest with clear trade tracking"""
+        return super().run_backtest(initial_capital, position_size)
+    
+    def get_summary_metrics(self):
+        """Get performance summary with dip-specific metrics"""
+        if self.performance_metrics is None:
+            return None
+        
+        metrics = self.performance_metrics.copy()
+        
+        if self.signals is not None and len(self.signals) > 0:
+            avg_drop_size = self.signals['avg_drop'].mean()
+            metrics['avg_drop_target'] = avg_drop_size
+            
+            perfect_entries = 0
+            for _, signal in self.signals.iterrows():
+                if abs(signal['entry_price'] - signal['actual_drop']) < 0.10:
+                    perfect_entries += 1
+            
+            metrics['perfect_entry_rate'] = (perfect_entries / len(self.signals) * 100) if len(self.signals) > 0 else 0
+        
+        return metrics
+
+def main():
+    """Example usage - simple and clear for beginners"""
+    print("=" * 60)
+    print("SPY DIP BUY STRATEGY")
+    print("=" * 60)
+    print("\\nThis strategy buys SPY when it dips by the average")
+    print("amount of recent red days, expecting a bounce.")
+    print("=" * 60)
+    
+    data_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    
+    strategy = SPYDipBuyStrategy(data_path, lookback_days=21)
+    
+    print("\\nAnalyzing price patterns and finding dip opportunities...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} dip buy opportunities")
+    
+    print("\\nRunning backtest with $10,000 initial capital...")
+    strategy.run_backtest(initial_capital=10000, position_size=1.0)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\\n" + "=" * 60)
+    print("STRATEGY RESULTS")
+    print("=" * 60)
+    print(f"Total Trades: {metrics['total_trades']}")
+    print(f"Win Rate: {metrics['win_rate']:.1f}%")
+    print(f"Total Profit/Loss: ${metrics['total_profit']:.2f}")
+    
+    if 'sharpe_ratio' in metrics and metrics['sharpe_ratio'] is not None:
+        print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
+    
+    print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+    
+    if 'avg_drop_target' in metrics:
+        print(f"\\nAverage Drop Target: ${metrics['avg_drop_target']:.2f}")
+    
+    if len(strategy.trades) > 0:
+        print("\\n" + "=" * 60)
+        print("EXAMPLE TRADES (First 5)")
+        print("=" * 60)
+        
+        for i, trade in enumerate(strategy.trades[:5]):
+            signal = signals.iloc[i]
+            print(f"\\nTrade {i+1}:")
+            print(f"  Date: {trade['entry_date'].strftime('%Y-%m-%d')}")
+            print(f"  Open Price: ${signal['open_price']:.2f}")
+            print(f"  Target Drop: ${signal['avg_drop']:.2f}")
+            print(f"  Entry: ${trade['entry_price']:.2f}")
+            print(f"  Exit: ${trade['exit_price']:.2f}")
+            print(f"  Profit/Loss: ${trade['profit_loss']:.2f}")
+
+if __name__ == "__main__":
+    main()
+'''
+    
+    return content
+
+def create_spy_vix_filter_strategy():
+    """Create SPY strategy with VIX filter"""
+    content = '''"""
+SPY Gap Fade with VIX Filter Strategy
+
+Enhanced version of Gap Fade that uses VIX (volatility index) as a filter:
+- Only trades when VIX is within certain ranges
+- Higher VIX = More market fear = Potentially better gap fades
+
+Perfect for understanding how volatility affects trading!
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from utils.base_strategy import BaseStrategy
+import utils.trading_utils as trading_utils
+
+class SPYGapFadeVIXStrategy(BaseStrategy):
+    """
+    SPY Gap Fade with VIX Filter - Only trades during specific volatility conditions
+    
+    What is VIX?
+    - VIX measures expected market volatility
+    - Higher VIX = More fear/uncertainty in market
+    - Lower VIX = Calmer market conditions
+    """
+    
+    def __init__(self, spy_data_path=None, vix_data_path=None):
+        super().__init__(
+            name="SPY Gap Fade VIX Filter",
+            description="Gap fade strategy filtered by VIX levels",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close']
+        )
+        
+        self.min_gap_size = 0.20
+        self.min_gap_percent = 0.15
+        self.max_gap_percent = 0.85
+        
+        self.min_vix = 15  # Only trade when VIX > 15
+        self.max_vix = 30  # Only trade when VIX < 30
+        
+        self.vix_data = None
+        
+        if spy_data_path:
+            self.load_data(spy_data_path)
+        if vix_data_path:
+            self.load_vix_data(vix_data_path)
+    
+    def load_vix_data(self, vix_path):
+        """Load VIX data and merge with SPY data"""
+        try:
+            vix_df = pd.read_csv(vix_path, parse_dates=['Date'])
+            vix_df = vix_df[['Date', 'Close']].rename(columns={'Close': 'VIX'})
+            self.vix_data = vix_df
+            
+            if self.data is not None:
+                self.data = pd.merge(self.data, vix_df, on='Date', how='inner')
+                
+        except Exception as e:
+            print(f"Error loading VIX data: {e}")
+            print("Continuing without VIX filter...")
+    
+    def calculate_signals(self):
+        """Find gap fade opportunities filtered by VIX"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.data.copy()
+        signals = []
+        
+        has_vix = 'VIX' in df.columns
+        
+        for i in range(1, len(df)):
+            prev_day = df.iloc[i-1]
+            curr_day = df.iloc[i]
+            
+            if has_vix:
+                curr_vix = curr_day['VIX']
+                if curr_vix < self.min_vix or curr_vix > self.max_vix:
+                    continue
+            
+            prev_range = prev_day['High'] - prev_day['Low']
+            if prev_range == 0:
+                continue
+            
+            gap = curr_day['Open'] - prev_day['Close']
+            gap_abs = abs(gap)
+            
+            if gap_abs < self.min_gap_size:
+                continue
+            
+            gap_percent = gap_abs / prev_range
+            if not (self.min_gap_percent <= gap_percent <= self.max_gap_percent):
+                continue
+            
+            if gap > 0:  # Gap up - go SHORT
+                direction = 'SHORT'
+                entry_price = curr_day['Open']
+                if curr_day['Low'] <= prev_day['Close']:
+                    exit_price = prev_day['Close']
+                    gap_closed = True
+                else:
+                    exit_price = curr_day['Close']
+                    gap_closed = False
+            else:  # Gap down - go LONG
+                direction = 'LONG'
+                entry_price = curr_day['Open']
+                if curr_day['High'] >= prev_day['Close']:
+                    exit_price = prev_day['Close']
+                    gap_closed = True
+                else:
+                    exit_price = curr_day['Close']
+                    gap_closed = False
+            
+            signal = {
+                'date': curr_day['Date'],
+                'direction': direction,
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'gap_size': gap,
+                'gap_percent': gap_percent * 100,
+                'gap_closed': gap_closed,
+                'signal_strength': 1.0
+            }
+            
+            if has_vix:
+                signal['vix_level'] = curr_vix
+            
+            signals.append(signal)
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+    
+    def get_summary_metrics(self):
+        """Get performance summary with VIX analysis"""
+        if self.performance_metrics is None:
+            return None
+        
+        metrics = self.performance_metrics.copy()
+        
+        if self.signals is not None and 'vix_level' in self.signals.columns:
+            avg_vix = self.signals['vix_level'].mean()
+            metrics['avg_vix_on_trades'] = avg_vix
+            
+            if len(self.trades) > 0:
+                trades_df = pd.DataFrame(self.trades)
+                trades_with_vix = pd.merge(
+                    trades_df, 
+                    self.signals[['date', 'vix_level']], 
+                    left_on='entry_date', 
+                    right_on='date'
+                )
+                
+                high_vix_trades = trades_with_vix[trades_with_vix['vix_level'] > 20]
+                low_vix_trades = trades_with_vix[trades_with_vix['vix_level'] <= 20]
+                
+                if len(high_vix_trades) > 0:
+                    high_vix_win_rate = len(high_vix_trades[high_vix_trades['profit_loss'] > 0]) / len(high_vix_trades) * 100
+                    metrics['high_vix_win_rate'] = high_vix_win_rate
+                
+                if len(low_vix_trades) > 0:
+                    low_vix_win_rate = len(low_vix_trades[low_vix_trades['profit_loss'] > 0]) / len(low_vix_trades) * 100
+                    metrics['low_vix_win_rate'] = low_vix_win_rate
+        
+        return metrics
+
+def main():
+    """Example usage - simple and clear for beginners"""
+    print("=" * 60)
+    print("SPY GAP FADE WITH VIX FILTER STRATEGY")
+    print("=" * 60)
+    print("\\nThis strategy fades gaps but only when market")
+    print("volatility (VIX) is within optimal ranges.")
+    print("=" * 60)
+    
+    spy_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    vix_path = Path(__file__).parent.parent.parent / "data" / "VIX_History.csv"
+    
+    strategy = SPYGapFadeVIXStrategy(spy_path, vix_path)
+    
+    print("\\nSearching for gap fade opportunities with VIX filter...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} valid trades (filtered by VIX)")
+    
+    print("\\nRunning backtest with $10,000 initial capital...")
+    strategy.run_backtest(initial_capital=10000, position_size=1.0)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\\n" + "=" * 60)
+    print("STRATEGY RESULTS")
+    print("=" * 60)
+    print(f"Total Trades: {metrics['total_trades']}")
+    print(f"Win Rate: {metrics['win_rate']:.1f}%")
+    print(f"Total Profit/Loss: ${metrics['total_profit']:.2f}")
+    
+    if 'sharpe_ratio' in metrics and metrics['sharpe_ratio'] is not None:
+        print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
+    
+    print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+    
+    if 'avg_vix_on_trades' in metrics:
+        print(f"\\nAverage VIX on Trade Days: {metrics['avg_vix_on_trades']:.1f}")
+    
+    if 'high_vix_win_rate' in metrics:
+        print(f"Win Rate (High VIX > 20): {metrics['high_vix_win_rate']:.1f}%")
+    
+    if 'low_vix_win_rate' in metrics:
+        print(f"Win Rate (Low VIX <= 20): {metrics['low_vix_win_rate']:.1f}%")
+
+if __name__ == "__main__":
+    main()
+'''
+    
+    return content
+
+def main():
+    """Main conversion function"""
+    print("Converting SPY strategies to clean format...")
+    
+    output_dir = Path("/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/clean_strategies/strategies/spy_strategies")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    strategies = {
+        "spy_gap_fade.py": create_spy_gap_fade_strategy(),
+        "spy_dip_buy.py": create_spy_dip_buy_strategy(),
+        "spy_gap_fade_vix_filter.py": create_spy_vix_filter_strategy()
+    }
+    
+    for filename, content in strategies.items():
+        filepath = output_dir / filename
+        with open(filepath, 'w') as f:
+            f.write(content)
+        print(f"Created: {filename}")
+    
+    print("\nSPY strategies conversion complete!")
+    print(f"Files created in: {output_dir}")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,325 @@
+import pandas as pd
+import numpy as np
+import warnings
+import os
+
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.metrics import classification_report, accuracy_score
+from sklearn.model_selection import train_test_split
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+pd.set_option('display.max_colwidth', None)
+
+def load_data(file_name):
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'], dayfirst=True, errors='coerce')
+    vix_df.dropna(subset=['Date'], inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+def calculate_day_range(day):
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    shares = position_size / entry_price
+    if trade_direction == 'Long':
+        profit_loss = shares * (exit_price - entry_price)
+    else:
+        profit_loss = shares * (entry_price - exit_price)
+    return profit_loss
+
+def calculate_atr(df, n=14):
+    df['Previous Close'] = df['Close'].shift(1)
+    df['High-Low'] = df['High'] - df['Low']
+    df['High-PrevClose'] = abs(df['High'] - df['Previous Close'])
+    df['Low-PrevClose'] = abs(df['Low'] - df['Previous Close'])
+    df['TR'] = df[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+    df['ATR'] = df['TR'].rolling(window=n).mean()
+    return df
+
+def precompute_trades(df, vix_df, initial_investment):
+    trades = []
+    total_days = len(df)
+
+    vix_open_dict = {}
+    vix_dates = set(vix_df['Date'])
+    min_vix_date = vix_df['Date'].min()
+
+    for current_date in df['Date']:
+        prev_date = current_date - pd.Timedelta(days=1)
+        while prev_date not in vix_dates and prev_date > min_vix_date:
+            prev_date -= pd.Timedelta(days=1)
+        if prev_date in vix_dates:
+            vix_open = vix_df.loc[vix_df['Date'] == prev_date, 'OPEN'].values[0]
+            vix_open_dict[current_date] = vix_open
+        else:
+            vix_open_dict[current_date] = np.nan
+
+    for i_day in range(1, total_days):
+        prev_day = df.iloc[i_day - 1]
+        curr_day = df.iloc[i_day]
+        current_date = curr_day['Date']
+        vix_open = vix_open_dict.get(current_date, np.nan)
+
+        if pd.isna(vix_open):
+            continue
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        valid_gap = is_gap_valid(gap, prev_range)
+        trade_direction = determine_trade_direction(gap)
+
+        entry_price = curr_day['Open']
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+
+        trades.append({
+            'Date': current_date,
+            'Gap': gap,
+            'PrevRange': prev_range,
+            'GapIsValid': int(valid_gap),
+            'TradeDirection': trade_direction,
+            'EntryPrice': entry_price,
+            'ExitPrice': exit_price,
+            'GapClosed': gap_closed,
+            'VIX_Open': vix_open,
+            'ProfitLoss': profit_loss
+        })
+
+    trades_df = pd.DataFrame(trades)
+    trades_df.sort_values('Date', inplace=True)
+    trades_df.reset_index(drop=True, inplace=True)
+    return trades_df
+
+def build_features_and_target(trades_df, df):
+    df_with_atr = calculate_atr(df.copy(), n=14)
+    feature_df = trades_df.merge(df_with_atr[['Date','ATR']], on='Date', how='left')
+    feature_df.dropna(subset=['ATR'], inplace=True)
+
+    feature_df['Target'] = (feature_df['ProfitLoss'] > 0).astype(int)
+    feature_df['TradeDirectionNum'] = feature_df['TradeDirection'].map({'Long': 1, 'Short': 0})
+
+    feature_cols = ['Gap','PrevRange','GapIsValid','VIX_Open','ATR','TradeDirectionNum']
+    X = feature_df[feature_cols].copy()
+    y = feature_df['Target'].copy()
+
+    feature_df_for_export = feature_df[['Date'] + feature_cols + 
+                                       ['Target','ProfitLoss','EntryPrice','ExitPrice','TradeDirection']]
+    return X, y, feature_df_for_export
+
+def train_test_split_by_date(feature_df, 
+                             train_start='2020-01-01', 
+                             train_end='2022-01-01',
+                             test_start='2022-01-01', 
+                             test_end='2024-01-01'):
+    train_start_ts = pd.to_datetime(train_start)
+    train_end_ts   = pd.to_datetime(train_end)
+    test_start_ts  = pd.to_datetime(test_start)
+    test_end_ts    = pd.to_datetime(test_end)
+
+    train_mask = (feature_df['Date'] >= train_start_ts) & (feature_df['Date'] < train_end_ts)
+    test_mask  = (feature_df['Date'] >= test_start_ts) & (feature_df['Date'] < test_end_ts)
+
+    df_train = feature_df[train_mask].copy()
+    df_test  = feature_df[test_mask].copy()
+    return df_train, df_test
+
+def fit_gradient_boosted_model(X_train, y_train):
+    model = GradientBoostingClassifier(
+        n_estimators=100,
+        learning_rate=0.1,
+        max_depth=3,
+        random_state=42
+    )
+    model.fit(X_train, y_train)
+    return model
+
+def analyze_predictions(model, X_test, y_test):
+    y_pred = model.predict(X_test)
+    print("\n=== Classification Report ===")
+    print(classification_report(y_test, y_pred, digits=3))
+    acc = accuracy_score(y_test, y_pred)
+    print(f"Test Accuracy: {acc:.3f}")
+    return y_pred
+
+def print_feature_importances(model, feature_cols):
+    importances = model.feature_importances_
+    idx_sorted = np.argsort(importances)[::-1]
+    print("\n=== Feature Importances (Gradient Boosted Trees) ===")
+    for idx in idx_sorted:
+        print(f"{feature_cols[idx]:<20} => {importances[idx]:.4f}")
+
+def recommend_trades_and_print(df_test, model, feature_cols, threshold=0.8):
+    """
+    Only recommends trades if predicted probability of success >= threshold.
+    1) For each recommended trade, prints Date, Gap, VIX, Probability, Direction, etc.
+    2) Also prints them in a DataFrame table for clarity.
+    """
+    X_test = df_test[feature_cols].values
+    probas = model.predict_proba(X_test)[:, 1]
+    df_test['Predicted_Prob'] = probas
+    df_test['Recommended'] = (df_test['Predicted_Prob'] >= threshold).astype(int)
+
+    print(f"\n=== Detailed AI-Based Trades Explanation (Threshold={threshold*100:.0f}% or higher) ===")
+    recommended_trades = df_test[df_test['Recommended'] == 1].copy()
+
+    if recommended_trades.empty:
+        print(f"No trades recommended by the AI under a {threshold*100:.0f}% threshold.")
+        return
+
+    for idx, row in recommended_trades.iterrows():
+        gap_val       = row['Gap']
+        prev_range    = row['PrevRange']
+        gap_is_valid  = row['GapIsValid']
+        vix_val       = row['VIX_Open']
+        atr_val       = row['ATR']
+        direction_num = row['TradeDirectionNum']
+        direction_str = "Long" if direction_num == 1 else "Short"
+        outcome_str   = "Win" if row['Target'] == 1 else "Loss"
+        date_str      = row['Date'].strftime('%Y-%m-%d')
+        prob_str      = f"{row['Predicted_Prob']*100:.2f}%"
+
+        print(f"---\nOn {date_str}, the model predicted {prob_str} chance of success.")
+        print("Feature values for this trade:")
+        print(f"  Gap = {gap_val:.2f}, PrevRange = {prev_range:.2f}, GapIsValid = {gap_is_valid}, "
+              f"VIX_Open = {vix_val:.2f}, ATR = {atr_val:.2f}, TradeDirectionNum = {direction_num}")
+        print(f"AI recommends a {direction_str} trade (Entry Price = {row['EntryPrice']:.2f}).")
+        print(f"Actual outcome: {outcome_str}, P/L = ${row['ProfitLoss']:.2f}\n")
+
+    display_cols = [
+        'Date','Predicted_Prob','TradeDirection','EntryPrice','Gap','PrevRange','VIX_Open','ATR','ProfitLoss'
+    ]
+    recommended_trades['Date'] = recommended_trades['Date'].dt.strftime('%Y-%m-%d')
+
+    print("\n=== Recommended Trades Table (≥ 80% Probability) ===")
+    print(recommended_trades[display_cols].to_string(index=False))
+
+    num_recommended = len(recommended_trades)
+    wins = recommended_trades['Target'].sum()
+    total_profit = recommended_trades['ProfitLoss'].sum()
+    success_rate = wins / num_recommended
+    print(f"\n=== AI's Recommended Trades Summary ===")
+    print(f"Recommended Trades: {num_recommended}, Wins: {int(wins)}, "
+          f"Success Rate: {success_rate:.2f}, Total Profit: ${total_profit:,.2f}")
+
+def run_ai_version_of_gap_analysis(
+    main_file,
+    vix_file,
+    initial_investment=16000,
+    train_start='2020-01-01',
+    train_end='2022-01-01',
+    test_start='2022-01-01',
+    test_end='2024-01-01',
+    prob_threshold=0.8
+):
+    if not os.path.exists(main_file):
+        print(f"Error: Main data file '{main_file}' not found.")
+        return
+    if not os.path.exists(vix_file):
+        print(f"Error: VIX data file '{vix_file}' not found.")
+        return
+
+    print("Loading stock data...")
+    df = load_data(main_file)
+    print("Loading VIX data...")
+    vix_df = load_vix_data(vix_file)
+
+    trades_df = precompute_trades(df, vix_df, initial_investment)
+    if trades_df.empty:
+        print("No valid trades found.")
+        return
+    print(f"Total Trades Found: {len(trades_df)}")
+
+    X, y, feature_df = build_features_and_target(trades_df, df)
+    if X.empty:
+        print("No features available after cleaning/merging. Possibly not enough data for ATR.")
+        return
+
+    df_train, df_test = train_test_split_by_date(
+        feature_df, 
+        train_start=train_start, 
+        train_end=train_end, 
+        test_start=test_start, 
+        test_end=test_end
+    )
+
+    print("\n=== Train/Test Data ===")
+    print(f"Train Period: {train_start} to {train_end}, Trades: {len(df_train)}")
+    print(f"Test  Period: {test_start}  to {test_end},  Trades: {len(df_test)}")
+
+    if df_train.empty or df_test.empty:
+        print("Train or test set is empty. Check date ranges or data availability.")
+        return
+
+    feature_cols = ['Gap','PrevRange','GapIsValid','VIX_Open','ATR','TradeDirectionNum']
+    X_train = df_train[feature_cols].values
+    y_train = df_train['Target'].values
+    X_test  = df_test[feature_cols].values
+    y_test  = df_test['Target'].values
+
+    model = fit_gradient_boosted_model(X_train, y_train)
+
+    _ = analyze_predictions(model, X_test, y_test)
+    print_feature_importances(model, feature_cols)
+
+    recommend_trades_and_print(df_test, model, feature_cols, threshold=prob_threshold)
+
+
+if __name__ == "__main__":
+    main_file = "7J0OK1VR.csv"
+    vix_file  = "VIX_History.csv"
+
+    run_ai_version_of_gap_analysis(
+        main_file=main_file,
+        vix_file=vix_file,
+        initial_investment=16000,
+        train_start='2020-01-01',
+        train_end='2022-01-01',
+        test_start='2022-01-01',
+        test_end='2024-01-01',
+        prob_threshold=0.75  # Only recommend trades with >= 80% predicted success
+    )

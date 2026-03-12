@@ -1,0 +1,144 @@
+
+> 策略名称
+
+海龟交易法Turtles-strategy
+
+> 策略作者
+
+发明者量化
+
+> 策略描述
+
+Demonstrate how to increase positions in pine language
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|v_input_1|true|RiskRatio|
+|v_input_2|20|ATRLength|
+|v_input_3|20|BOLength|
+|v_input_4|55|FSLength|
+|v_input_5|10|TELength|
+|v_input_6|true|ContractUnit|
+|v_input_7|0.01|MinStock|
+|v_input_8|true|LastProfitableTradeFilter|
+
+
+> 源码 (PineScript)
+
+``` javascript
+
+
+strategy("Turtles strategy", overlay=true, pyramiding=4)
+
+RiskRatio = input(1)                   
+ATRLength = input(20)                  
+BOLength = input(20)                   
+FSLength = input(55)                   
+TELength = input(10)                   
+ContractUnit = input(1)
+MinStock = input(0.01)
+LastProfitableTradeFilter = input(true, "LastProfitableTradeFilter")              
+
+
+var float PreEntryPrice = na
+var PreBreakoutFailure = false
+var SendOrderThisBar = true
+var CurrentBarIndex = -1
+    
+
+if CurrentBarIndex != bar_index
+    CurrentBarIndex := bar_index
+    SendOrderThisBar := false
+    if bar_index == 0
+        PreEntryPrice := na
+        PreBreakoutFailure := false
+
+N = ta.atr(ATRLength)
+plot(N, "N", join=false)
+turtelUnits = math.round((strategy.equity*RiskRatio/100) /(N * ContractUnit), 3)
+donchianHi = ta.highest(high[1], BOLength)
+donchianLow = ta.lowest(low[1], BOLength)
+fsDonchianHi = ta.highest(high[1], FSLength)
+fsDonchianLo = ta.lowest(low[1], FSLength)
+exitLowestPrice = ta.lowest(low[1], TELength)
+exitHighestPrice = ta.highest(high[1], TELength)
+ldh=plot(donchianHi, "donchianHi")
+ldl=plot(donchianLow, "donchianLow")
+fill(ldh, ldl)
+plot(fsDonchianHi, "fsDonchianHi")
+plot(fsDonchianLo, "fsDonchianLo")
+
+
+
+
+if strategy.position_size == 0 and ((not LastProfitableTradeFilter) or (PreBreakoutFailure))
+    if high > donchianHi and turtelUnits >= MinStock
+        PreEntryPrice := high
+        strategy.entry("breakout long", strategy.long, qty=turtelUnits)
+        SendOrderThisBar := true
+        PreBreakoutFailure := false
+
+    if low < donchianLow and turtelUnits >= MinStock
+        PreEntryPrice := low
+        strategy.entry("breakout short", strategy.short, qty=turtelUnits)
+        SendOrderThisBar := true
+        PreBreakoutFailure := false
+
+if strategy.position_size == 0
+    if high > fsDonchianHi and turtelUnits >= MinStock
+        PreEntryPrice := high
+        strategy.entry("breakout long", strategy.long, qty=turtelUnits)
+        SendOrderThisBar := true
+        PreBreakoutFailure := false
+
+    if low < fsDonchianLo and turtelUnits >= MinStock
+        
+        PreEntryPrice := low
+        strategy.entry("breakout short", strategy.short, qty=turtelUnits)
+        SendOrderThisBar := true
+        PreBreakoutFailure := false
+
+if strategy.position_size > 0
+    if low < ta.lowest(low[1], TELength)
+        strategy.close_all()
+    else
+        if not na(PreEntryPrice) and turtelUnits >= MinStock
+            if high >= PreEntryPrice + 0.5*N 
+                PreEntryPrice := high
+                strategy.entry("B1", strategy.long, qty=turtelUnits)
+                SendOrderThisBar := true
+
+        
+        if low <= PreEntryPrice - (2 * N) and SendOrderThisBar == false
+            alert("stop loss #ff0000")
+            strategy.close_all()
+            PreBreakoutFailure := true
+else if strategy.position_size < 0
+    if high > exitHighestPrice
+        strategy.close_all()
+    else
+        if not na(PreEntryPrice) and turtelUnits >= MinStock
+            if low <= PreEntryPrice - 0.5*N
+                PreEntryPrice := low
+                strategy.entry("S1", strategy.short, qty=turtelUnits)
+                SendOrderThisBar := true
+
+        
+        if high >= PreEntryPrice + (2 * N) and SendOrderThisBar==false
+            alert("stop loss #ff0000")
+            strategy.close_all()
+            PreBreakoutFailure := true
+
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2022-05-21 20:43:32

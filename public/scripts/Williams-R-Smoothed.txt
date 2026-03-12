@@ -1,0 +1,105 @@
+
+> 策略名称
+
+Williams-R-Smoothed
+
+> 策略作者
+
+张超
+
+> 策略描述
+
+From TradingView's description:
+Williams %R (%R) is a momentum-based oscillator used in technical analysis , primarily to identify overbought and oversold conditions. The %R is based on a comparison between the current close and the highest high for a user defined look back period. %R Oscillates between 0 and -100 (note the negative values) with readings closer to zero indicating more overbought conditions and readings closer to -100 indicating oversold. Typically %R can generate set ups based on overbought and oversold conditions as well overall changes in momentum.
+
+What's special?
+This indicator adds two additional EMA lines to the original Williams %R indicator. Default EMA lengths are 5 and 13. The result is 2 smoother average lines, which are easier to read.
+This indicator includes:
+- signals for EMA crosses. EMA crosses can help indicate confirmed trend changes. Default colors are green and red
+- signals for trend reversals on the faster EMA line. Default colors are blue and orange
+
+Alerts available for bullish / bearish crossovers and reversals.
+
+Enjoy~~!
+
+**backtest**
+
+ ![IMG](https:
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|v_input_int_1|34|length|
+|v_input_1|5|Smoothed %R Length|
+|v_input_2|13|Slow EMA Length|
+|v_input_bool_1|true|Show EMA Crossovers|
+|v_input_bool_2|true|Show trend reversals|
+
+
+> 源码 (PineScript)
+
+``` javascript
+
+
+
+
+
+
+indicator(title='Williams %R - Smoothed', shorttitle='The Smooth Willy')
+
+
+length = input.int(defval=34, minval=1)
+upper = ta.highest(length)
+lower = ta.lowest(length)
+
+output = 100 * (close - upper) / (upper - lower)
+
+fast_period = input(defval=5, title='Smoothed %R Length')
+slow_period = input(defval=13, title='Slow EMA Length')
+
+fast_ema = ta.wma(output,fast_period)
+slow_ema = ta.ema(output,slow_period)
+
+
+
+
+
+
+plot(output, title='%R', color=color.new(color.white, 80), linewidth=1)
+plot(fast_ema, title='Smoothed %R', color=color.new(color.yellow, 0), linewidth=2)
+plot(slow_ema, title='Slow EMA', color=color.new(color.aqua, 0), linewidth=2)
+
+bullX = ta.crossover(fast_ema, slow_ema)
+bearX = ta.crossunder(fast_ema, slow_ema)
+bullreverse = fast_ema[2] > fast_ema[1] and fast_ema > fast_ema[1] and fast_ema < -30
+bearreverse = fast_ema[2] < fast_ema[1] and fast_ema < fast_ema[1] and fast_ema > -70
+
+plotX = input.bool(true, "Show EMA Crossovers")
+plotRev = input.bool(true, "Show trend reversals")
+
+
+
+
+
+
+
+
+
+
+
+if plotRev and bullreverse
+    strategy.entry("Enter Long", strategy.long)
+else if plotRev and bearreverse
+    strategy.entry("Enter Short", strategy.short)
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2022-05-09 12:08:11

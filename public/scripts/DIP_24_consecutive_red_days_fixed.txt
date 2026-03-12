@@ -1,0 +1,265 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_consecutive_red_days(df):
+    """Calculate consecutive red days streak - NO LOOK-AHEAD BIAS."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['RedDayGroup'] = (df['IsRedDay'] != df['IsRedDay'].shift()).cumsum()
+    df['ConsecutiveRed'] = df.groupby(df['RedDayGroup']).cumcount() + 1
+    df['ConsecutiveRed'] = np.where(df['IsRedDay'], df['ConsecutiveRed'], 0)
+    
+    df['PrevConsecutiveRed'] = df['ConsecutiveRed'].shift(1).fillna(0)
+    df['PrevWasRed'] = df['IsRedDay'].shift(1).fillna(False)
+    
+    return df
+
+def calculate_rolling_average_drop(df, window=21):
+    """Calculate rolling average of drops on red days - NO LOOK-AHEAD BIAS."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=window).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def analyze_red_days_strategy(df, initial_investment=16000, min_consecutive=2):
+    """
+    Implement DIP strategy after consecutive red days - NO LOOK-AHEAD BIAS.
+    Uses PREVIOUS day's consecutive red count for CURRENT day's decision.
+    """
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    df = calculate_consecutive_red_days(df)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:  # Need history for calculations
+            continue
+        
+        current_day = df.iloc[i]
+        
+        avg_drop = current_day['RollingAvgDrop']  # Already shifted, uses past data
+        prev_consecutive_red = current_day['PrevConsecutiveRed']  # Previous day's count
+        prev_was_red = current_day['PrevWasRed']  # Whether previous day was red
+        
+        if avg_drop <= 0:
+            continue
+        
+        if prev_consecutive_red >= min_consecutive and prev_was_red:
+            
+            open_price = current_day['Open']  # Known at market open
+            desired_entry = open_price - avg_drop
+            
+            low_price = current_day['Low']
+            if low_price <= desired_entry:
+                entry_price = desired_entry
+                exit_price = current_day['Close']  # Exit at close
+                profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+                
+                intraday_return = (exit_price - entry_price) / entry_price * 100
+                max_potential = (current_day['High'] - entry_price) / entry_price * 100
+                current_is_red = current_day['Close'] < current_day['Open']
+                
+                trades.append({
+                    'Date': current_day['Date'],
+                    'Entry': entry_price,
+                    'Exit': exit_price,
+                    'Profit/Loss': profit_loss,
+                    'ConsecutiveRedDays': prev_consecutive_red,
+                    'IntradayReturn%': intraday_return,
+                    'MaxPotential%': max_potential,
+                    'Open': open_price,
+                    'High': current_day['High'],
+                    'Low': low_price,
+                    'Close': current_day['Close'],
+                    'AvgDrop': avg_drop,
+                    'CurrentDayRed': current_is_red
+                })
+    
+    return trades
+
+def analyze_different_thresholds(df, initial_investment=16000):
+    """Analyze performance for different consecutive red day thresholds."""
+    threshold_results = {}
+    
+    for min_consecutive in range(1, 6):  # Test 1 to 5 consecutive red days
+        trades = analyze_red_days_strategy(df, initial_investment, min_consecutive)
+        
+        if trades:
+            df_trades = pd.DataFrame(trades)
+            total_profit = df_trades['Profit/Loss'].sum()
+            num_trades = len(trades)
+            success_rate = (df_trades['Profit/Loss'] > 0).sum() / num_trades * 100
+            avg_profit = df_trades['Profit/Loss'].mean()
+            avg_consecutive = df_trades['ConsecutiveRedDays'].mean()
+            
+            threshold_results[min_consecutive] = {
+                'trades': trades,
+                'total_profit': total_profit,
+                'num_trades': num_trades,
+                'success_rate': success_rate,
+                'avg_profit': avg_profit,
+                'avg_consecutive': avg_consecutive
+            }
+        else:
+            threshold_results[min_consecutive] = {
+                'trades': [],
+                'total_profit': 0,
+                'num_trades': 0,
+                'success_rate': 0,
+                'avg_profit': 0,
+                'avg_consecutive': 0
+            }
+    
+    return threshold_results
+
+def calculate_detailed_statistics(trades):
+    """Calculate comprehensive statistics for the trades."""
+    if not trades:
+        return None
+    
+    df_trades = pd.DataFrame(trades)
+    
+    total_trades = len(trades)
+    profitable_trades = df_trades[df_trades['Profit/Loss'] > 0]
+    losing_trades = df_trades[df_trades['Profit/Loss'] < 0]
+    
+    num_winners = len(profitable_trades)
+    num_losers = len(losing_trades)
+    success_rate = num_winners / total_trades * 100
+    
+    total_profit = df_trades['Profit/Loss'].sum()
+    avg_profit_all = df_trades['Profit/Loss'].mean()
+    
+    avg_winner = profitable_trades['Profit/Loss'].mean() if num_winners > 0 else 0
+    avg_loser = losing_trades['Profit/Loss'].mean() if num_losers > 0 else 0
+    
+    largest_winner = profitable_trades['Profit/Loss'].max() if num_winners > 0 else 0
+    largest_loser = losing_trades['Profit/Loss'].min() if num_losers > 0 else 0
+    
+    profit_factor = abs(profitable_trades['Profit/Loss'].sum() / losing_trades['Profit/Loss'].sum()) if num_losers > 0 else float('inf')
+    win_loss_ratio = abs(avg_winner / avg_loser) if avg_loser != 0 else float('inf')
+    
+    consecutive_performance = df_trades.groupby('ConsecutiveRedDays').agg({
+        'Profit/Loss': ['sum', 'count', 'mean', lambda x: (x > 0).sum() / len(x) * 100]
+    }).round(2)
+    consecutive_performance.columns = ['Total Profit', 'Trades', 'Avg Profit', 'Win Rate']
+    
+    return {
+        'total_trades': total_trades,
+        'num_winners': num_winners,
+        'num_losers': num_losers,
+        'success_rate': success_rate,
+        'total_profit': total_profit,
+        'avg_profit_all': avg_profit_all,
+        'avg_winner': avg_winner,
+        'avg_loser': avg_loser,
+        'largest_winner': largest_winner,
+        'largest_loser': largest_loser,
+        'profit_factor': profit_factor,
+        'win_loss_ratio': win_loss_ratio,
+        'consecutive_performance': consecutive_performance
+    }
+
+def main():
+    """Main function to run the consecutive red days analysis - NO LOOK-AHEAD BIAS."""
+    print("="*80)
+    print("CONSECUTIVE RED DAYS DIP STRATEGY - FIXED (NO LOOK-AHEAD BIAS)")
+    print("="*80)
+    print(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Initial Investment: $16,000")
+    print("Key Fix: Uses PREVIOUS day's consecutive count for CURRENT day's decision")
+    print("="*80)
+    
+    df = load_data('../7J0OK1VR.csv')
+    
+    threshold_results = analyze_different_thresholds(df)
+    
+    print("\n1. CONSECUTIVE RED DAYS THRESHOLD COMPARISON")
+    print("-"*80)
+    print(f"{'Min Red Days':<12} {'Trades':<8} {'Success Rate':<15} {'Total Profit':<15} {'Avg Profit':<12} {'Avg Consecutive':<15}")
+    print("-"*80)
+    
+    threshold_summary = []
+    for threshold in range(1, 6):
+        result = threshold_results[threshold]
+        print(f"{threshold:<12} {result['num_trades']:<8} {result['success_rate']:<15.2f}% ${result['total_profit']:<14,.2f} ${result['avg_profit']:<11.2f} {result['avg_consecutive']:<15.2f}")
+        threshold_summary.append({
+            'Min Red Days': threshold,
+            'Trades': result['num_trades'],
+            'Success Rate': result['success_rate'],
+            'Total Profit': result['total_profit']
+        })
+    
+    valid_results = [(k, v) for k, v in threshold_results.items() if v['num_trades'] > 0]
+    if valid_results:
+        best_threshold = max(valid_results, key=lambda x: x[1]['success_rate'])
+        print(f"\nBest Threshold: {best_threshold[0]} consecutive red days with {best_threshold[1]['success_rate']:.2f}% success rate")
+        
+        print(f"\n2. DETAILED ANALYSIS FOR {best_threshold[0]} CONSECUTIVE RED DAYS")
+        print("="*80)
+        
+        best_trades = best_threshold[1]['trades']
+        stats = calculate_detailed_statistics(best_trades)
+        
+        print("\nOVERALL PERFORMANCE")
+        print("-"*50)
+        print(f"Total Trades: {stats['total_trades']}")
+        print(f"Winning Trades: {stats['num_winners']}")
+        print(f"Losing Trades: {stats['num_losers']}")
+        print(f"Success Rate: {stats['success_rate']:.2f}%")
+        print(f"Total Profit: ${stats['total_profit']:,.2f}")
+        print(f"Average Profit per Trade: ${stats['avg_profit_all']:.2f}")
+        
+        print("\nRISK/REWARD METRICS")
+        print("-"*50)
+        print(f"Average Winner: ${stats['avg_winner']:.2f}")
+        print(f"Average Loser: ${stats['avg_loser']:.2f}")
+        print(f"Win/Loss Ratio: {stats['win_loss_ratio']:.2f}")
+        print(f"Profit Factor: {stats['profit_factor']:.2f}")
+        print(f"Largest Winner: ${stats['largest_winner']:.2f}")
+        print(f"Largest Loser: ${stats['largest_loser']:.2f}")
+        
+        print("\n3. PERFORMANCE BY NUMBER OF CONSECUTIVE RED DAYS")
+        print("-"*60)
+        if not stats['consecutive_performance'].empty:
+            print(stats['consecutive_performance'].to_string())
+        
+        df_best = pd.DataFrame(best_trades)
+        print("\n4. FIRST 10 TRADES")
+        print("-"*80)
+        sample_trades = df_best.head(10)[['Date', 'Entry', 'Exit', 'Profit/Loss', 'ConsecutiveRedDays', 'IntradayReturn%']]
+        print(sample_trades.to_string(index=False))
+        
+        df_best = df_best.sort_values('Date')
+        df_best['Cumulative'] = df_best['Profit/Loss'].cumsum() + 16000
+        
+        print("\n5. EQUITY CURVE ANALYSIS")
+        print("-"*50)
+        print(f"Starting Capital: $16,000")
+        print(f"Final Equity: ${df_best['Cumulative'].iloc[-1]:,.2f}")
+        print(f"Total Return: {(df_best['Cumulative'].iloc[-1] - 16000) / 16000 * 100:.2f}%")
+        
+        output_file = f'consecutive_red_days_{best_threshold[0]}_fixed_results.csv'
+        df_best.to_csv(output_file, index=False)
+        print(f"\nDetailed trade log saved to: {output_file}")
+    else:
+        print("\nNo valid results found!")
+
+if __name__ == "__main__":
+    main()

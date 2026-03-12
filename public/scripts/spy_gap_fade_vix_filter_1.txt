@@ -1,0 +1,307 @@
+"""
+SPY Gap Fade with VIX Filter Strategy
+-------------------------------------
+This strategy trades SPY gaps by taking positions opposite to the gap direction,
+but only when VIX is in a specific range indicating moderate volatility.
+
+Entry Conditions:
+- Gap must be at least $0.20
+- Gap must be between 15% and 85% of previous day's range
+- VIX must be between 13 and 22 (moderate volatility)
+- Trade opposite to gap direction (fade the gap)
+
+Exit Conditions:
+- Exit when gap closes (price reaches previous close)
+- If gap doesn't close, exit at market close
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utils import BaseStrategy, calculate_gap
+
+
+class SPYGapFadeVIXStrategy(BaseStrategy):
+    """SPY Gap Fade Strategy with VIX filter."""
+    
+    def __init__(self, initial_investment=16000, vix_lower=13, vix_upper=22):
+        super().__init__("SPY Gap Fade + VIX Filter", initial_investment)
+        self.min_gap_size = 0.20  # Minimum gap size in dollars
+        self.gap_range_min = 0.15  # Minimum gap as % of previous day's range
+        self.gap_range_max = 0.85  # Maximum gap as % of previous day's range
+        self.vix_lower = vix_lower  # Lower bound for VIX
+        self.vix_upper = vix_upper  # Upper bound for VIX
+        self.vix_df = None
+        
+    def load_vix_data(self, vix_file):
+        """Load VIX data from CSV file."""
+        try:
+            vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+            vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+            vix_df['Date'] = pd.to_datetime(vix_df['Date'], dayfirst=True, errors='coerce')
+            vix_df.dropna(subset=['Date'], inplace=True)
+            vix_df.sort_values('Date', inplace=True)
+            vix_df.reset_index(drop=True, inplace=True)
+            self.vix_df = vix_df
+            return True
+        except Exception as e:
+            print(f"Error loading VIX data: {e}")
+            return False
+    
+    def get_vix_value(self, current_date):
+        """Get VIX opening value for the previous trading day."""
+        if self.vix_df is None:
+            return None
+            
+        prev_date = current_date - pd.Timedelta(days=1)
+        
+        vix_dates = set(self.vix_df['Date'])
+        min_vix_date = self.vix_df['Date'].min()
+        
+        while prev_date not in vix_dates and prev_date > min_vix_date:
+            prev_date -= pd.Timedelta(days=1)
+        
+        if prev_date not in vix_dates:
+            return None
+        
+        vix_open = self.vix_df.loc[self.vix_df['Date'] == prev_date, 'OPEN'].values[0]
+        return vix_open
+        
+    def calculate_indicators(self, df):
+        """Calculate gap and day range indicators with VIX."""
+        df['Prev_Close'] = df['Close'].shift(1)
+        
+        df['Day_Range'] = df['High'] - df['Low']
+        df['Prev_Day_Range'] = df['Day_Range'].shift(1)
+        
+        df['Gap'] = df['Open'] - df['Prev_Close']
+        df['Gap_Abs'] = df['Gap'].abs()
+        df['Gap_Percent_Range'] = df['Gap_Abs'] / df['Prev_Day_Range']
+        
+        df['Gap_Up'] = df['Gap'] > 0
+        df['Gap_Down'] = df['Gap'] < 0
+        
+        df['VIX_Prev'] = df['Date'].apply(self.get_vix_value)
+        df['VIX_Valid'] = (
+            (df['VIX_Prev'] >= self.vix_lower) & 
+            (df['VIX_Prev'] <= self.vix_upper)
+        )
+        
+        return df
+    
+    def get_entry_conditions(self, df):
+        """Define entry conditions for the strategy."""
+        valid_gap = (
+            (df['Gap_Abs'] >= self.min_gap_size) &  # Minimum gap size
+            (df['Gap_Percent_Range'] >= self.gap_range_min) &  # Min % of range
+            (df['Gap_Percent_Range'] <= self.gap_range_max) &  # Max % of range
+            (df['Prev_Day_Range'] > 0) &  # Avoid division by zero
+            (df['VIX_Valid'])  # VIX in valid range
+        )
+        
+        return valid_gap
+    
+    def get_exit_conditions(self, df, entry_index):
+        """Exit when gap closes or at market close."""
+        entry_row = df.iloc[entry_index]
+        prev_close = entry_row['Prev_Close']
+        
+        if entry_row['Gap_Up']:
+            if entry_row['Low'] <= prev_close:
+                return entry_index, prev_close, 'Gap Closed'
+            else:
+                return entry_index, entry_row['Close'], 'Market Close'
+        else:
+            if entry_row['High'] >= prev_close:
+                return entry_index, prev_close, 'Gap Closed'
+            else:
+                return entry_index, entry_row['Close'], 'Market Close'
+    
+    def run_backtest(self, data_file, vix_file=None):
+        """Custom backtest for gap fade strategy with VIX filter."""
+        if vix_file:
+            if not self.load_vix_data(vix_file):
+                print("Warning: Running without VIX filter due to data loading error")
+                self.vix_df = None
+        else:
+            data_dir = os.path.dirname(data_file)
+            vix_file = os.path.join(data_dir, 'VIX_History.csv')
+            if os.path.exists(vix_file):
+                print(f"Found VIX data: {vix_file}")
+                if not self.load_vix_data(vix_file):
+                    print("Warning: Running without VIX filter")
+                    self.vix_df = None
+            else:
+                print("Warning: No VIX data found, running without VIX filter")
+                self.vix_df = None
+        
+        self.df = pd.read_csv(data_file, parse_dates=['Date'])
+        self.df.sort_values('Date', inplace=True)
+        self.df.reset_index(drop=True, inplace=True)
+        
+        self.df = self.calculate_indicators(self.df)
+        
+        entry_signals = self.get_entry_conditions(self.df)
+        
+        trades = []
+        capital = self.initial_investment
+        
+        for i in range(1, len(self.df)):  # Start from 1 to have previous day
+            if entry_signals.iloc[i]:
+                entry_row = self.df.iloc[i]
+                entry_price = entry_row['Open']
+                
+                if entry_row['Gap_Up']:
+                    trade_type = 'Short'
+                else:
+                    trade_type = 'Long'
+                
+                position = self.calculate_position_size(capital, entry_price)
+                
+                exit_index, exit_price, exit_reason = self.get_exit_conditions(self.df, i)
+                
+                if trade_type == 'Long':
+                    profit = (exit_price - entry_price) * position
+                else:  # Short
+                    profit = (entry_price - exit_price) * position
+                
+                capital += profit
+                
+                trades.append({
+                    'Entry Date': entry_row['Date'],
+                    'Entry Price': entry_price,
+                    'Exit Date': entry_row['Date'],  # Same day exit
+                    'Exit Price': exit_price,
+                    'Type': trade_type,
+                    'Gap Size': entry_row['Gap'],
+                    'VIX': entry_row['VIX_Prev'],
+                    'Shares': position,
+                    'Profit': profit,
+                    'Exit Reason': exit_reason,
+                    'Capital After': capital
+                })
+        
+        trades_df = pd.DataFrame(trades)
+        
+        if len(trades_df) > 0:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(trades_df, self.initial_investment)
+            
+            gap_closed_trades = trades_df[trades_df['Exit Reason'] == 'Gap Closed']
+            statistics['gap_close_rate'] = len(gap_closed_trades) / len(trades_df) * 100 if len(trades_df) > 0 else 0
+            statistics['avg_gap_size'] = trades_df['Gap Size'].abs().mean()
+            statistics['avg_vix'] = trades_df['VIX'].mean() if 'VIX' in trades_df.columns else 0
+        else:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(pd.DataFrame(), self.initial_investment)
+            statistics['gap_close_rate'] = 0
+            statistics['avg_gap_size'] = 0
+            statistics['avg_vix'] = 0
+        
+        return trades_df, statistics
+    
+    def print_results(self, trades_df=None, statistics=None):
+        """Print strategy results with gap and VIX specific information."""
+        if statistics is not None:
+            print(f"\n{'='*50}")
+            print(f"{self.name} - Performance Summary")
+            print(f"{'='*50}")
+            print(f"Total Trades:    {statistics['total_trades']}")
+            print(f"Win Rate:        {statistics['win_rate']}%")
+            print(f"Gap Close Rate:  {statistics['gap_close_rate']:.2f}%")
+            print(f"Total Profit:    ${statistics['total_profit']:,.2f}")
+            print(f"ROI:             {statistics['roi']}%")
+            print(f"Sharpe Ratio:    {statistics['sharpe_ratio']}")
+            print(f"Max Drawdown:    {statistics['max_drawdown']}%")
+            print(f"Win/Loss Ratio:  {statistics['win_loss_ratio']}")
+            print(f"Avg Gap Size:    ${statistics['avg_gap_size']:.2f}")
+            print(f"Avg VIX Level:   {statistics['avg_vix']:.2f}")
+            print(f"VIX Range:       {self.vix_lower}-{self.vix_upper}")
+            print(f"{'='*50}\n")
+    
+    def run(self, data_file, save_results=False, output_dir='results'):
+        """Override run to handle VIX file."""
+        print(f"\nRunning {self.name}...")
+        
+        trades_df, statistics = self.run_backtest(data_file)
+        
+        if trades_df is not None:
+            self.print_results(trades_df, statistics)
+            
+            if save_results:
+                self.save_results(trades_df, statistics, output_dir)
+        
+        return trades_df, statistics
+
+
+def optimize_vix_range(data_file, vix_file=None):
+    """Optimize VIX range for best performance."""
+    results = []
+    
+    print("Optimizing VIX range...")
+    print("-" * 50)
+    
+    vix_ranges = [
+        (10, 15), (12, 18), (13, 20), (13, 22), (14, 24),
+        (15, 25), (16, 26), (18, 28), (20, 30), (15, 20)
+    ]
+    
+    for vix_lower, vix_upper in vix_ranges:
+        strategy = SPYGapFadeVIXStrategy(
+            initial_investment=16000,
+            vix_lower=vix_lower,
+            vix_upper=vix_upper
+        )
+        
+        trades_df, statistics = strategy.run_backtest(data_file, vix_file)
+        
+        if statistics['total_trades'] > 0:
+            results.append({
+                'VIX Range': f"{vix_lower}-{vix_upper}",
+                'Total Trades': statistics['total_trades'],
+                'Win Rate': statistics['win_rate'],
+                'Total Profit': statistics['total_profit'],
+                'Sharpe Ratio': statistics['sharpe_ratio'],
+                'Gap Close Rate': statistics['gap_close_rate']
+            })
+            
+            print(f"VIX {vix_lower}-{vix_upper}: {statistics['total_trades']} trades, "
+                  f"{statistics['win_rate']:.2f}% win rate, "
+                  f"${statistics['total_profit']:,.2f} profit")
+    
+    results_df = pd.DataFrame(results)
+    results_df = results_df.sort_values('Total Profit', ascending=False)
+    
+    print("\n" + "="*70)
+    print("VIX Range Optimization Results:")
+    print("="*70)
+    print(results_df.to_string(index=False))
+    
+    return results_df
+
+
+def main():
+    """Run the SPY Gap Fade VIX strategy."""
+    strategy = SPYGapFadeVIXStrategy(initial_investment=16000)
+    
+    data_file = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        'data', '7J0OK1VR.csv'
+    )
+    
+    trades_df, statistics = strategy.run(data_file, save_results=True, 
+                                       output_dir='../../results')
+    
+    print("\n" + "="*70)
+    print("VIX RANGE OPTIMIZATION")
+    print("="*70)
+    optimization_results = optimize_vix_range(data_file)
+    
+    return trades_df, statistics
+
+
+if __name__ == "__main__":
+    main()

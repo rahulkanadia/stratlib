@@ -1,0 +1,128 @@
+import pandas as pd
+import numpy as np
+from itertools import product
+from multiprocessing import Pool, cpu_count
+import warnings
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+def load_data(file_name):
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+def load_event_dates(events_file):
+    events_df = pd.read_csv(events_file, header=None, parse_dates=[0], dayfirst=True)
+    return set(events_df.iloc[:, 0].dt.normalize())
+
+def calculate_day_range(day):
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            return prev_close, True
+        else:
+            return curr_day['Close'], False
+    else:
+        if curr_day['High'] >= prev_close:
+            return prev_close, True
+        else:
+            return curr_day['Close'], False
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    number_of_shares = position_size / entry_price
+    return number_of_shares * (exit_price - entry_price) if trade_direction == 'Long' else number_of_shares * (entry_price - exit_price)
+
+def precompute_trades(df, vix_df, initial_investment, event_dates=None, exclude_events=True):
+    trades = []
+    vix_open_dict = {row['Date']: row['OPEN'] for _, row in vix_df.iterrows()}
+
+    for i in range(1, len(df)):
+        prev_day = df.iloc[i - 1]
+        curr_day = df.iloc[i]
+
+        if exclude_events and event_dates and curr_day['Date'].normalize() in event_dates:
+            continue
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+        entry_price = curr_day['Open']
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+        vix_open = vix_open_dict.get(curr_day['Date'], np.nan)
+
+        if pd.isna(vix_open):
+            continue
+
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+        trades.append({
+            'Date': curr_day['Date'],
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed,
+            'VIX_Open': vix_open,
+            'Profit/Loss': profit_loss
+        })
+
+    return pd.DataFrame(trades)
+
+def analyze_with_and_without_events(main_file, vix_file, events_file, initial_investment):
+    df = load_data(main_file)
+    vix_df = load_vix_data(vix_file)
+    event_dates = load_event_dates(events_file)
+
+    print("Analyzing with event days excluded...")
+    trades_excluded = precompute_trades(df, vix_df, initial_investment, event_dates, exclude_events=True)
+    profit_excluded = trades_excluded['Profit/Loss'].sum() if not trades_excluded.empty else 0
+
+    print("Analyzing with event days included...")
+    trades_included = precompute_trades(df, vix_df, initial_investment, event_dates, exclude_events=False)
+    profit_included = trades_included['Profit/Loss'].sum() if not trades_included.empty else 0
+
+    print("\n=== Comparison ===")
+    print(f"Total Profit (Excluding Event Days): ${profit_excluded:,.2f}")
+    print(f"Total Profit (Including Event Days): ${profit_included:,.2f}")
+
+    better_strategy = "Excluding Event Days" if profit_excluded > profit_included else "Including Event Days"
+    print(f"Better Strategy: {better_strategy}")
+
+    return trades_excluded, trades_included, profit_excluded, profit_included
+
+if __name__ == "__main__":
+    main_file = 'D6CK32X6.csv'
+    vix_file = 'VIX_History.csv'
+    events_file = 'events.csv'
+    initial_investment = 16000
+
+    trades_excluded, trades_included, profit_excluded, profit_included = analyze_with_and_without_events(
+        main_file, vix_file, events_file, initial_investment
+    )

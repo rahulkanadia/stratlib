@@ -1,0 +1,150 @@
+
+> 策略名称
+
+Relative-Strength-Index-Divergences-Libertus
+
+> 策略作者
+
+张超
+
+> 策略描述
+
+Hello all,
+
+To ease everyone's trading experience I made this script which colors RSI overbought and oversold conditions and as a bonus displays bullish or bearish divergences in last 50 candles (by default, you can change it).
+Script is open source, part of code is from Trading View examples. If you have suggestions or you already made some improvements, please report in comment.
+
+Happy trading and good luck!
+
+
+**backtest**
+
+ ![IMG](https:
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|v_input_1|14|RSI Length|
+|v_input_2|70|Overbought|
+|v_input_3|30|Oversold|
+|v_input_4|false|Hide pivots?|
+|v_input_5|false|Shorter labels?|
+|v_input_6|false|Hide labels and color background|
+|v_input_7|90|Div lookback period (bars)?|
+
+
+> 源码 (PineScript)
+
+``` javascript
+
+
+
+
+study(title="Relative Strength Index - Divergences - Libertus", shorttitle="RSI Div - Lib")
+len = input(14, minval=1, title="RSI Length")
+ob = input(defval=70, title="Overbought", type=input.integer, minval=0, maxval=100)
+os = input(defval=30, title="Oversold", type=input.integer, minval=0, maxval=100)
+
+
+rsi = rsi(close, len)
+band1 = hline(ob)
+band0 = hline(os)
+plot(rsi, color=(rsi > ob or rsi < os ? color.new(color.red, 0) : color.new(color.black, 0)))
+fill(band1, band0, color=color.new(color.purple, 97))
+
+
+piv = input(false,"Hide pivots?")
+shrt = input(false,"Shorter labels?")
+hidel = input(false, "Hide labels and color background")
+xbars = input(defval=90, title="Div lookback period (bars)?", type=input.integer, minval=1)
+hb = abs(highestbars(rsi, xbars)) 
+lb = abs(lowestbars(rsi, xbars)) 
+
+
+max = float(na)
+max_rsi = float(na)
+min = float(na)
+min_rsi = float(na)
+pivoth = bool(na)
+pivotl = bool(na)
+divbear = bool(na)
+divbull = bool(na)
+
+
+max := hb == 0 ? close : na(max[1]) ? close : max[1]
+max_rsi := hb == 0 ? rsi : na(max_rsi[1]) ? rsi : max_rsi[1]
+min := lb == 0 ? close : na(min[1]) ? close : min[1]
+min_rsi := lb == 0 ? rsi : na(min_rsi[1]) ? rsi : min_rsi[1]
+
+
+
+if close > max 
+    max := close 
+if rsi > max_rsi 
+    max_rsi := rsi 
+if close < min 
+    min := close 
+if rsi < min_rsi 
+    min_rsi := rsi 
+
+
+pivoth := (max_rsi == max_rsi[2]) and (max_rsi[2] != max_rsi[3]) ? true : na
+pivotl := (min_rsi == min_rsi[2]) and (min_rsi[2] != min_rsi[3]) ? true : na
+
+
+if (max[1] > max[2]) and (rsi[1] < max_rsi) and (rsi <= rsi[1])
+    divbear := true
+if (min[1] < min[2]) and (rsi[1] > min_rsi) and (rsi >= rsi[1])
+    divbull := true
+
+
+alertcondition(divbear, title='Bear div', message='Bear div')
+alertcondition(divbull, title='Bull div', message='Bull div')
+alertcondition(pivoth, title='Pivot high', message='Pivot high')
+alertcondition(pivotl, title='Pivot low', message='Pivot low')
+
+if divbull
+    strategy.entry("Enter Long", strategy.long)
+else if divbear
+    strategy.entry("Enter Short", strategy.short)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2022-05-24 15:25:05

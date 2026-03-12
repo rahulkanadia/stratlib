@@ -1,0 +1,311 @@
+import pandas as pd
+import numpy as np
+
+def load_data(file_name):
+    """
+    Loads the CSV file into a DataFrame, sorts it by date, and resets the index.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    """
+    Loads the VIX data from a CSV file into a DataFrame, sorts it by date, and resets the index.
+    Ensures that the 'Date' column is in datetime format.
+    """
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'], dayfirst=True, errors='coerce')
+    vix_df.dropna(subset=['Date'], inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+def calculate_day_range(day):
+    """
+    Calculates the trading range of a day (High - Low).
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    Calculates the gap between the previous day's close and the current day's open.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    """
+    Checks if the gap meets the specified conditions:
+    - At least $0.20
+    - Between 15% and 85% of the previous day's range
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def is_vix_valid(current_date, vix_df, lower_threshold, upper_threshold):
+    """
+    Checks if the VIX opening value on the day before the current date is greater than lower_threshold
+    and less than upper_threshold.
+    """
+    prev_date = current_date - pd.Timedelta(days=1)
+    
+    while prev_date not in vix_df['Date'].values and prev_date > vix_df['Date'].min():
+        prev_date -= pd.Timedelta(days=1)
+    
+    if prev_date not in vix_df['Date'].values:
+        return False  # No VIX data for the previous day
+    
+    vix_open = vix_df.loc[vix_df['Date'] == prev_date, 'OPEN'].values[0]
+    return lower_threshold < vix_open < upper_threshold
+
+def determine_trade_direction(gap):
+    """
+    Determines the trade direction based on the gap:
+    - Gap up: Short position
+    - Gap down: Long position
+    """
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """
+    Checks if the gap is closed during the trading day and returns the exit price.
+    """
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long position
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    Calculates the profit or loss of a trade.
+    """
+    number_of_shares = position_size / entry_price
+
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:  # Short position
+        profit_loss = number_of_shares * (entry_price - exit_price)
+
+    return profit_loss
+
+def analyze_trades(df, vix_df, lower_threshold, upper_threshold):
+    """
+    Analyzes the DataFrame for valid gap trades based on VIX lower and upper thresholds, and returns a DataFrame of trades.
+    """
+    trades = []
+    total_days = len(df)
+    
+    for i in range(1, total_days):
+        prev_day = df.iloc[i - 1]
+        curr_day = df.iloc[i]
+        
+        if not is_vix_valid(curr_day['Date'], vix_df, lower_threshold, upper_threshold):
+            continue  # If VIX condition is not met, do not trade
+        
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue  # Avoid division by zero
+        
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+        
+        trade_direction = determine_trade_direction(gap)
+        entry_price = curr_day['Open']
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+        
+        trades.append({
+            'Date': curr_day['Date'],
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed
+        })
+    return pd.DataFrame(trades)
+
+def calculate_statistics(trades_df):
+    """
+    Calculates and prints the required statistics:
+    - Average Gain per Trade (in dollars)
+    - Average Loss per Trade (in dollars)
+    - Maximum Gain per Trade (in dollars) and date
+    - Maximum Loss per Trade (in dollars) and date
+    """
+    if trades_df.empty:
+        print("No trades met the criteria.")
+        return
+
+    gains = trades_df[trades_df['Profit/Loss'] > 0]
+    losses = trades_df[trades_df['Profit/Loss'] < 0]
+
+    average_gain = gains['Profit/Loss'].mean() if not gains.empty else 0
+    average_loss = losses['Profit/Loss'].mean() if not losses.empty else 0
+    max_gain = gains['Profit/Loss'].max() if not gains.empty else 0
+    max_loss = losses['Profit/Loss'].min() if not losses.empty else 0  # Note: losses are negative
+
+    if not gains.empty:
+        max_gain_row = gains.loc[gains['Profit/Loss'].idxmax()]
+        max_gain_date = max_gain_row['Date']
+    else:
+        max_gain_date = None
+
+    if not losses.empty:
+        max_loss_row = losses.loc[losses['Profit/Loss'].idxmin()]
+        max_loss_date = max_loss_row['Date']
+    else:
+        max_loss_date = None
+
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Average Gain per Trade: ${average_gain:,.2f}")
+    print(f"Average Loss per Trade: ${average_loss:,.2f}")
+    if max_gain_date is not None:
+        print(f"Maximum Gain per Trade: ${max_gain:,.2f} on {max_gain_date.date()}")
+    else:
+        print("No gains to report.")
+
+    if max_loss_date is not None:
+        print(f"Maximum Loss per Trade: ${max_loss:,.2f} on {max_loss_date.date()}")
+    else:
+        print("No losses to report.")
+
+def simulate_trading(trades_df, initial_investment):
+    """
+    Simulates trading with a given initial investment and returns the final amount.
+    """
+    if trades_df.empty:
+        print("No trades to simulate.")
+        return initial_investment
+
+    current_amount = initial_investment
+    trade_results = []
+
+    for index, row in trades_df.iterrows():
+        trade_direction = row['Trade Direction']
+        entry_price = row['Entry Price']
+        exit_price = row['Exit Price']
+        
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+        
+        current_amount += profit_loss
+        
+        trade_results.append(profit_loss)
+
+    total_profit_loss = sum(trade_results)
+    final_amount = current_amount
+
+    print(f"Initial Investment: ${initial_investment:,.2f}")
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Total Profit/Loss from All Trades: ${total_profit_loss:,.2f}")
+    print(f"Final Amount after All Trades: ${final_amount:,.2f}")
+
+    return final_amount
+
+def optimize_vix_thresholds(main_file, vix_file, initial_investment, lower_range=range(10, 31), upper_range=range(20, 41)):
+    """
+    Optimizes the VIX thresholds by testing combinations of lower thresholds (10-30) and upper thresholds (20-40).
+    Returns the lower and upper thresholds that yield the highest profit.
+    """
+    df = load_data(main_file)
+    vix_df = load_vix_data(vix_file)
+    
+    optimization_results = []
+
+    for lower_threshold in lower_range:
+        for upper_threshold in upper_range:
+            if upper_threshold <= lower_threshold:
+                continue  # Ensure upper_threshold is greater than lower_threshold
+            
+            trades_df = analyze_trades(df, vix_df, lower_threshold, upper_threshold)
+            
+            if trades_df.empty:
+                total_profit_loss = 0
+            else:
+                trades_df['Profit/Loss'] = trades_df.apply(
+                    lambda row: calculate_profit_loss(
+                        row['Trade Direction'],
+                        row['Entry Price'],
+                        row['Exit Price'],
+                        initial_investment
+                    ),
+                    axis=1
+                )
+                total_profit_loss = trades_df['Profit/Loss'].sum()
+            
+            optimization_results.append({
+                'Lower Threshold': lower_threshold,
+                'Upper Threshold': upper_threshold,
+                'Total Profit/Loss': total_profit_loss
+            })
+    
+    optimization_df = pd.DataFrame(optimization_results)
+    if optimization_df.empty:
+        print("No optimization results available.")
+        return None, None, optimization_df
+    
+    best_trade = optimization_df.loc[optimization_df['Total Profit/Loss'].idxmax()]
+    
+    print("Optimization Results (Top 10):")
+    print(optimization_df.sort_values(by='Total Profit/Loss', ascending=False).head(10))  # Display top 10 results
+    
+    print("\nBest Thresholds:")
+    print(f"Lower Threshold: {best_trade['Lower Threshold']}, Upper Threshold: {best_trade['Upper Threshold']}, Total Profit/Loss: ${best_trade['Total Profit/Loss']:,.2f}")
+    
+    return best_trade['Lower Threshold'], best_trade['Upper Threshold'], optimization_df
+
+def analyze_spy_gaps_optimized(main_file, vix_file, initial_investment):
+    """
+    Main function that orchestrates the gap analysis, optimizes VIX thresholds, and simulates trading.
+    """
+    best_lower_threshold, best_upper_threshold, optimization_df = optimize_vix_thresholds(main_file, vix_file, initial_investment)
+    
+    if best_lower_threshold is None or best_upper_threshold is None:
+        print("Optimization did not yield any valid trades.")
+        return pd.DataFrame(), initial_investment, optimization_df
+    
+    print(f"\nOptimal VIX Thresholds: Lower Threshold = {best_lower_threshold}, Upper Threshold = {best_upper_threshold}")
+    
+    df = load_data(main_file)
+    vix_df = load_vix_data(vix_file)
+    trades_df = analyze_trades(df, vix_df, best_lower_threshold, best_upper_threshold)
+    
+    if trades_df.empty:
+        print("No trades met the optimal criteria.")
+    else:
+        trades_df['Profit/Loss'] = trades_df.apply(
+            lambda row: calculate_profit_loss(
+                row['Trade Direction'],
+                row['Entry Price'],
+                row['Exit Price'],
+                initial_investment
+            ),
+            axis=1
+        )
+    
+    calculate_statistics(trades_df)
+    
+    final_amount = simulate_trading(trades_df, initial_investment)
+    
+    return trades_df, final_amount, optimization_df
+
+initial_investment = 16000  # $16,000 initial investment
+
+trades, final_amount, optimization_df = analyze_spy_gaps_optimized('YI96JOR6.csv', 'VIX_History.csv', initial_investment)
+
+print("\nTrade Details:")
+print(trades)

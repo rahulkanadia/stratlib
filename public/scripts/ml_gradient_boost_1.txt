@@ -1,0 +1,289 @@
+"""
+Machine Learning Strategy: Gradient Boosting Classifier
+-------------------------------------------------------
+This strategy uses a Gradient Boosting model to predict profitable trades
+based on technical indicators and market conditions.
+
+Features:
+- Gap size and validity
+- Previous day range
+- VIX level
+- ATR (Average True Range)
+- Trade direction
+
+Model:
+- Gradient Boosting Classifier
+- Train on 80% of data, test on 20%
+- Predicts whether a trade will be profitable
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+import warnings
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+
+warnings.filterwarnings('ignore')
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utils import BaseStrategy, calculate_atr, calculate_gap
+
+
+class MLGradientBoostStrategy(BaseStrategy):
+    """Machine Learning strategy using Gradient Boosting."""
+    
+    def __init__(self, initial_investment=16000):
+        super().__init__("ML Gradient Boost Classifier", initial_investment)
+        self.model = None
+        self.min_gap_size = 0.20
+        self.gap_range_min = 0.15
+        self.gap_range_max = 0.85
+        self.feature_columns = None
+        
+    def calculate_indicators(self, df):
+        """Calculate all required technical indicators."""
+        df['Prev_Close'] = df['Close'].shift(1)
+        df['Prev_High'] = df['High'].shift(1)
+        df['Prev_Low'] = df['Low'].shift(1)
+        
+        df['Day_Range'] = df['High'] - df['Low']
+        df['Prev_Day_Range'] = df['Day_Range'].shift(1)
+        
+        df['Gap'] = df['Open'] - df['Prev_Close']
+        df['Gap_Abs'] = df['Gap'].abs()
+        df['Gap_Percent'] = calculate_gap(df['Open'], df['Prev_Close'])
+        df['Gap_Percent_Range'] = df['Gap_Abs'] / df['Prev_Day_Range']
+        
+        df['Gap_Valid'] = (
+            (df['Gap_Abs'] >= self.min_gap_size) &
+            (df['Gap_Percent_Range'] >= self.gap_range_min) &
+            (df['Gap_Percent_Range'] <= self.gap_range_max) &
+            (df['Prev_Day_Range'] > 0)
+        ).astype(int)
+        
+        df['Gap_Up'] = (df['Gap'] > 0).astype(int)
+        
+        df['ATR'] = calculate_atr(df['High'], df['Low'], df['Close'], period=14)
+        df['ATR_Ratio'] = df['ATR'] / df['Close']
+        
+        df['Volume_Ratio'] = df['Volume'] / df['Volume'].rolling(window=20).mean()
+        
+        df['Close_MA_20'] = df['Close'].rolling(window=20).mean()
+        df['Price_Position'] = (df['Close'] - df['Close_MA_20']) / df['Close_MA_20']
+        
+        df['Returns'] = df['Close'].pct_change()
+        df['Volatility_20'] = df['Returns'].rolling(window=20).std()
+        
+        return df
+    
+    def prepare_features(self, df):
+        """Prepare features for ML model."""
+        feature_cols = [
+            'Gap', 'Gap_Percent', 'Gap_Percent_Range', 'Gap_Valid', 'Gap_Up',
+            'Prev_Day_Range', 'ATR', 'ATR_Ratio', 'Volume_Ratio',
+            'Price_Position', 'Volatility_20'
+        ]
+        
+        df_clean = df.dropna(subset=feature_cols)
+        
+        return df_clean, feature_cols
+    
+    def calculate_trade_outcome(self, df):
+        """Calculate whether each potential trade would be profitable."""
+        trade_outcomes = []
+        
+        for i in range(len(df)):
+            row = df.iloc[i]
+            
+            if not row['Gap_Valid']:
+                trade_outcomes.append(np.nan)
+                continue
+            
+            if row['Gap_Up']:
+                entry = row['Open']
+                if row['Low'] <= row['Prev_Close']:
+                    exit_price = row['Prev_Close']
+                else:
+                    exit_price = row['Close']
+                profit = entry - exit_price
+            else:
+                entry = row['Open']
+                if row['High'] >= row['Prev_Close']:
+                    exit_price = row['Prev_Close']
+                else:
+                    exit_price = row['Close']
+                profit = exit_price - entry
+            
+            trade_outcomes.append(1 if profit > 0 else 0)
+        
+        df['Trade_Outcome'] = trade_outcomes
+        return df
+    
+    def train_model(self, df):
+        """Train the Gradient Boosting model."""
+        df_clean, feature_cols = self.prepare_features(df)
+        self.feature_columns = feature_cols
+        
+        df_clean = self.calculate_trade_outcome(df_clean)
+        
+        df_trades = df_clean[df_clean['Gap_Valid'] == 1].copy()
+        
+        if len(df_trades) < 100:
+            print(f"Warning: Only {len(df_trades)} valid trades for training")
+            return False
+        
+        X = df_trades[feature_cols]
+        y = df_trades['Trade_Outcome']
+        
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, shuffle=False
+        )
+        
+        print(f"Training on {len(X_train)} samples, testing on {len(X_test)} samples")
+        
+        self.model = GradientBoostingClassifier(
+            n_estimators=100,
+            learning_rate=0.1,
+            max_depth=3,
+            random_state=42
+        )
+        
+        self.model.fit(X_train, y_train)
+        
+        train_score = self.model.score(X_train, y_train)
+        test_score = self.model.score(X_test, y_test)
+        
+        print(f"Training accuracy: {train_score:.3f}")
+        print(f"Testing accuracy: {test_score:.3f}")
+        
+        feature_importance = pd.DataFrame({
+            'feature': feature_cols,
+            'importance': self.model.feature_importances_
+        }).sort_values('importance', ascending=False)
+        
+        print("\nTop 5 Most Important Features:")
+        print(feature_importance.head())
+        
+        return True
+    
+    def get_entry_conditions(self, df):
+        """Use ML model to predict profitable trades."""
+        if self.model is None:
+            raise ValueError("Model not trained yet")
+        
+        features = df[self.feature_columns].fillna(0)
+        
+        predictions = self.model.predict_proba(features)[:, 1]
+        
+        entry_signals = (df['Gap_Valid'] == 1) & (predictions > 0.6)
+        
+        return entry_signals
+    
+    def run_backtest(self, data_file):
+        """Custom backtest with ML model training."""
+        self.df = pd.read_csv(data_file, parse_dates=['Date'])
+        self.df.sort_values('Date', inplace=True)
+        self.df.reset_index(drop=True, inplace=True)
+        
+        self.df = self.calculate_indicators(self.df)
+        
+        train_size = int(len(self.df) * 0.8)
+        train_df = self.df.iloc[:train_size].copy()
+        
+        print("Training ML model...")
+        if not self.train_model(train_df):
+            return pd.DataFrame(), {}
+        
+        test_df = self.df.iloc[train_size:].copy()
+        print(f"\nRunning backtest on {len(test_df)} days...")
+        
+        entry_signals = pd.Series(False, index=test_df.index)
+        
+        test_df_clean, _ = self.prepare_features(test_df)
+        if len(test_df_clean) > 0:
+            features = test_df_clean[self.feature_columns]
+            predictions = self.model.predict_proba(features)[:, 1]
+            
+            for idx, pred in zip(test_df_clean.index, predictions):
+                if test_df.loc[idx, 'Gap_Valid'] == 1 and pred > 0.6:
+                    entry_signals.loc[idx] = True
+        
+        trades = []
+        capital = self.initial_investment
+        
+        for idx in test_df.index:
+            if entry_signals.loc[idx]:
+                row = test_df.loc[idx]
+                entry_price = row['Open']
+                
+                if row['Gap_Up']:
+                    trade_type = 'Short'
+                    if row['Low'] <= row['Prev_Close']:
+                        exit_price = row['Prev_Close']
+                        exit_reason = 'Gap Closed'
+                    else:
+                        exit_price = row['Close']
+                        exit_reason = 'Market Close'
+                else:
+                    trade_type = 'Long'
+                    if row['High'] >= row['Prev_Close']:
+                        exit_price = row['Prev_Close']
+                        exit_reason = 'Gap Closed'
+                    else:
+                        exit_price = row['Close']
+                        exit_reason = 'Market Close'
+                
+                position = self.calculate_position_size(capital, entry_price)
+                
+                if trade_type == 'Long':
+                    profit = (exit_price - entry_price) * position
+                else:  # Short
+                    profit = (entry_price - exit_price) * position
+                
+                capital += profit
+                
+                trades.append({
+                    'Entry Date': row['Date'],
+                    'Entry Price': entry_price,
+                    'Exit Date': row['Date'],
+                    'Exit Price': exit_price,
+                    'Type': trade_type,
+                    'Gap Size': row['Gap'],
+                    'Shares': position,
+                    'Profit': profit,
+                    'Exit Reason': exit_reason,
+                    'Capital After': capital
+                })
+        
+        trades_df = pd.DataFrame(trades)
+        
+        if len(trades_df) > 0:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(trades_df, self.initial_investment)
+        else:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(pd.DataFrame(), self.initial_investment)
+        
+        return trades_df, statistics
+
+
+def main():
+    """Run the ML Gradient Boost strategy."""
+    strategy = MLGradientBoostStrategy(initial_investment=16000)
+    
+    data_file = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        'data', '7J0OK1VR.csv'
+    )
+    
+    trades_df, statistics = strategy.run(data_file, save_results=True, 
+                                       output_dir='../../results')
+    
+    return trades_df, statistics
+
+
+if __name__ == "__main__":
+    main()

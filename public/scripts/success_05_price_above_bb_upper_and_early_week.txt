@@ -1,0 +1,130 @@
+import pandas as pd
+import numpy as np
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from gap_utils import *
+
+class PriceAboveBBUpperAndEarlyWeekStrategy:
+    """
+    Two-Indicator Strategy: Price_Above_BB_Upper + Early_Week
+    Success Rate: 94.44% | Total Profit: $480.70 | Trades: 18
+    
+    This strategy combines:
+    1. Price_Above_BB_Upper
+    2. Early_Week
+    """
+    
+    def __init__(self):
+        self.name = "Price_Above_BB_Upper + Early_Week"
+        self.indicator1 = "Price_Above_BB_Upper"
+        self.indicator2 = "Early_Week"
+        self.initial_investment = 16000
+        
+    def calculate_indicators(self, df):
+        """Calculate required indicators"""
+        
+        upper_bb, middle_bb, lower_bb = calculate_bollinger_bands(df)
+        df['BB_Upper'] = upper_bb
+        df['BB_Middle'] = middle_bb
+        df['BB_Lower'] = lower_bb
+        
+        return df
+    
+    def get_filter_conditions(self, df):
+        """Get the two indicator conditions"""
+        condition1 = df['Close'].shift(1) > df['BB_Upper']
+        
+        condition2 = pd.Series([True]*len(df))
+        
+        return condition1 & condition2
+    
+    def run_strategy(self, data_file):
+        """Run the complete strategy"""
+        df = load_data(data_file)
+        
+        df = self.calculate_indicators(df)
+        
+        filter_condition = self.get_filter_conditions(df)
+        
+        trades = []
+        for i in range(1, len(df)):
+            if not filter_condition.iloc[i]:
+                continue
+                
+            prev_day = df.iloc[i - 1]
+            curr_day = df.iloc[i]
+            
+            gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+            if not is_gap_valid(gap):
+                continue
+            
+            trade_direction = determine_trade_direction(gap)
+            entry_price = curr_day['Open']
+            exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+            
+            profit_loss = calculate_profit_loss(
+                trade_direction, entry_price, exit_price, self.initial_investment
+            )
+            
+            trades.append({
+                'Date': curr_day['Date'],
+                'Trade Direction': trade_direction,
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'Gap': gap,
+                'Gap Closed': gap_closed,
+                'Profit/Loss': profit_loss
+            })
+        
+        trades_df = pd.DataFrame(trades)
+        stats = calculate_statistics(trades_df, self.name, self.initial_investment)
+        
+        return stats, trades_df
+    
+    def print_results(self, stats, trades_df):
+        """Print formatted results"""
+        print(f"\n{'='*60}")
+        print(f"{self.name} - Two-Indicator Gap Trading Strategy")
+        print(f"{'='*60}")
+        print(f"Indicators: {self.indicator1} + {self.indicator2}")
+        print(f"\nStrategy Performance:")
+        print(f"Total Trades: {stats['Total Trades']}")
+        print(f"Success Rate: {stats['Success Rate']:.2f}%")
+        print(f"Total Profit: ${stats['Total Profit']:,.2f}")
+        print(f"ROI: {stats['ROI']:.2f}%")
+        print(f"Final Equity: ${stats['Final Equity']:,.2f}")
+        print(f"{'='*60}\n")
+
+def main():
+    """Run the strategy"""
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv') 
+                and not f.startswith('two_indicator')]
+    
+    if csv_files:
+        data_file = csv_files[0]
+    else:
+        data_file = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/7J0OK1VR.csv'
+        if not os.path.exists(data_file):
+            print("Error: No CSV data file found.")
+            return
+    
+    print(f"Using data file: {data_file}")
+    
+    strategy = PriceAboveBBUpperAndEarlyWeekStrategy()
+    
+    try:
+        stats, trades_df = strategy.run_strategy(data_file)
+        strategy.print_results(stats, trades_df)
+        
+        output_file = f"{strategy.name.replace(' ', '_')}_trades.csv"
+        trades_df.to_csv(output_file, index=False)
+        print(f"Trade details saved to: {output_file}")
+        
+    except Exception as e:
+        print(f"Error running strategy: {e}")
+
+if __name__ == "__main__":
+    main()

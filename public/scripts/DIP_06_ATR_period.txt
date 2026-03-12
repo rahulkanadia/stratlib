@@ -1,0 +1,129 @@
+import pandas as pd
+import numpy as np
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_atr(df, period=14):
+    """Calculate Average True Range."""
+    df['Previous Close'] = df['Close'].shift(1)
+    df['High-Low'] = df['High'] - df['Low']
+    df['High-PrevClose'] = abs(df['High'] - df['Previous Close'])
+    df['Low-PrevClose'] = abs(df['Low'] - df['Previous Close'])
+    df['TR'] = df[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+    df['ATR'] = df['TR'].rolling(window=period).mean()
+    return df
+
+def calculate_rolling_average_drop(df, window=21):
+    """Calculate rolling average of drops on red days."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=window).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def analyze_dip_with_atr_condition(df, initial_investment=16000, rolling_window=21, atr_period=14, atr_multiplier=1.0):
+    """Implement DIP strategy where desired drop must be less than ATR * multiplier."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df, window=rolling_window)
+    df = calculate_atr(df, period=atr_period)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i == 0:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        atr_value = current_day['ATR']
+        
+        if avg_drop <= 0 or pd.isna(atr_value):
+            continue
+        
+        if avg_drop > (atr_value * atr_multiplier):
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            trades.append({
+                'Date': current_day['Date'],
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'ATR': atr_value,
+                'Drop/ATR': avg_drop/atr_value if atr_value > 0 else 0,
+                'Profit/Loss': profit_loss
+            })
+    
+    return pd.DataFrame(trades)
+
+def optimize_atr_period_and_multiplier(file_name, initial_investment=16000):
+    """Optimize ATR period and multiplier for best success rate."""
+    df = load_data(file_name)
+    
+    best_params = None
+    best_success_rate = 0
+    results = []
+    
+    for atr_period in range(5, 31, 5):
+        for multiplier in np.arange(0.5, 2.1, 0.25):
+            trades_df = analyze_dip_with_atr_condition(df, initial_investment, 21, atr_period, multiplier)
+            
+            if len(trades_df) >= 100:  # Only consider if we have at least 100 trades
+                total_trades = len(trades_df)
+                winning_trades = len(trades_df[trades_df['Profit/Loss'] > 0])
+                success_rate = winning_trades / total_trades if total_trades > 0 else 0
+                total_profit = trades_df['Profit/Loss'].sum()
+                
+                results.append({
+                    'ATR Period': atr_period,
+                    'Multiplier': round(multiplier, 2),
+                    'Total Trades': total_trades,
+                    'Success Rate': success_rate,
+                    'Total Profit': total_profit
+                })
+                
+                if success_rate > best_success_rate:
+                    best_success_rate = success_rate
+                    best_params = (atr_period, multiplier)
+    
+    results_df = pd.DataFrame(results)
+    print("=== ATR Period & Multiplier Optimization Results ===")
+    print(results_df.sort_values('Success Rate', ascending=False).head(10))
+    
+    if best_params:
+        print(f"\nBest ATR Period: {best_params[0]}")
+        print(f"Best Multiplier: {best_params[1]:.2f}")
+        print(f"Best Success Rate: {best_success_rate:.2%}")
+        
+        final_trades = analyze_dip_with_atr_condition(df, initial_investment, 21, best_params[0], best_params[1])
+        print(f"\nFinal Results with ATR Period={best_params[0]}, Multiplier={best_params[1]:.2f}:")
+        print(f"Total Trades: {len(final_trades)}")
+        print(f"Total Profit: ${final_trades['Profit/Loss'].sum():,.2f}")
+    
+    return best_params, best_success_rate
+
+if __name__ == "__main__":
+    file_name = "../7J0OK1VR.csv"
+    initial_investment = 16000
+    best_params, best_rate = optimize_atr_period_and_multiplier(file_name, initial_investment)

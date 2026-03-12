@@ -1,0 +1,429 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_moving_averages(df):
+    """Calculate various moving averages and trend indicators WITHOUT look-ahead bias."""
+    df['MA10'] = df['Close'].rolling(window=10).mean().shift(1)
+    df['MA20'] = df['Close'].rolling(window=20).mean().shift(1)
+    df['MA50'] = df['Close'].rolling(window=50).mean().shift(1)
+    df['MA100'] = df['Close'].rolling(window=100).mean().shift(1)
+    df['MA200'] = df['Close'].rolling(window=200).mean().shift(1)
+    
+    df['PrevClose'] = df['Close'].shift(1)
+    
+    df['OpenAboveMA10'] = df['Open'] > df['MA10']
+    df['OpenAboveMA20'] = df['Open'] > df['MA20']
+    df['OpenAboveMA50'] = df['Open'] > df['MA50']
+    df['OpenAboveMA100'] = df['Open'] > df['MA100']
+    df['OpenAboveMA200'] = df['Open'] > df['MA200']
+    
+    df['OpenDistanceMA10%'] = ((df['Open'] - df['MA10']) / df['MA10'] * 100)
+    df['OpenDistanceMA20%'] = ((df['Open'] - df['MA20']) / df['MA20'] * 100)
+    df['OpenDistanceMA50%'] = ((df['Open'] - df['MA50']) / df['MA50'] * 100)
+    
+    df['MA20Trend'] = (df['MA20'] - df['MA20'].shift(5)) / df['MA20'].shift(5) * 100
+    df['MA50Trend'] = (df['MA50'] - df['MA50'].shift(10)) / df['MA50'].shift(10) * 100
+    
+    df['MAAlignment'] = (
+        (df['MA10'] > df['MA20']) & 
+        (df['MA20'] > df['MA50']) & 
+        (df['MA50'] > df['MA100'])
+    )
+    
+    return df
+
+def calculate_rolling_average_drop(df, window=21):
+    """Calculate rolling average of drops on red days - using historical data only."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=window).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def analyze_ma_filter_strategy(df, initial_investment=16000, ma_period=20, position='above'):
+    """
+    Implement DIP strategy with MA filter - NO LOOK-AHEAD BIAS VERSION.
+    position: 'above' or 'below' the moving average
+    """
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    df = calculate_moving_averages(df)
+    
+    trades = []
+    ma_column = f'MA{ma_period}'
+    above_column = f'OpenAboveMA{ma_period}'  # Using Open price position
+    distance_column = f'OpenDistanceMA{ma_period}%'  # Using Open price distance
+    
+    for i in range(len(df)):
+        if i < max(21, ma_period):  # Need history for calculations
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']  # Already shifted, so it's yesterday's average
+        
+        if avg_drop <= 0:
+            continue
+        
+        open_above_ma = current_day[above_column]
+        if position == 'above' and not open_above_ma:
+            continue
+        elif position == 'below' and open_above_ma:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        high_price = current_day['High']
+        volume = current_day['Volume']
+        ma_value = current_day[ma_column]  # Yesterday's MA value
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            intraday_return = (exit_price - entry_price) / entry_price * 100
+            max_potential = (high_price - entry_price) / entry_price * 100
+            distance_from_ma = current_day[distance_column] if distance_column in current_day.index else 0
+            
+            ma_trend = current_day.get('MA20Trend', 0)
+            ma_alignment = current_day.get('MAAlignment', False)
+            
+            open_above_ma200 = current_day.get('OpenAboveMA200', True)
+            recent_volatility = df.iloc[max(0, i-10):i]['Close'].pct_change().std() * 100
+            
+            trades.append({
+                'Date': current_day['Date'],
+                'Entry': entry_price,
+                'Exit': exit_price,
+                'Profit/Loss': profit_loss,
+                'IntradayReturn%': intraday_return,
+                'MaxPotential%': max_potential,
+                'OpenDistanceFromMA%': distance_from_ma,
+                'MATrend%': ma_trend,
+                'MAAlignment': ma_alignment,
+                'OpenAboveMA200': open_above_ma200,
+                'RecentVolatility%': recent_volatility,
+                'Volume': volume,
+                'Open': open_price,
+                'High': high_price,
+                'Low': low_price,
+                'Close': close_price,
+                'MA_Value': ma_value,
+                'AvgDrop': avg_drop
+            })
+    
+    return trades
+
+def analyze_different_ma_filters(df, initial_investment=16000):
+    """Analyze performance for different MA periods and positions."""
+    filter_results = {}
+    
+    ma_periods = [10, 20, 50, 100, 200]
+    positions = ['above', 'below']
+    
+    for ma_period in ma_periods:
+        for position in positions:
+            key = f"MA{ma_period}_{position}"
+            trades = analyze_ma_filter_strategy(df, initial_investment, ma_period, position)
+            
+            if trades:
+                df_trades = pd.DataFrame(trades)
+                total_profit = df_trades['Profit/Loss'].sum()
+                num_trades = len(trades)
+                success_rate = (df_trades['Profit/Loss'] > 0).sum() / num_trades * 100
+                avg_profit = df_trades['Profit/Loss'].mean()
+                avg_distance = df_trades['OpenDistanceFromMA%'].mean()
+                
+                filter_results[key] = {
+                    'trades': trades,
+                    'total_profit': total_profit,
+                    'num_trades': num_trades,
+                    'success_rate': success_rate,
+                    'avg_profit': avg_profit,
+                    'avg_distance': avg_distance,
+                    'ma_period': ma_period,
+                    'position': position
+                }
+            else:
+                filter_results[key] = {
+                    'trades': [],
+                    'total_profit': 0,
+                    'num_trades': 0,
+                    'success_rate': 0,
+                    'avg_profit': 0,
+                    'avg_distance': 0,
+                    'ma_period': ma_period,
+                    'position': position
+                }
+    
+    return filter_results
+
+def calculate_detailed_statistics(trades):
+    """Calculate comprehensive statistics for the trades."""
+    if not trades:
+        return None
+    
+    df_trades = pd.DataFrame(trades)
+    
+    total_trades = len(trades)
+    profitable_trades = df_trades[df_trades['Profit/Loss'] > 0]
+    losing_trades = df_trades[df_trades['Profit/Loss'] < 0]
+    
+    num_winners = len(profitable_trades)
+    num_losers = len(losing_trades)
+    success_rate = num_winners / total_trades * 100
+    
+    total_profit = df_trades['Profit/Loss'].sum()
+    avg_profit_all = df_trades['Profit/Loss'].mean()
+    
+    avg_winner = profitable_trades['Profit/Loss'].mean() if num_winners > 0 else 0
+    avg_loser = losing_trades['Profit/Loss'].mean() if num_losers > 0 else 0
+    
+    largest_winner = profitable_trades['Profit/Loss'].max() if num_winners > 0 else 0
+    largest_loser = losing_trades['Profit/Loss'].min() if num_losers > 0 else 0
+    
+    profit_factor = abs(profitable_trades['Profit/Loss'].sum() / losing_trades['Profit/Loss'].sum()) if num_losers > 0 else float('inf')
+    win_loss_ratio = abs(avg_winner / avg_loser) if avg_loser != 0 else float('inf')
+    
+    distance_bins = pd.cut(df_trades['OpenDistanceFromMA%'], bins=[-10, -2, 0, 2, 5, 20], 
+                          labels=['Far Below', 'Below', 'Near', 'Above', 'Far Above'])
+    distance_performance = df_trades.groupby(distance_bins).agg({
+        'Profit/Loss': ['sum', 'count', 'mean', lambda x: (x > 0).sum() / len(x) * 100]
+    }).round(2)
+    distance_performance.columns = ['Total Profit', 'Trades', 'Avg Profit', 'Win Rate']
+    
+    trend_bins = pd.cut(df_trades['MATrend%'], bins=[-20, -1, 0, 1, 20], 
+                       labels=['Strong Down', 'Weak Down', 'Weak Up', 'Strong Up'])
+    trend_performance = df_trades.groupby(trend_bins).agg({
+        'Profit/Loss': ['mean', 'count', lambda x: (x > 0).sum() / len(x) * 100]
+    }).round(2)
+    trend_performance.columns = ['Avg Profit', 'Trades', 'Win Rate']
+    
+    alignment_performance = df_trades.groupby('MAAlignment').agg({
+        'Profit/Loss': ['sum', 'count', 'mean', lambda x: (x > 0).sum() / len(x) * 100]
+    }).round(2)
+    alignment_performance.columns = ['Total Profit', 'Trades', 'Avg Profit', 'Win Rate']
+    alignment_performance.index = ['Not Aligned', 'Aligned']
+    
+    return {
+        'total_trades': total_trades,
+        'num_winners': num_winners,
+        'num_losers': num_losers,
+        'success_rate': success_rate,
+        'total_profit': total_profit,
+        'avg_profit_all': avg_profit_all,
+        'avg_winner': avg_winner,
+        'avg_loser': avg_loser,
+        'largest_winner': largest_winner,
+        'largest_loser': largest_loser,
+        'profit_factor': profit_factor,
+        'win_loss_ratio': win_loss_ratio,
+        'distance_performance': distance_performance,
+        'trend_performance': trend_performance,
+        'alignment_performance': alignment_performance
+    }
+
+def main():
+    """Main function to run the MA filter analysis."""
+    print("="*80)
+    print("MOVING AVERAGE FILTER DIP STRATEGY - NO LOOK-AHEAD BIAS VERSION")
+    print("="*80)
+    print(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Initial Investment: $16,000")
+    print("="*80)
+    
+    df = load_data('../7J0OK1VR.csv')
+    
+    filter_results = analyze_different_ma_filters(df)
+    
+    print("\n1. MOVING AVERAGE FILTER COMPARISON")
+    print("-"*90)
+    print(f"{'MA Filter':<15} {'Trades':<8} {'Success Rate':<15} {'Total Profit':<15} {'Avg Profit':<12} {'Avg Distance%':<15}")
+    print("-"*90)
+    
+    filter_summary = []
+    for key, result in filter_results.items():
+        print(f"{key:<15} {result['num_trades']:<8} {result['success_rate']:<15.2f}% ${result['total_profit']:<14,.2f} ${result['avg_profit']:<11.2f} {result['avg_distance']:<15.2f}")
+        filter_summary.append({
+            'Filter': key,
+            'Trades': result['num_trades'],
+            'Success Rate': result['success_rate'],
+            'Total Profit': result['total_profit']
+        })
+    
+    best_filter = max(filter_results.items(), key=lambda x: x[1]['success_rate'] if x[1]['num_trades'] > 50 else 0)
+    print(f"\nBest Filter: {best_filter[0]} with {best_filter[1]['success_rate']:.2f}% success rate")
+    
+    print(f"\n2. DETAILED ANALYSIS FOR {best_filter[0].upper()}")
+    print("="*80)
+    
+    best_trades = best_filter[1]['trades']
+    stats = calculate_detailed_statistics(best_trades)
+    
+    print("\nOVERALL PERFORMANCE")
+    print("-"*50)
+    print(f"Total Trades: {stats['total_trades']}")
+    print(f"Winning Trades: {stats['num_winners']}")
+    print(f"Losing Trades: {stats['num_losers']}")
+    print(f"Success Rate: {stats['success_rate']:.2f}%")
+    print(f"Total Profit: ${stats['total_profit']:,.2f}")
+    print(f"Average Profit per Trade: ${stats['avg_profit_all']:.2f}")
+    
+    print("\nRISK/REWARD METRICS")
+    print("-"*50)
+    print(f"Average Winner: ${stats['avg_winner']:.2f}")
+    print(f"Average Loser: ${stats['avg_loser']:.2f}")
+    print(f"Win/Loss Ratio: {stats['win_loss_ratio']:.2f}")
+    print(f"Profit Factor: {stats['profit_factor']:.2f}")
+    print(f"Largest Winner: ${stats['largest_winner']:.2f}")
+    print(f"Largest Loser: ${stats['largest_loser']:.2f}")
+    
+    print("\n3. PERFORMANCE BY DISTANCE FROM MOVING AVERAGE (AT OPEN)")
+    print("-"*60)
+    if not stats['distance_performance'].empty:
+        print(stats['distance_performance'].to_string())
+    
+    print("\n4. PERFORMANCE BY MOVING AVERAGE TREND")
+    print("-"*50)
+    if not stats['trend_performance'].empty:
+        print(stats['trend_performance'].to_string())
+    
+    print("\n5. PERFORMANCE BY MOVING AVERAGE ALIGNMENT")
+    print("-"*60)
+    if not stats['alignment_performance'].empty:
+        print(stats['alignment_performance'].to_string())
+    
+    df_best = pd.DataFrame(best_trades)
+    df_best['Month'] = pd.to_datetime(df_best['Date']).dt.to_period('M')
+    df_best['Year'] = pd.to_datetime(df_best['Date']).dt.year
+    df_best['Quarter'] = pd.to_datetime(df_best['Date']).dt.quarter
+    
+    monthly_stats = df_best.groupby('Month').agg({
+        'Profit/Loss': ['sum', 'count', lambda x: (x > 0).sum() / len(x) * 100],
+        'OpenDistanceFromMA%': 'mean'
+    }).round(2)
+    monthly_stats.columns = ['Total Profit', 'Trades', 'Win Rate', 'Avg Distance%']
+    
+    print("\n6. MONTHLY PERFORMANCE")
+    print("-"*60)
+    print(monthly_stats.tail(12).to_string())  # Last 12 months
+    
+    yearly_stats = df_best.groupby('Year').agg({
+        'Profit/Loss': ['sum', 'count', lambda x: (x > 0).sum() / len(x) * 100],
+        'OpenDistanceFromMA%': 'mean'
+    }).round(2)
+    yearly_stats.columns = ['Total Profit', 'Trades', 'Win Rate', 'Avg Distance%']
+    
+    print("\n7. YEARLY PERFORMANCE")
+    print("-"*50)
+    print(yearly_stats.to_string())
+    
+    print("\n8. TOP 10 WINNING TRADES")
+    print("-"*90)
+    top_winners = df_best.nlargest(10, 'Profit/Loss')[['Date', 'Entry', 'Exit', 'Profit/Loss', 'OpenDistanceFromMA%', 'IntradayReturn%']]
+    print(top_winners.to_string(index=False))
+    
+    print("\n9. TOP 10 LOSING TRADES")
+    print("-"*90)
+    top_losers = df_best.nsmallest(10, 'Profit/Loss')[['Date', 'Entry', 'Exit', 'Profit/Loss', 'OpenDistanceFromMA%', 'IntradayReturn%']]
+    print(top_losers.to_string(index=False))
+    
+    quarterly_stats = df_best.groupby('Quarter').agg({
+        'Profit/Loss': ['sum', 'count', 'mean', lambda x: (x > 0).sum() / len(x) * 100],
+        'OpenDistanceFromMA%': 'mean'
+    }).round(2)
+    quarterly_stats.columns = ['Total Profit', 'Trades', 'Avg Profit', 'Win Rate', 'Avg Distance%']
+    
+    print("\n10. SEASONAL PERFORMANCE (BY QUARTER)")
+    print("-"*70)
+    print(quarterly_stats.to_string())
+    
+    print("\n11. MARKET REGIME ANALYSIS")
+    print("-"*50)
+    
+    market_regime = df_best.groupby('OpenAboveMA200').agg({
+        'Profit/Loss': ['sum', 'count', 'mean', lambda x: (x > 0).sum() / len(x) * 100]
+    }).round(2)
+    market_regime.columns = ['Total Profit', 'Trades', 'Avg Profit', 'Win Rate']
+    market_regime.index = ['Bear Market', 'Bull Market']
+    print("Performance by Market Regime (MA200 at Open):")
+    print(market_regime.to_string())
+    
+    print("\n12. VOLATILITY ANALYSIS")
+    print("-"*50)
+    vol_quintiles = pd.qcut(df_best['RecentVolatility%'], q=5, labels=['Very Low', 'Low', 'Medium', 'High', 'Very High'])
+    volatility_performance = df_best.groupby(vol_quintiles).agg({
+        'Profit/Loss': ['mean', 'count', lambda x: (x > 0).sum() / len(x) * 100]
+    }).round(2)
+    volatility_performance.columns = ['Avg Profit', 'Trades', 'Win Rate']
+    print("Performance by Market Volatility:")
+    print(volatility_performance.to_string())
+    
+    df_best['PriceMomentum'] = (df_best['Open'] / df_best['MA_Value'] - 1) * 100
+    momentum_bins = pd.cut(df_best['PriceMomentum'], bins=[-20, -5, -2, 0, 2, 5, 20], 
+                          labels=['Very Weak', 'Weak', 'Slightly Weak', 'Slightly Strong', 'Strong', 'Very Strong'])
+    momentum_performance = df_best.groupby(momentum_bins).agg({
+        'Profit/Loss': ['mean', 'count', lambda x: (x > 0).sum() / len(x) * 100]
+    }).round(2)
+    momentum_performance.columns = ['Avg Profit', 'Trades', 'Win Rate']
+    
+    print("\n13. PRICE MOMENTUM ANALYSIS")
+    print("-"*50)
+    print("Performance by Price Momentum relative to MA (at Open):")
+    print(momentum_performance.to_string())
+    
+    df_best = df_best.sort_values('Date')
+    df_best['Cumulative'] = df_best['Profit/Loss'].cumsum() + 16000
+    df_best['DrawdownPct'] = (df_best['Cumulative'] / df_best['Cumulative'].cummax() - 1) * 100
+    max_drawdown = df_best['DrawdownPct'].min()
+    
+    print("\n14. EQUITY CURVE ANALYSIS")
+    print("-"*50)
+    print(f"Starting Capital: $16,000")
+    print(f"Final Equity: ${df_best['Cumulative'].iloc[-1]:,.2f}")
+    print(f"Total Return: {(df_best['Cumulative'].iloc[-1] - 16000) / 16000 * 100:.2f}%")
+    print(f"Maximum Drawdown: {max_drawdown:.2f}%")
+    print(f"Sharpe Ratio (daily): {df_best['Profit/Loss'].mean() / df_best['Profit/Loss'].std():.3f}")
+    print(f"Calmar Ratio: {((df_best['Cumulative'].iloc[-1] - 16000) / 16000 * 100) / abs(max_drawdown):.3f}")
+    
+    print("\n15. TRADE FREQUENCY ANALYSIS")
+    print("-"*50)
+    total_trading_days = len(df[df.index >= 200])  # After MA200 is available
+    trade_frequency = len(best_trades) / total_trading_days * 100
+    print(f"Total Trading Days: {total_trading_days}")
+    print(f"Days with Trades: {len(best_trades)}")
+    print(f"Trade Frequency: {trade_frequency:.2f}% of trading days")
+    
+    output_file = f'ma_filter_{best_filter[0].lower()}_no_lookahead_results.csv'
+    df_best.to_csv(output_file, index=False)
+    print(f"\nDetailed trade log saved to: {output_file}")
+    
+    comparison_df = pd.DataFrame(filter_summary)
+    comparison_df.to_csv('ma_filter_comparison_no_lookahead.csv', index=False)
+    print(f"Filter comparison saved to: ma_filter_comparison_no_lookahead.csv")
+    
+    print("\n" + "="*80)
+    print("IMPORTANT: This version does NOT have look-ahead bias.")
+    print("All decisions are based on information available at market open.")
+    print("="*80)
+
+if __name__ == "__main__":
+    main()

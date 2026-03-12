@@ -1,0 +1,1435 @@
+"""
+Comprehensive Batch Converter for ALL Remaining Strategies
+
+This script will process:
+1. GAP_AND_GO_1000_STRATEGIES (200 strategies)
+2. GAP_CLOSE_OPTIMIZATIONS/TOP_STRATEGIES 
+3. GAP_CLOSE_OPTIMIZATIONS/TWO_INDICATOR_STRATEGIES
+4. GAP_CLOSE_OPTIMIZATIONS/HIGH_FREQUENCY_TWO_INDICATORS
+"""
+
+import os
+import re
+import shutil
+from pathlib import Path
+import pandas as pd
+import numpy as np
+
+class StrategyConverter:
+    """Converts strategies to clean, standalone format"""
+    
+    def __init__(self, source_base, target_base):
+        self.source_base = Path(source_base)
+        self.target_base = Path(target_base)
+        self.converted_count = 0
+        self.errors = []
+        
+    def create_strategy_template(self, strategy_info):
+        """Create a clean strategy template"""
+        
+        template = f'''"""
+{strategy_info['display_name']} Strategy
+
+{strategy_info['description']}
+
+Strategy Type: {strategy_info['type']}
+Category: {strategy_info['category']}
+
+This is a standalone, beginner-friendly implementation.
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+import warnings
+warnings.filterwarnings('ignore')
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
+from utils.base_strategy import BaseStrategy
+
+class {strategy_info['class_name']}(BaseStrategy):
+    """
+    {strategy_info['display_name']} Implementation
+    
+    {strategy_info['detailed_description']}
+    """
+    
+    def __init__(self, data_path=None):
+        super().__init__(
+            name="{strategy_info['display_name']}",
+            description="{strategy_info['short_description']}",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        )
+        
+        {strategy_info['parameters']}
+        
+        if data_path:
+            self.load_data(data_path)
+    
+    def calculate_indicators(self):
+        """Calculate required indicators"""
+        df = self.data.copy()
+        
+        {strategy_info['indicator_calculations']}
+        
+        return df
+    
+    def calculate_signals(self):
+        """Generate trading signals based on strategy rules"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.calculate_indicators()
+        signals = []
+        
+        {strategy_info['signal_logic']}
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+    
+    def run_backtest(self, initial_capital=10000, position_size=1.0):
+        """Run backtest simulation"""
+        return super().run_backtest(initial_capital, position_size)
+    
+    def get_summary_metrics(self):
+        """Get performance metrics with strategy-specific additions"""
+        if self.performance_metrics is None:
+            return None
+        
+        metrics = self.performance_metrics.copy()
+        
+        {strategy_info['custom_metrics']}
+        
+        return metrics
+
+def main():
+    """Run the strategy with example usage"""
+    print("=" * 60)
+    print("{strategy_info['display_name'].upper()} STRATEGY")
+    print("=" * 60)
+    print("\\n{strategy_info['strategy_explanation']}")
+    print("=" * 60)
+    
+    data_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    
+    strategy = {strategy_info['class_name']}(data_path)
+    
+    print("\\nSearching for trading opportunities...")
+    signals = strategy.calculate_signals()
+    print(f"Found {{len(signals)}} trading signals")
+    
+    if len(signals) > 0:
+        print(f"\\nFirst signal example:")
+        first_signal = signals.iloc[0]
+        print(f"  Date: {{first_signal['date']}}")
+        print(f"  Direction: {{first_signal.get('direction', 'N/A')}}")
+        print(f"  Entry: ${{first_signal.get('entry_price', 0):.2f}}")
+    
+    print("\\nRunning backtest with $10,000 initial capital...")
+    strategy.run_backtest(initial_capital=10000)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\\n" + "=" * 60)
+    print("STRATEGY RESULTS")
+    print("=" * 60)
+    if metrics:
+        print(f"Total Trades: {{metrics['total_trades']}}")
+        print(f"Win Rate: {{metrics['win_rate']:.1f}}%")
+        print(f"Total Profit/Loss: ${{metrics['total_profit']:.2f}}")
+        print(f"Sharpe Ratio: {{metrics.get('sharpe_ratio', 0):.2f}}")
+        print(f"Max Drawdown: {{metrics['max_drawdown']:.1f}}%")
+        print(f"Win/Loss Ratio: {{metrics.get('win_loss_ratio', 0):.2f}}")
+    else:
+        print("No trades executed. Check strategy parameters.")
+    
+    print("\\n" + "=" * 60)
+    print("💡 TIP: Adjust parameters in __init__ to optimize performance")
+
+if __name__ == "__main__":
+    main()
+'''
+        return template
+    
+    def parse_gap_and_go_strategy(self, file_path):
+        """Parse GAP_AND_GO strategy files"""
+        strategy_name = file_path.stem
+        
+        if 'profit' in strategy_name:
+            strategy_type = 'Gap & Go (Profit Optimized)'
+            optimization = 'profit'
+        else:
+            strategy_type = 'Gap & Go (Success Rate Optimized)'
+            optimization = 'success_rate'
+        
+        parts = strategy_name.split('_')
+        if len(parts) > 4:
+            condition = ' '.join(parts[4:]).replace('_', ' ').title()
+        else:
+            condition = 'Standard Conditions'
+        
+        number = parts[3] if len(parts) > 3 else '00'
+        display_name = f"Gap & Go {optimization.title()} #{number}"
+        
+        strategy_info = {
+            'class_name': f"GapAndGo{optimization.title()}{number}Strategy",
+            'display_name': display_name,
+            'type': strategy_type,
+            'category': 'gap_and_go',
+            'description': f"Gap trading strategy optimized for {optimization} with {condition}",
+            'short_description': f"Trades gaps with {condition}",
+            'detailed_description': f"""
+    This strategy trades morning gaps when specific conditions are met:
+    - {condition}
+    - Optimized for maximum {optimization}
+    """,
+            'parameters': self._get_gap_go_parameters(condition),
+            'indicator_calculations': self._get_gap_go_indicators(condition),
+            'signal_logic': self._get_gap_go_signals(condition),
+            'custom_metrics': """
+        if self.signals is not None and len(self.signals) > 0:
+            metrics['avg_gap_size'] = self.signals.get('gap_percent', pd.Series()).mean()
+            metrics['conditions_met'] = len(self.signals)
+        """,
+            'strategy_explanation': f"Trades gaps when {condition} conditions are present"
+        }
+        
+        return strategy_info
+    
+    def _get_gap_go_parameters(self, condition):
+        """Get parameters based on condition"""
+        params = """self.min_gap_percent = 0.5  # Minimum gap size
+        self.max_gap_percent = 5.0   # Maximum gap size"""
+        
+        if 'rsi' in condition.lower():
+            params += "\n        self.rsi_period = 14"
+            params += "\n        self.rsi_threshold = 30 if 'oversold' in condition.lower() else 70"
+        
+        if 'bb' in condition.lower() or 'bollinger' in condition.lower():
+            params += "\n        self.bb_period = 20"
+            params += "\n        self.bb_std = 2"
+        
+        if 'ma' in condition.lower() or 'sma' in condition.lower():
+            params += "\n        self.ma_fast = 5"
+            params += "\n        self.ma_slow = 10"
+        
+        if 'volume' in condition.lower():
+            params += "\n        self.volume_multiplier = 1.5"
+        
+        if 'atr' in condition.lower():
+            params += "\n        self.atr_period = 14"
+        
+        return params
+    
+    def _get_gap_go_indicators(self, condition):
+        """Get indicator calculations based on condition"""
+        indicators = """# Calculate gap
+        df['Gap'] = df['Open'] - df['Close'].shift(1)
+        df['Gap_Percent'] = (df['Gap'] / df['Close'].shift(1)) * 100"""
+        
+        if 'rsi' in condition.lower():
+            indicators += """
+        
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))"""
+        
+        if 'bb' in condition.lower() or 'bollinger' in condition.lower():
+            indicators += """
+        
+        df['BB_Middle'] = df['Close'].rolling(window=self.bb_period).mean()
+        bb_std = df['Close'].rolling(window=self.bb_period).std()
+        df['BB_Upper'] = df['BB_Middle'] + (bb_std * self.bb_std)
+        df['BB_Lower'] = df['BB_Middle'] - (bb_std * self.bb_std)
+        df['BB_Width'] = df['BB_Upper'] - df['BB_Lower']"""
+        
+        if 'ma' in condition.lower() or 'sma' in condition.lower():
+            indicators += """
+        
+        df['MA_Fast'] = df['Close'].rolling(window=self.ma_fast).mean()
+        df['MA_Slow'] = df['Close'].rolling(window=self.ma_slow).mean()"""
+        
+        if 'volume' in condition.lower():
+            indicators += """
+        
+        df['Volume_MA'] = df['Volume'].rolling(window=20).mean()
+        df['Volume_Ratio'] = df['Volume'] / df['Volume_MA']"""
+        
+        if 'atr' in condition.lower():
+            indicators += """
+        
+        high_low = df['High'] - df['Low']
+        high_close = np.abs(df['High'] - df['Close'].shift())
+        low_close = np.abs(df['Low'] - df['Close'].shift())
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = true_range.rolling(window=self.atr_period).mean()"""
+        
+        if 'macd' in condition.lower():
+            indicators += """
+        
+        ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+        ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = ema12 - ema26
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()"""
+        
+        if 'stoch' in condition.lower():
+            indicators += """
+        
+        low_min = df['Low'].rolling(window=14).min()
+        high_max = df['High'].rolling(window=14).max()
+        df['Stoch_K'] = 100 * ((df['Close'] - low_min) / (high_max - low_min))
+        df['Stoch_D'] = df['Stoch_K'].rolling(window=3).mean()"""
+        
+        return indicators
+    
+    def _get_gap_go_signals(self, condition):
+        """Get signal logic based on condition"""
+        signal_logic = """# Find valid gap trades
+        for i in range(20, len(df)):  # Start after indicators are calculated
+            curr_day = df.iloc[i]
+            prev_day = df.iloc[i-1]
+            
+            gap_percent = curr_day['Gap_Percent']
+            if pd.isna(gap_percent) or abs(gap_percent) < self.min_gap_percent:
+                continue
+            if abs(gap_percent) > self.max_gap_percent:
+                continue
+            
+            condition_met = True"""
+        
+        if 'rsi' in condition.lower():
+            if 'bearish' in condition.lower() or 'overbought' in condition.lower():
+                signal_logic += """
+            
+            if pd.notna(curr_day['RSI']) and curr_day['RSI'] < 70:
+                condition_met = False"""
+            elif 'oversold' in condition.lower():
+                signal_logic += """
+            
+            if pd.notna(curr_day['RSI']) and curr_day['RSI'] > 30:
+                condition_met = False"""
+        
+        if 'bb_squeeze' in condition.lower():
+            signal_logic += """
+            
+            if pd.notna(curr_day['BB_Width']):
+                bb_width_avg = df['BB_Width'].rolling(20).mean().iloc[i]
+                if curr_day['BB_Width'] > bb_width_avg * 0.7:
+                    condition_met = False"""
+        
+        if 'bb_narrow' in condition.lower():
+            signal_logic += """
+            
+            if pd.notna(curr_day['BB_Width']):
+                bb_width_avg = df['BB_Width'].rolling(20).mean().iloc[i]
+                if curr_day['BB_Width'] > bb_width_avg:
+                    condition_met = False"""
+        
+        if 'volume_trend_up' in condition.lower() or 'rising_volume' in condition.lower():
+            signal_logic += """
+            
+            if pd.notna(curr_day['Volume_Ratio']) and curr_day['Volume_Ratio'] < self.volume_multiplier:
+                condition_met = False"""
+        
+        if 'ma' in condition.lower() and 'above' in condition.lower():
+            signal_logic += """
+            
+            if pd.notna(curr_day['MA_Fast']) and pd.notna(curr_day['MA_Slow']):
+                if curr_day['MA_Fast'] <= curr_day['MA_Slow']:
+                    condition_met = False"""
+        
+        if 'stoch' in condition.lower():
+            if 'neutral' in condition.lower():
+                signal_logic += """
+            
+            if pd.notna(curr_day['Stoch_K']):
+                if curr_day['Stoch_K'] < 20 or curr_day['Stoch_K'] > 80:
+                    condition_met = False"""
+        
+        signal_logic += """
+            
+            if condition_met:
+                if gap_percent > 0:  # Gap up - SHORT
+                    direction = 'SHORT'
+                    entry_price = curr_day['Open']
+                    
+                    if curr_day['Low'] <= prev_day['Close']:
+                        exit_price = prev_day['Close']
+                    else:
+                        exit_price = curr_day['Close']
+                else:  # Gap down - LONG
+                    direction = 'LONG'
+                    entry_price = curr_day['Open']
+                    
+                    if curr_day['High'] >= prev_day['Close']:
+                        exit_price = prev_day['Close']
+                    else:
+                        exit_price = curr_day['Close']
+                
+                signal = {
+                    'date': curr_day['Date'],
+                    'direction': direction,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'gap_percent': gap_percent,
+                    'signal_strength': min(abs(gap_percent) / 2.0, 1.0)
+                }
+                signals.append(signal)"""
+        
+        return signal_logic
+    
+    def parse_top_strategy(self, file_path):
+        """Parse TOP_STRATEGIES files"""
+        strategy_name = file_path.stem
+        
+        parts = strategy_name.split('_')
+        if len(parts) > 1 and parts[0].isdigit():
+            number = parts[0]
+            condition = ' '.join(parts[1:]).replace('_', ' ').title()
+        else:
+            number = '00'
+            condition = strategy_name.replace('_', ' ').title()
+        
+        display_name = f"Top Strategy #{number}"
+        
+        strategy_info = {
+            'class_name': f"TopStrategy{number}",
+            'display_name': display_name,
+            'type': 'Gap Close Optimization',
+            'category': 'top_strategies',
+            'description': f"Optimized gap trading with {condition}",
+            'short_description': f"Gap trading - {condition}",
+            'detailed_description': f"Trades gaps with specific focus on {condition}",
+            'parameters': self._get_top_strategy_parameters(condition),
+            'indicator_calculations': self._get_top_strategy_indicators(condition),
+            'signal_logic': self._get_top_strategy_signals(condition),
+            'custom_metrics': "",
+            'strategy_explanation': f"Optimized gap trading focusing on {condition}"
+        }
+        
+        return strategy_info
+    
+    def _get_top_strategy_parameters(self, condition):
+        """Get parameters for top strategies"""
+        params = "self.min_gap_size = 0.20  # Minimum gap in dollars"
+        
+        if 'bb' in condition.lower() or 'bollinger' in condition.lower():
+            params += "\n        self.bb_period = 20"
+            params += "\n        self.bb_std = 2"
+        
+        if 'rsi' in condition.lower():
+            params += "\n        self.rsi_period = 14"
+            if 'overbought' in condition.lower():
+                params += "\n        self.rsi_overbought = 70 if '70' in condition else 65"
+            elif 'oversold' in condition.lower():
+                params += "\n        self.rsi_oversold = 30"
+        
+        if 'ma' in condition.lower():
+            if '5' in condition and '10' in condition:
+                params += "\n        self.ma_fast = 5"
+                params += "\n        self.ma_slow = 10"
+            elif '10' in condition and '20' in condition:
+                params += "\n        self.ma_fast = 10"
+                params += "\n        self.ma_slow = 20"
+            else:
+                params += "\n        self.ma_period = 20"
+        
+        if 'volume' in condition.lower():
+            params += "\n        self.volume_threshold = 1.5"
+        
+        if 'macd' in condition.lower():
+            params += "\n        self.macd_fast = 12"
+            params += "\n        self.macd_slow = 26"
+            params += "\n        self.macd_signal = 9"
+        
+        return params
+    
+    def _get_top_strategy_indicators(self, condition):
+        """Get indicators for top strategies"""
+        indicators = """# Basic gap calculation
+        df['Gap'] = df['Open'] - df['Close'].shift(1)
+        df['Gap_Percent'] = (df['Gap'] / df['Close'].shift(1)) * 100"""
+        
+        if 'bb' in condition.lower() or 'bollinger' in condition.lower():
+            indicators += """
+        
+        df['BB_Middle'] = df['Close'].rolling(window=self.bb_period).mean()
+        bb_std = df['Close'].rolling(window=self.bb_period).std()
+        df['BB_Upper'] = df['BB_Middle'] + (bb_std * self.bb_std)
+        df['BB_Lower'] = df['BB_Middle'] - (bb_std * self.bb_std)"""
+        
+        if 'rsi' in condition.lower():
+            indicators += """
+        
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))"""
+        
+        if 'ma' in condition.lower():
+            if hasattr(self, 'ma_fast'):
+                indicators += """
+        
+        df['MA_Fast'] = df['Close'].rolling(window=self.ma_fast).mean()
+        df['MA_Slow'] = df['Close'].rolling(window=self.ma_slow).mean()
+        df['MA_Cross'] = np.where(df['MA_Fast'] > df['MA_Slow'], 1, -1)"""
+            else:
+                indicators += """
+        
+        df['MA'] = df['Close'].rolling(window=self.ma_period).mean()"""
+        
+        if 'volume' in condition.lower():
+            indicators += """
+        
+        df['Volume_MA'] = df['Volume'].rolling(window=20).mean()
+        df['Volume_Spike'] = df['Volume'] > (df['Volume_MA'] * self.volume_threshold)"""
+        
+        if 'macd' in condition.lower():
+            indicators += """
+        
+        ema_fast = df['Close'].ewm(span=self.macd_fast, adjust=False).mean()
+        ema_slow = df['Close'].ewm(span=self.macd_slow, adjust=False).mean()
+        df['MACD'] = ema_fast - ema_slow
+        df['MACD_Signal'] = df['MACD'].ewm(span=self.macd_signal, adjust=False).mean()
+        df['MACD_Cross'] = np.sign(df['MACD'] - df['MACD_Signal'])"""
+        
+        if 'red_days' in condition.lower():
+            indicators += """
+        
+        df['IsRed'] = df['Close'] < df['Open']
+        df['ConsecRed'] = df['IsRed'].rolling(window=3).sum()"""
+        
+        if 'engulfing' in condition.lower():
+            indicators += """
+        
+        df['Engulfing'] = ((df['Close'] > df['Open']) & 
+                          (df['Open'].shift(1) > df['Close'].shift(1)) &
+                          (df['Close'] > df['Open'].shift(1)) &
+                          (df['Open'] < df['Close'].shift(1)))"""
+        
+        return indicators
+    
+    def _get_top_strategy_signals(self, condition):
+        """Get signal logic for top strategies"""
+        signal_logic = """# Strategy-specific signal generation
+        for i in range(max(20, self.bb_period if hasattr(self, 'bb_period') else 20), len(df)):
+            curr_day = df.iloc[i]
+            prev_day = df.iloc[i-1]
+            
+            gap = curr_day['Gap']
+            if pd.isna(gap) or abs(gap) < self.min_gap_size:
+                continue
+            
+            trade_signal = False"""
+        
+        if 'price_above_bb_upper' in condition.lower():
+            signal_logic += """
+            
+            if pd.notna(curr_day['BB_Upper']) and curr_day['Close'] > curr_day['BB_Upper']:
+                trade_signal = True
+                direction = 'SHORT'  # Expect reversion"""
+        
+        elif 'price_below_bb_lower' in condition.lower():
+            signal_logic += """
+            
+            if pd.notna(curr_day['BB_Lower']) and curr_day['Close'] < curr_day['BB_Lower']:
+                trade_signal = True
+                direction = 'LONG'  # Expect bounce"""
+        
+        elif 'after_3_red_days' in condition.lower() or 'after_2_red_days' in condition.lower():
+            num_days = 3 if '3' in condition else 2
+            signal_logic += f"""
+            
+            if pd.notna(curr_day['ConsecRed']) and curr_day['ConsecRed'] >= {num_days}:
+                trade_signal = True
+                direction = 'LONG'  # Expect bounce"""
+        
+        elif 'rsi_overbought' in condition.lower():
+            signal_logic += """
+            
+            if pd.notna(curr_day['RSI']) and curr_day['RSI'] > self.rsi_overbought:
+                trade_signal = True
+                direction = 'SHORT'  # Expect pullback"""
+        
+        elif 'oversold_bounce' in condition.lower():
+            signal_logic += """
+            
+            if pd.notna(curr_day['RSI']) and curr_day['RSI'] < 30:
+                trade_signal = True
+                direction = 'LONG'  # Expect bounce"""
+        
+        elif 'ma_5_10_cross' in condition.lower() or 'ma_10_20_cross' in condition.lower():
+            signal_logic += """
+            
+            if pd.notna(curr_day['MA_Cross']) and pd.notna(prev_day['MA_Cross']):
+                if curr_day['MA_Cross'] > prev_day['MA_Cross']:  # Bullish cross
+                    trade_signal = True
+                    direction = 'LONG'
+                elif curr_day['MA_Cross'] < prev_day['MA_Cross']:  # Bearish cross
+                    trade_signal = True
+                    direction = 'SHORT'"""
+        
+        elif 'volume_spike' in condition.lower():
+            signal_logic += """
+            
+            if pd.notna(curr_day['Volume_Spike']) and curr_day['Volume_Spike']:
+                trade_signal = True
+                direction = 'SHORT' if gap > 0 else 'LONG'  # Fade the gap"""
+        
+        elif 'mean_reversion' in condition.lower():
+            signal_logic += """
+            
+            trade_signal = True
+            direction = 'SHORT' if gap > 0 else 'LONG'  # Always fade gaps"""
+        
+        elif 'trend_following' in condition.lower():
+            signal_logic += """
+            
+            if hasattr(self, 'ma_period') and pd.notna(curr_day['MA']):
+                if curr_day['Close'] > curr_day['MA'] and gap > 0:
+                    trade_signal = True
+                    direction = 'LONG'  # Follow the trend
+                elif curr_day['Close'] < curr_day['MA'] and gap < 0:
+                    trade_signal = True
+                    direction = 'SHORT'  # Follow the trend"""
+        
+        else:
+            signal_logic += """
+            
+            trade_signal = True
+            direction = 'SHORT' if gap > 0 else 'LONG'"""
+        
+        signal_logic += """
+            
+            if trade_signal:
+                entry_price = curr_day['Open']
+                
+                if direction == 'LONG':
+                    target = prev_day['Close'] if gap < 0 else entry_price + abs(gap)
+                    if curr_day['High'] >= target:
+                        exit_price = target
+                    else:
+                        exit_price = curr_day['Close']
+                else:  # SHORT
+                    target = prev_day['Close'] if gap > 0 else entry_price - abs(gap)
+                    if curr_day['Low'] <= target:
+                        exit_price = target
+                    else:
+                        exit_price = curr_day['Close']
+                
+                signal = {
+                    'date': curr_day['Date'],
+                    'direction': direction,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'gap_size': gap,
+                    'signal_strength': 1.0
+                }
+                signals.append(signal)"""
+        
+        return signal_logic
+    
+    def parse_two_indicator_strategy(self, file_path):
+        """Parse TWO_INDICATOR strategy files"""
+        strategy_name = file_path.stem
+        
+        if strategy_name.startswith('profit_'):
+            optimization = 'profit'
+            prefix = 'profit_'
+        else:
+            optimization = 'success'
+            prefix = 'success_'
+        
+        parts = strategy_name.replace(prefix, '').split('_')
+        if parts[0].isdigit():
+            number = parts[0]
+            condition = ' '.join(parts[1:]).replace('_', ' ').title()
+        else:
+            number = '00'
+            condition = ' '.join(parts).replace('_', ' ').title()
+        
+        display_name = f"Two Indicator {optimization.title()} #{number}"
+        
+        strategy_info = {
+            'class_name': f"TwoIndicator{optimization.title()}{number}Strategy",
+            'display_name': display_name,
+            'type': f'Two Indicator ({optimization.title()} Optimized)',
+            'category': 'two_indicator',
+            'description': f"Combines two indicators: {condition}",
+            'short_description': f"Two indicators - {condition}",
+            'detailed_description': f"Uses combination of {condition} for better signal confirmation",
+            'parameters': self._get_two_indicator_parameters(condition),
+            'indicator_calculations': self._get_two_indicator_calculations(condition),
+            'signal_logic': self._get_two_indicator_signals(condition),
+            'custom_metrics': "",
+            'strategy_explanation': f"Combines {condition} for higher probability trades"
+        }
+        
+        return strategy_info
+    
+    def _get_two_indicator_parameters(self, condition):
+        """Get parameters for two-indicator strategies"""
+        params = "self.min_gap_size = 0.20"
+        
+        condition_lower = condition.lower()
+        
+        if 'ma_5_10' in condition_lower:
+            params += "\n        self.ma_fast = 5"
+            params += "\n        self.ma_slow = 10"
+        
+        if 'vix' in condition_lower:
+            params += "\n        self.vix_threshold_low = 15"
+            params += "\n        self.vix_threshold_high = 30"
+            
+            if 'low' in condition_lower:
+                params += "\n        self.vix_max = 20"
+            elif 'medium' in condition_lower:
+                params += "\n        self.vix_min = 20"
+                params += "\n        self.vix_max = 25"
+            elif 'high' in condition_lower:
+                params += "\n        self.vix_min = 25"
+        
+        if 'rsi' in condition_lower:
+            params += "\n        self.rsi_period = 14"
+            if 'overbought' in condition_lower:
+                if '70' in condition_lower:
+                    params += "\n        self.rsi_overbought = 70"
+                elif '65' in condition_lower:
+                    params += "\n        self.rsi_overbought = 65"
+                else:
+                    params += "\n        self.rsi_overbought = 70"
+            elif 'oversold' in condition_lower:
+                params += "\n        self.rsi_oversold = 35"
+        
+        if 'atr' in condition_lower:
+            params += "\n        self.atr_period = 14"
+        
+        if 'bb' in condition_lower or 'bollinger' in condition_lower:
+            params += "\n        self.bb_period = 20"
+            params += "\n        self.bb_std = 2"
+        
+        if 'volume' in condition_lower:
+            params += "\n        self.volume_multiplier = 1.5"
+        
+        if 'macd' in condition_lower:
+            params += "\n        self.macd_fast = 12"
+            params += "\n        self.macd_slow = 26"
+            params += "\n        self.macd_signal = 9"
+        
+        if 'stoch' in condition_lower:
+            params += "\n        self.stoch_period = 14"
+            params += "\n        self.stoch_smooth = 3"
+        
+        return params
+    
+    def _get_two_indicator_calculations(self, condition):
+        """Get indicator calculations for two-indicator strategies"""
+        indicators = """# Gap calculation
+        df['Gap'] = df['Open'] - df['Close'].shift(1)
+        df['Gap_Percent'] = (df['Gap'] / df['Close'].shift(1)) * 100"""
+        
+        condition_lower = condition.lower()
+        
+        if 'ma' in condition_lower:
+            indicators += """
+        
+        df['MA_Fast'] = df['Close'].rolling(window=self.ma_fast).mean()
+        df['MA_Slow'] = df['Close'].rolling(window=self.ma_slow).mean()
+        df['MA_Cross'] = np.where(df['MA_Fast'] > df['MA_Slow'], 1, -1)
+        df['MA_Cross_Signal'] = df['MA_Cross'].diff()"""
+        
+        if 'rsi' in condition_lower:
+            indicators += """
+        
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))"""
+        
+        if 'atr' in condition_lower:
+            indicators += """
+        
+        high_low = df['High'] - df['Low']
+        high_close = np.abs(df['High'] - df['Close'].shift())
+        low_close = np.abs(df['Low'] - df['Close'].shift())
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = true_range.rolling(window=self.atr_period).mean()
+        df['ATR_Percent'] = (df['ATR'] / df['Close']) * 100"""
+        
+        if 'bb' in condition_lower:
+            indicators += """
+        
+        df['BB_Middle'] = df['Close'].rolling(window=self.bb_period).mean()
+        bb_std = df['Close'].rolling(window=self.bb_period).std()
+        df['BB_Upper'] = df['BB_Middle'] + (bb_std * self.bb_std)
+        df['BB_Lower'] = df['BB_Middle'] - (bb_std * self.bb_std)
+        df['BB_Position'] = (df['Close'] - df['BB_Lower']) / (df['BB_Upper'] - df['BB_Lower'])"""
+        
+        if 'volume' in condition_lower:
+            indicators += """
+        
+        df['Volume_MA'] = df['Volume'].rolling(window=20).mean()
+        df['Volume_Ratio'] = df['Volume'] / df['Volume_MA']
+        df['High_Volume'] = df['Volume_Ratio'] > self.volume_multiplier"""
+        
+        if 'macd' in condition_lower:
+            indicators += """
+        
+        ema_fast = df['Close'].ewm(span=self.macd_fast, adjust=False).mean()
+        ema_slow = df['Close'].ewm(span=self.macd_slow, adjust=False).mean()
+        df['MACD'] = ema_fast - ema_slow
+        df['MACD_Signal'] = df['MACD'].ewm(span=self.macd_signal, adjust=False).mean()
+        df['MACD_Histogram'] = df['MACD'] - df['MACD_Signal']"""
+        
+        if 'stoch' in condition_lower:
+            indicators += """
+        
+        low_min = df['Low'].rolling(window=self.stoch_period).min()
+        high_max = df['High'].rolling(window=self.stoch_period).max()
+        df['Stoch_K'] = 100 * ((df['Close'] - low_min) / (high_max - low_min))
+        df['Stoch_D'] = df['Stoch_K'].rolling(window=self.stoch_smooth).mean()"""
+        
+        if 'red_days' in condition_lower:
+            indicators += """
+        
+        df['IsRed'] = df['Close'] < df['Open']
+        df['ConsecRed'] = df.groupby((df['IsRed'] != df['IsRed'].shift()).cumsum()).cumcount() + 1
+        df['ConsecRed'] = np.where(df['IsRed'], df['ConsecRed'], 0)"""
+        
+        if 'engulfing' in condition_lower:
+            indicators += """
+        
+        df['Bullish_Engulfing'] = ((df['Close'] > df['Open']) & 
+                                   (df['Open'].shift(1) > df['Close'].shift(1)) &
+                                   (df['Close'] > df['Open'].shift(1)) &
+                                   (df['Open'] < df['Close'].shift(1)))"""
+        
+        if 'mean_reversion' in condition_lower:
+            indicators += """
+        
+        df['Price_MA20'] = df['Close'].rolling(window=20).mean()
+        df['Price_StdDev'] = df['Close'].rolling(window=20).std()
+        df['Z_Score'] = (df['Close'] - df['Price_MA20']) / df['Price_StdDev']"""
+        
+        if 'vix' in condition_lower:
+            indicators += """
+        
+        
+        return indicators
+    
+    def _get_two_indicator_signals(self, condition):
+        """Get signal logic for two-indicator strategies"""
+        condition_lower = condition.lower()
+        
+        signal_logic = """# Two-indicator signal generation
+        for i in range(30, len(df)):  # Ensure indicators are calculated
+            curr_day = df.iloc[i]
+            prev_day = df.iloc[i-1]
+            
+            gap = curr_day['Gap']
+            if pd.isna(gap) or abs(gap) < self.min_gap_size:
+                continue
+            
+            condition1_met = False
+            condition2_met = False"""
+        
+        conditions = self._parse_two_conditions(condition)
+        
+        if conditions['condition1']:
+            signal_logic += f"""
+            
+            signal_logic += self._get_condition_check(conditions['condition1'], 'condition1_met')
+        
+        if conditions['condition2']:
+            signal_logic += f"""
+            
+            signal_logic += self._get_condition_check(conditions['condition2'], 'condition2_met')
+        
+        signal_logic += """
+            
+            if condition1_met and condition2_met:
+                """
+        
+        if 'ma_5_10_cross' in condition_lower:
+            signal_logic += """if pd.notna(curr_day.get('MA_Cross_Signal', None)) and curr_day['MA_Cross_Signal'] > 0:
+                    direction = 'LONG'
+                elif pd.notna(curr_day.get('MA_Cross_Signal', None)) and curr_day['MA_Cross_Signal'] < 0:
+                    direction = 'SHORT'
+                else:
+                    direction = 'SHORT' if gap > 0 else 'LONG'  # Fade gap"""
+        
+        elif 'mean_reversion' in condition_lower:
+            signal_logic += """direction = 'SHORT' if gap > 0 else 'LONG'  # Always fade"""
+        
+        elif 'trend' in condition_lower or 'momentum' in condition_lower:
+            signal_logic += """direction = 'LONG' if gap > 0 else 'SHORT'  # Follow trend"""
+        
+        else:
+            signal_logic += """direction = 'SHORT' if gap > 0 else 'LONG'  # Default fade"""
+        
+        signal_logic += """
+                
+                entry_price = curr_day['Open']
+                
+                if direction == 'LONG':
+                    target = prev_day['Close'] if gap < 0 else entry_price + abs(gap) * 0.5
+                    if curr_day['High'] >= target:
+                        exit_price = target
+                    else:
+                        exit_price = curr_day['Close']
+                else:  # SHORT
+                    target = prev_day['Close'] if gap > 0 else entry_price - abs(gap) * 0.5
+                    if curr_day['Low'] <= target:
+                        exit_price = target
+                    else:
+                        exit_price = curr_day['Close']
+                
+                signal = {
+                    'date': curr_day['Date'],
+                    'direction': direction,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'gap_size': gap,
+                    'signal_strength': 1.0
+                }
+                signals.append(signal)"""
+        
+        return signal_logic
+    
+    def _parse_two_conditions(self, condition_text):
+        """Parse two conditions from the strategy name"""
+        condition_lower = condition_text.lower()
+        
+        if ' and ' in condition_lower:
+            parts = condition_lower.split(' and ')
+            return {
+                'condition1': parts[0].strip(),
+                'condition2': parts[1].strip() if len(parts) > 1 else ''
+            }
+        
+        patterns = {
+            'ma_5_10_cross': 'MA 5/10 crossover',
+            'vix_low': 'VIX below 20',
+            'vix_medium': 'VIX between 20-25',
+            'vix_high': 'VIX above 25',
+            'vix_rising': 'VIX rising',
+            'vix_falling': 'VIX falling',
+            'rsi_overbought': 'RSI overbought',
+            'rsi_oversold': 'RSI oversold',
+            'bb_upper': 'Price above BB upper',
+            'bb_lower': 'Price below BB lower',
+            'atr_contracting': 'ATR contracting',
+            'volume_high': 'High volume',
+            'macd_bearish': 'MACD bearish',
+            'macd_bullish': 'MACD bullish',
+            'stoch_k_above_d': 'Stochastic K above D',
+            'after_3_red_days': 'After 3 red days',
+            'after_2_red_days': 'After 2 red days',
+            'early_week': 'Monday or Tuesday',
+            'mean_reversion': 'Mean reversion setup',
+            'engulfing': 'Engulfing pattern'
+        }
+        
+        found_conditions = []
+        for pattern, description in patterns.items():
+            if pattern in condition_lower:
+                found_conditions.append(description)
+        
+        if len(found_conditions) >= 2:
+            return {
+                'condition1': found_conditions[0],
+                'condition2': found_conditions[1]
+            }
+        elif len(found_conditions) == 1:
+            return {
+                'condition1': found_conditions[0],
+                'condition2': 'Standard gap conditions'
+            }
+        else:
+            return {
+                'condition1': 'Gap threshold met',
+                'condition2': 'Volume confirmation'
+            }
+    
+    def _get_condition_check(self, condition_desc, var_name):
+        """Generate code for checking a specific condition"""
+        condition_lower = condition_desc.lower()
+        
+        if 'ma' in condition_lower and 'crossover' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('MA_Cross_Signal', 0)):
+                if curr_day['MA_Cross_Signal'] != 0:
+                    {var_name} = True"""
+        
+        elif 'vix below' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('ATR_Percent', 0)) and curr_day['ATR_Percent'] < 1.5:
+                {var_name} = True"""
+        
+        elif 'vix between' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('ATR_Percent', 0)) and 1.5 <= curr_day['ATR_Percent'] <= 2.5:
+                {var_name} = True"""
+        
+        elif 'vix above' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('ATR_Percent', 0)) and curr_day['ATR_Percent'] > 2.5:
+                {var_name} = True"""
+        
+        elif 'rsi overbought' in condition_lower:
+            threshold = 70 if '70' in condition_lower else 65
+            return f"""
+            if pd.notna(curr_day.get('RSI', 0)) and curr_day['RSI'] > {threshold}:
+                {var_name} = True"""
+        
+        elif 'rsi oversold' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('RSI', 0)) and curr_day['RSI'] < 35:
+                {var_name} = True"""
+        
+        elif 'bb upper' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('BB_Position', 0)) and curr_day['BB_Position'] > 1.0:
+                {var_name} = True"""
+        
+        elif 'bb lower' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('BB_Position', 0)) and curr_day['BB_Position'] < 0.0:
+                {var_name} = True"""
+        
+        elif 'high volume' in condition_lower or 'volume' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('High_Volume', False)) and curr_day['High_Volume']:
+                {var_name} = True"""
+        
+        elif 'after 3 red' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('ConsecRed', 0)) and curr_day['ConsecRed'] >= 3:
+                {var_name} = True"""
+        
+        elif 'after 2 red' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('ConsecRed', 0)) and curr_day['ConsecRed'] >= 2:
+                {var_name} = True"""
+        
+        elif 'early week' in condition_lower or 'monday' in condition_lower or 'tuesday' in condition_lower:
+            return f"""
+            if curr_day['Date'].dayofweek <= 1:  # Monday = 0, Tuesday = 1
+                {var_name} = True"""
+        
+        elif 'stochastic k above d' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('Stoch_K', 0)) and pd.notna(curr_day.get('Stoch_D', 0)):
+                if curr_day['Stoch_K'] > curr_day['Stoch_D']:
+                    {var_name} = True"""
+        
+        elif 'mean reversion' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('Z_Score', 0)) and abs(curr_day['Z_Score']) > 1.5:
+                {var_name} = True"""
+        
+        elif 'engulfing' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('Bullish_Engulfing', False)) and curr_day['Bullish_Engulfing']:
+                {var_name} = True"""
+        
+        elif 'macd bearish' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('MACD_Histogram', 0)) and curr_day['MACD_Histogram'] < 0:
+                {var_name} = True"""
+        
+        elif 'macd bullish' in condition_lower:
+            return f"""
+            if pd.notna(curr_day.get('MACD_Histogram', 0)) and curr_day['MACD_Histogram'] > 0:
+                {var_name} = True"""
+        
+        else:
+            return f"""
+            {var_name} = True"""
+    
+    def parse_high_frequency_strategy(self, file_path):
+        """Parse HIGH_FREQUENCY strategy files"""
+        strategy_name = file_path.stem
+        
+        if strategy_name.startswith('hf_profit_'):
+            optimization = 'profit'
+            prefix = 'hf_profit_'
+        elif strategy_name.startswith('hf_success_'):
+            optimization = 'success'
+            prefix = 'hf_success_'
+        else:
+            optimization = 'general'
+            prefix = ''
+        
+        parts = strategy_name.replace(prefix, '').split('_')
+        if parts[0].isdigit():
+            number = parts[0]
+            condition = ' '.join(parts[1:]).replace('_', ' ').title()
+        else:
+            number = '00'
+            condition = strategy_name.replace(prefix, '').replace('_', ' ').title()
+        
+        display_name = f"High Frequency {optimization.title()} #{number}"
+        
+        strategy_info = {
+            'class_name': f"HighFrequency{optimization.title()}{number}Strategy",
+            'display_name': display_name,
+            'type': f'High Frequency ({optimization.title()})',
+            'category': 'high_frequency',
+            'description': f"High frequency strategy with {condition}",
+            'short_description': f"HF - {condition}",
+            'detailed_description': f"High frequency trading optimized for {optimization} using {condition}",
+            'parameters': self._get_hf_parameters(condition),
+            'indicator_calculations': self._get_hf_indicators(condition),
+            'signal_logic': self._get_hf_signals(condition),
+            'custom_metrics': "",
+            'strategy_explanation': f"High frequency approach using {condition}"
+        }
+        
+        return strategy_info
+    
+    def _get_hf_parameters(self, condition):
+        """Parameters for high frequency strategies"""
+        params = """self.min_gap_percent = 0.3  # Smaller gaps for HF
+        self.holding_period = 'intraday'  # Always close same day
+        self.max_trades_per_day = 3  # Risk management"""
+        
+        condition_lower = condition.lower()
+        
+        if 'ma_5_10' in condition_lower:
+            params += "\n        self.ma_fast = 5"
+            params += "\n        self.ma_slow = 10"
+        
+        if 'rsi' in condition_lower:
+            params += "\n        self.rsi_period = 9  # Shorter for HF"
+            if 'overbought' in condition_lower:
+                params += "\n        self.rsi_overbought = 70"
+            if 'oversold' in condition_lower:
+                params += "\n        self.rsi_oversold = 30"
+        
+        if 'stoch' in condition_lower:
+            params += "\n        self.stoch_period = 9"
+            params += "\n        self.stoch_smooth = 3"
+        
+        if 'volume' in condition_lower:
+            params += "\n        self.volume_threshold = 1.2  # Lower threshold for HF"
+        
+        if 'vix' in condition_lower:
+            params += "\n        self.vix_lookback = 5  # Shorter lookback"
+        
+        return params
+    
+    def _get_hf_indicators(self, condition):
+        """Indicators for high frequency strategies"""
+        indicators = """# High frequency indicators - optimized for speed
+        df['Gap_Percent'] = ((df['Open'] - df['Close'].shift(1)) / df['Close'].shift(1)) * 100
+        df['Intraday_Range'] = ((df['High'] - df['Low']) / df['Open']) * 100"""
+        
+        condition_lower = condition.lower()
+        
+        if 'ma' in condition_lower:
+            indicators += """
+        
+        df['MA_Fast'] = df['Close'].rolling(window=self.ma_fast).mean()
+        df['MA_Slow'] = df['Close'].rolling(window=self.ma_slow).mean()
+        df['MA_Diff'] = df['MA_Fast'] - df['MA_Slow']
+        df['MA_Cross'] = np.sign(df['MA_Diff']).diff()"""
+        
+        if 'rsi' in condition_lower:
+            indicators += """
+        
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).ewm(span=self.rsi_period, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(span=self.rsi_period, adjust=False).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        df['RSI_Rising'] = df['RSI'] > df['RSI'].shift(1)"""
+        
+        if 'stoch' in condition_lower:
+            indicators += """
+        
+        low_min = df['Low'].rolling(window=self.stoch_period).min()
+        high_max = df['High'].rolling(window=self.stoch_period).max()
+        df['Stoch_K'] = 100 * ((df['Close'] - low_min) / (high_max - low_min))
+        df['Stoch_D'] = df['Stoch_K'].rolling(window=self.stoch_smooth).mean()"""
+        
+        if 'volume' in condition_lower:
+            indicators += """
+        
+        df['Volume_MA'] = df['Volume'].rolling(window=10).mean()  # Shorter MA
+        df['Volume_Spike'] = df['Volume'] > (df['Volume_MA'] * self.volume_threshold)
+        df['Rising_Volume'] = df['Volume'] > df['Volume'].shift(1)"""
+        
+        if 'mean_reversion' in condition_lower:
+            indicators += """
+        
+        df['Price_MA'] = df['Close'].rolling(window=10).mean()
+        df['Price_Deviation'] = ((df['Close'] - df['Price_MA']) / df['Price_MA']) * 100"""
+        
+        if 'engulfing' in condition_lower:
+            indicators += """
+        
+        df['Bullish_Engulfing'] = ((df['Close'] > df['Open']) & 
+                                   (df['Open'].shift(1) > df['Close'].shift(1)) &
+                                   (df['Close'] > df['Open'].shift(1)) &
+                                   (df['Open'] < df['Close'].shift(1)))"""
+        
+        if 'momentum' in condition_lower or 'price' in condition_lower:
+            indicators += """
+        
+        df['Momentum'] = df['Close'] - df['Close'].shift(3)  # 3-period momentum
+        df['Price_Acceleration'] = df['Momentum'] - df['Momentum'].shift(1)"""
+        
+        indicators += """
+        
+        df['DayOfWeek'] = df['Date'].dt.dayofweek
+        df['Tuesday'] = df['DayOfWeek'] == 1
+        df['EarlyWeek'] = df['DayOfWeek'] <= 1"""
+        
+        return indicators
+    
+    def _get_hf_signals(self, condition):
+        """Signal logic for high frequency strategies"""
+        signal_logic = """# High frequency signal generation
+        daily_trades = {}  # Track trades per day
+        
+        for i in range(20, len(df)):
+            curr_day = df.iloc[i]
+            curr_date = curr_day['Date'].date()
+            
+            if curr_date in daily_trades and daily_trades[curr_date] >= self.max_trades_per_day:
+                continue
+            
+            if abs(curr_day['Gap_Percent']) < self.min_gap_percent:
+                continue
+            
+            signal = False"""
+        
+        condition_lower = condition.lower()
+        
+        if 'ma_5_10_cross' in condition_lower:
+            signal_logic += """
+            
+            if pd.notna(curr_day.get('MA_Cross', 0)) and curr_day['MA_Cross'] != 0:
+                signal = True
+                direction = 'LONG' if curr_day['MA_Cross'] > 0 else 'SHORT'"""
+        
+        elif 'rsi_overbought' in condition_lower:
+            signal_logic += """
+            
+            if pd.notna(curr_day.get('RSI', 0)) and curr_day['RSI'] > self.rsi_overbought:
+                signal = True
+                direction = 'SHORT'  # Fade overbought"""
+        
+        elif 'tuesday' in condition_lower:
+            signal_logic += """
+            
+            if curr_day.get('Tuesday', False):
+                signal = True
+                direction = 'SHORT' if curr_day['Gap_Percent'] > 0 else 'LONG'"""
+        
+        elif 'volume_price_confirmation' in condition_lower:
+            signal_logic += """
+            
+            if (pd.notna(curr_day.get('Volume_Spike', False)) and curr_day['Volume_Spike'] and
+                pd.notna(curr_day.get('Momentum', 0)) and abs(curr_day['Momentum']) > 0.5):
+                signal = True
+                direction = 'LONG' if curr_day['Momentum'] > 0 else 'SHORT'"""
+        
+        elif 'mean_reversion' in condition_lower:
+            signal_logic += """
+            
+            if pd.notna(curr_day.get('Price_Deviation', 0)) and abs(curr_day['Price_Deviation']) > 1:
+                signal = True
+                direction = 'SHORT' if curr_day['Price_Deviation'] > 0 else 'LONG'"""
+        
+        elif 'stoch_k_above_d' in condition_lower:
+            signal_logic += """
+            
+            if (pd.notna(curr_day.get('Stoch_K', 0)) and pd.notna(curr_day.get('Stoch_D', 0)) and
+                curr_day['Stoch_K'] > curr_day['Stoch_D']):
+                signal = True
+                direction = 'LONG'"""
+        
+        else:
+            signal_logic += """
+            
+            signal = True
+            direction = 'SHORT' if curr_day['Gap_Percent'] > 0 else 'LONG'"""
+        
+        signal_logic += """
+            
+            if signal:
+                entry_price = curr_day['Open']
+                
+                gap_size = abs(curr_day['Gap_Percent'])
+                
+                if direction == 'LONG':
+                    target = entry_price * (1 + gap_size * 0.005)  # 50% of gap
+                    stop = entry_price * (1 - gap_size * 0.003)    # 30% stop
+                    
+                    if curr_day['High'] >= target:
+                        exit_price = target
+                    elif curr_day['Low'] <= stop:
+                        exit_price = stop
+                    else:
+                        exit_price = curr_day['Close']
+                else:  # SHORT
+                    target = entry_price * (1 - gap_size * 0.005)  # 50% of gap
+                    stop = entry_price * (1 + gap_size * 0.003)    # 30% stop
+                    
+                    if curr_day['Low'] <= target:
+                        exit_price = target
+                    elif curr_day['High'] >= stop:
+                        exit_price = stop
+                    else:
+                        exit_price = curr_day['Close']
+                
+                trade_signal = {
+                    'date': curr_day['Date'],
+                    'direction': direction,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'gap_percent': curr_day['Gap_Percent'],
+                    'signal_strength': 1.0
+                }
+                signals.append(trade_signal)
+                
+                if curr_date not in daily_trades:
+                    daily_trades[curr_date] = 0
+                daily_trades[curr_date] += 1"""
+        
+        return signal_logic
+    
+    def convert_file(self, source_path, target_folder):
+        """Convert a single strategy file"""
+        try:
+            if 'gap_go_profit' in source_path.name or 'gap_go_success' in source_path.name:
+                strategy_info = self.parse_gap_and_go_strategy(source_path)
+                target_subfolder = 'gap_and_go'
+            elif source_path.parent.name == 'TOP_STRATEGIES':
+                strategy_info = self.parse_top_strategy(source_path)
+                target_subfolder = 'gap_close_optimized'
+            elif 'profit_' in source_path.name or 'success_' in source_path.name:
+                strategy_info = self.parse_two_indicator_strategy(source_path)
+                target_subfolder = 'two_indicator'
+            elif source_path.name.startswith('hf_'):
+                strategy_info = self.parse_high_frequency_strategy(source_path)
+                target_subfolder = 'high_frequency'
+            else:
+                return False
+            
+            target_dir = self.target_base / target_folder / target_subfolder
+            target_dir.mkdir(parents=True, exist_ok=True)
+            
+            clean_filename = f"{strategy_info['class_name'].lower()}.py"
+            target_path = target_dir / clean_filename
+            
+            content = self.create_strategy_template(strategy_info)
+            
+            with open(target_path, 'w') as f:
+                f.write(content)
+            
+            self.converted_count += 1
+            print(f"✓ Converted: {source_path.name} -> {target_subfolder}/{clean_filename}")
+            return True
+            
+        except Exception as e:
+            error_msg = f"Error converting {source_path.name}: {str(e)}"
+            self.errors.append(error_msg)
+            print(f"✗ {error_msg}")
+            return False
+    
+    def convert_all(self):
+        """Convert all strategies in all folders"""
+        print("\n" + "="*80)
+        print("COMPREHENSIVE STRATEGY CONVERSION")
+        print("="*80)
+        
+        conversions = [
+            {
+                'source': self.source_base / 'GAP_AND_GO_1000_STRATEGIES',
+                'target': 'strategies',
+                'pattern': 'gap_go_*.py'
+            },
+            {
+                'source': self.source_base / 'GAP_CLOSE_OPTIMIZATIONS' / 'TOP_STRATEGIES',
+                'target': 'strategies',
+                'pattern': '*.py',
+                'exclude': ['base_strategy.py', 'run_all_top_strategies.py', 'validate_data.py']
+            },
+            {
+                'source': self.source_base / 'GAP_CLOSE_OPTIMIZATIONS' / 'TWO_INDICATOR_STRATEGIES',
+                'target': 'strategies',
+                'pattern': 'profit_*.py'
+            },
+            {
+                'source': self.source_base / 'GAP_CLOSE_OPTIMIZATIONS' / 'TWO_INDICATOR_STRATEGIES',
+                'target': 'strategies',
+                'pattern': 'success_*.py'
+            },
+            {
+                'source': self.source_base / 'GAP_CLOSE_OPTIMIZATIONS' / 'HIGH_FREQUENCY_TWO_INDICATORS',
+                'target': 'strategies',
+                'pattern': 'hf_*.py'
+            }
+        ]
+        
+        for conv in conversions:
+            source_dir = conv['source']
+            if not source_dir.exists():
+                print(f"\n⚠ Source directory not found: {source_dir}")
+                continue
+            
+            print(f"\nProcessing: {source_dir.relative_to(self.source_base)}")
+            print("-" * 60)
+            
+            pattern = conv['pattern']
+            exclude = conv.get('exclude', [])
+            
+            files = list(source_dir.glob(pattern))
+            files = [f for f in files if f.name not in exclude]
+            
+            print(f"Found {len(files)} strategy files")
+            
+            for file_path in sorted(files):
+                self.convert_file(file_path, conv['target'])
+        
+        print("\n" + "="*80)
+        print("CONVERSION SUMMARY")
+        print("="*80)
+        print(f"Total files converted: {self.converted_count}")
+        if self.errors:
+            print(f"Errors encountered: {len(self.errors)}")
+            for error in self.errors[:5]:  # Show first 5 errors
+                print(f"  - {error}")
+            if len(self.errors) > 5:
+                print(f"  ... and {len(self.errors) - 5} more errors")
+        else:
+            print("✓ All conversions successful!")
+        
+        return self.converted_count
+
+def main():
+    """Main execution"""
+    source_base = "/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024"
+    target_base = "/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/clean_strategies"
+    
+    converter = StrategyConverter(source_base, target_base)
+    
+    print("Starting comprehensive strategy conversion...")
+    print(f"Source: {source_base}")
+    print(f"Target: {target_base}")
+    
+    converted = converter.convert_all()
+    
+    print(f"\n✅ Conversion complete! {converted} strategies converted.")
+    print(f"Check the clean_strategies/strategies folder for all converted files.")
+
+if __name__ == "__main__":
+    main()

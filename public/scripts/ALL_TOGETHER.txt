@@ -1,0 +1,413 @@
+import pandas as pd
+import numpy as np
+import warnings
+from bisect import bisect_left, bisect_right
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+
+def load_daily_data(file_name):
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_intraday_data(file_name):
+    df = pd.read_csv(file_name, parse_dates=['Time'])
+    df.sort_values('Time', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'], dayfirst=True, errors='coerce')
+    vix_df.dropna(subset=['Date'], inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+def load_cpci_data(cpci_file_name):
+    cpci_df = pd.read_csv(cpci_file_name)
+    cpci_df.rename(columns={'foll': 'Date'}, inplace=True)
+    cpci_df['Date'] = pd.to_datetime(cpci_df['Date'], format='%m/%d/%Y', errors='coerce')
+    cpci_df.dropna(subset=['Date'], inplace=True)
+    cpci_df.sort_values('Date', inplace=True)
+    cpci_df.reset_index(drop=True, inplace=True)
+    return cpci_df
+
+def load_events(file_name):
+    events_df = pd.read_csv(file_name, header=None, parse_dates=[0], dayfirst=True)
+    event_dates = events_df.iloc[:, 0].dt.normalize()
+    unique_event_dates = set(event_dates.unique())
+    return unique_event_dates
+
+
+def calculate_day_range(day):
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            return prev_close, True
+        else:
+            return curr_day['Close'], False
+    else:
+        if curr_day['High'] >= prev_close:
+            return prev_close, True
+        else:
+            return curr_day['Close'], False
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    shares = position_size / entry_price
+    if trade_direction == 'Long':
+        return shares * (exit_price - entry_price)
+    else:
+        return shares * (entry_price - exit_price)
+
+def calculate_true_range(df):
+    df['Previous Close'] = df['Close'].shift(1)
+    df['High-Low'] = df['High'] - df['Low']
+    df['High-PrevClose'] = abs(df['High'] - df['Previous Close'])
+    df['Low-PrevClose'] = abs(df['Low'] - df['Previous Close'])
+    df['TR'] = df[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+    return df
+
+def calculate_atr(df, n):
+    df = calculate_true_range(df)
+    df['ATR'] = df['TR'].rolling(window=n).mean()
+    return df
+
+
+def get_first_candle_confirmation(trade_direction, date, min_df):
+    day_data = min_df[min_df['Time'].dt.date == date.date()]
+    if len(day_data) < 2:
+        return False
+    first_candle = day_data.iloc[0]
+    if trade_direction == 'Short':
+        return first_candle['Last'] < first_candle['Open']
+    else:
+        return first_candle['Last'] > first_candle['Open']
+
+def is_gap_closed_in_first_interval(trade_direction, date, min_df, prev_close):
+    day_data = min_df[min_df['Time'].dt.date == date.date()]
+    if len(day_data) < 1:
+        return False
+    first_candle = day_data.iloc[0]
+    if trade_direction == 'Short':
+        return first_candle['Low'] <= prev_close
+    else:
+        return first_candle['High'] >= prev_close
+
+def get_second_candle_open(date, min_df):
+    day_data = min_df[min_df['Time'].dt.date == date.date()]
+    if len(day_data) < 2:
+        return None
+    second_candle = day_data.iloc[1]
+    return second_candle['Open']
+
+
+def precompute_trades(daily_df, min_df, vix_df, cpci_df, event_dates, initial_investment, n_atr):
+    daily_df_merged = daily_df.merge(cpci_df[['Date','Last']], on='Date', how='left', suffixes=('', '_CPCI'))
+    daily_df_merged.rename(columns={'Last':'CPCI'}, inplace=True)
+    daily_df_merged = calculate_atr(daily_df_merged, n_atr)
+
+    vix_dates = set(vix_df['Date'].unique())
+    min_vix_date = vix_df['Date'].min()
+    vix_open_dict = {}
+    for current_date in daily_df_merged['Date']:
+        prev_date = current_date - pd.Timedelta(days=1)
+        while prev_date not in vix_dates and prev_date > min_vix_date:
+            prev_date -= pd.Timedelta(days=1)
+        if prev_date in vix_dates:
+            vix_open = vix_df.loc[vix_df['Date'] == prev_date, 'OPEN'].values[0]
+            vix_open_dict[current_date] = vix_open
+        else:
+            vix_open_dict[current_date] = np.nan
+
+    trades = []
+    total_days = len(daily_df_merged)
+
+    for i in range(n_atr, total_days):
+        prev_day = daily_df_merged.iloc[i - 1]
+        curr_day = daily_df_merged.iloc[i]
+        current_date = curr_day['Date'].normalize()
+
+        if current_date in event_dates:
+            continue
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        cpci_value = curr_day['CPCI']
+        if pd.isna(cpci_value):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+        if not get_first_candle_confirmation(trade_direction, curr_day['Date'], min_df):
+            continue
+
+        if is_gap_closed_in_first_interval(trade_direction, curr_day['Date'], min_df, prev_day['Close']):
+            continue
+
+        entry_price = get_second_candle_open(curr_day['Date'], min_df)
+        if entry_price is None:
+            continue
+
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+        atr_value = curr_day['ATR']
+        vix_open = vix_open_dict.get(curr_day['Date'], np.nan)
+
+        trades.append((curr_day['Date'], n_atr, atr_value, cpci_value, vix_open, profit_loss, trade_direction, entry_price, exit_price))
+
+    return trades
+
+
+def cumulative_sum_sorted(trades_df):
+    profits = trades_df['Profit/Loss'].values
+    csum = np.cumsum(profits)
+    return csum
+
+def range_sum(csum, start_idx, end_idx):
+    if end_idx <= start_idx:
+        return 0.0
+    if start_idx <= 0:
+        return csum[end_idx-1]
+    else:
+        return csum[end_idx-1] - csum[start_idx-1]
+
+def analyze_range(atr_array, cpci_array, vix_array, csum, atr_threshold, cpci_min, cpci_max, vix_min, vix_max):
+    atr_end = bisect_right(atr_array, atr_threshold)
+    if atr_end == 0:
+        return 0.0, 0
+    left_cpci_idx = bisect_right(cpci_array, cpci_min, 0, atr_end)
+    right_cpci_idx = bisect_left(cpci_array, cpci_max, 0, atr_end)
+    if right_cpci_idx <= left_cpci_idx:
+        return 0.0, 0
+    vix_sub_start = bisect_right(vix_array, vix_min, left_cpci_idx, right_cpci_idx)
+    vix_sub_end = bisect_left(vix_array, vix_max, left_cpci_idx, right_cpci_idx)
+    if vix_sub_end <= vix_sub_start:
+        return 0.0, 0
+    total_profit = range_sum(csum, vix_sub_start, vix_sub_end)
+    count = vix_sub_end - vix_sub_start
+    return total_profit, count
+
+
+def calculate_statistics(trades_df):
+    if trades_df.empty:
+        print("No trades met the criteria.")
+        return
+    gains = trades_df[trades_df['Profit/Loss'] > 0]
+    losses = trades_df[trades_df['Profit/Loss'] < 0]
+    avg_gain = gains['Profit/Loss'].mean() if not gains.empty else 0
+    avg_loss = losses['Profit/Loss'].mean() if not losses.empty else 0
+
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Average Gain per Trade: ${avg_gain:,.2f}")
+    if losses.empty:
+        print("No losses to report.")
+    else:
+        print(f"Average Loss per Trade: ${avg_loss:,.2f}")
+
+def simulate_trading(trades_df, initial_investment):
+    if trades_df.empty:
+        print("No trades to simulate.")
+        return initial_investment
+    total_profit = trades_df['Profit/Loss'].sum()
+    final_amount = initial_investment + total_profit
+    print(f"Initial Investment: ${initial_investment:,.2f}")
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Total Profit/Loss: ${total_profit:,.2f}")
+    print(f"Final Amount: ${final_amount:,.2f}")
+    return final_amount
+
+
+def analyze_best_strategy(
+    spy_file, intraday_file, vix_file, cpci_file, events_file, initial_investment=16000,
+    atr_period_min=2, atr_period_max=21,  # ATR from 2 to 20
+    atr_threshold_start=5.0, atr_threshold_end=30.0, atr_threshold_step=0.05,
+    cpci_step=0.05, cpci_range=(0.8,1.5),
+    vix_step=0.5, vix_range=(11.0,30.0)
+):
+    daily_df = load_daily_data(spy_file)
+    min_df = load_intraday_data(intraday_file)
+    vix_df = load_vix_data(vix_file)
+    cpci_df = load_cpci_data(cpci_file)
+    event_dates = load_events(events_file)
+
+    if not np.issubdtype(min_df['Time'].dtype, np.datetime64):
+        min_df['Time'] = pd.to_datetime(min_df['Time'], errors='coerce')
+    min_df.dropna(subset=['Time'], inplace=True)
+
+    all_trades = []
+    for n_atr in range(atr_period_min, atr_period_max):
+        trades = precompute_trades(daily_df, min_df, vix_df, cpci_df, event_dates, initial_investment, n_atr)
+        for t in trades:
+            all_trades.append(t)
+
+    if not all_trades:
+        print("No valid trades found.")
+        return
+
+    trades_df = pd.DataFrame(all_trades, columns=['Date','ATR_Period','ATR','CPCI','VIX_Open','Profit/Loss','Direction','Entry Price','Exit Price'])
+    trades_df.sort_values(by=['ATR','CPCI','VIX_Open'], inplace=True)
+    trades_df.reset_index(drop=True, inplace=True)
+
+    atr_array = trades_df['ATR'].values
+    cpci_array = trades_df['CPCI'].values
+    vix_array = trades_df['VIX_Open'].values
+    csum = cumulative_sum_sorted(trades_df)
+
+    cpci_start, cpci_end = cpci_range
+    vix_start, vix_end = vix_range
+    cpci_values = np.round(np.arange(cpci_start, cpci_end, cpci_step),4)
+    vix_values = np.round(np.arange(vix_start, vix_end, vix_step),4)
+    atr_thresholds = np.round(np.arange(atr_threshold_start, atr_threshold_end, atr_threshold_step),4)
+
+    best_profit = -np.inf
+    best_params = None
+    best_count = 0
+
+    for atr_t in atr_thresholds:
+        for cpci_min in cpci_values:
+            for cpci_max in cpci_values:
+                if cpci_min < cpci_max:
+                    for vix_min in vix_values:
+                        for vix_max in vix_values:
+                            if vix_min < vix_max:
+                                total_profit, count = analyze_range(
+                                    atr_array, cpci_array, vix_array, csum,
+                                    atr_t, cpci_min, cpci_max, vix_min, vix_max
+                                )
+                                if total_profit > best_profit:
+                                    best_profit = total_profit
+                                    best_params = (atr_t, cpci_min, cpci_max, vix_min, vix_max)
+                                    best_count = count
+
+    if best_params is None:
+        print("No optimal parameters found.")
+        return
+
+    atr_t, cpci_min, cpci_max, vix_min, vix_max = best_params
+
+
+
+    print("Re-running optimization with ATR_Period considered...")
+
+    trades_df.sort_values(by=['ATR_Period','ATR','CPCI','VIX_Open'], inplace=True)
+    trades_df.reset_index(drop=True, inplace=True)
+
+    atr_period_array = trades_df['ATR_Period'].values
+    atr_array = trades_df['ATR'].values
+    cpci_array = trades_df['CPCI'].values
+    vix_array = trades_df['VIX_Open'].values
+    csum = cumulative_sum_sorted(trades_df)
+
+    best_profit = -np.inf
+    best_params_final = None
+    best_count = 0
+    best_atr_period = None
+
+    def atr_period_range(atr_period_array, chosen_period):
+        start_idx = bisect_left(atr_period_array, chosen_period)
+        if start_idx == len(atr_period_array) or atr_period_array[start_idx] != chosen_period:
+            return None, None
+        end_idx = bisect_right(atr_period_array, chosen_period)
+        return start_idx, end_idx
+
+    atr_periods_all = np.arange(atr_period_min, atr_period_max)
+    for p in atr_periods_all:
+        start_p, end_p = atr_period_range(atr_period_array, p)
+        if start_p is None:
+            continue
+
+        for atr_t in atr_thresholds:
+            for cpci_min in cpci_values:
+                for cpci_max in cpci_values:
+                    if cpci_min < cpci_max:
+                        for vix_min in vix_values:
+                            for vix_max in vix_values:
+                                if vix_min < vix_max:
+                                    atr_end = bisect_right(atr_array, atr_t, start_p, end_p)
+                                    left_cpci_idx = bisect_right(cpci_array, cpci_min, start_p, atr_end)
+                                    right_cpci_idx = bisect_left(cpci_array, cpci_max, start_p, atr_end)
+                                    if right_cpci_idx <= left_cpci_idx:
+                                        continue
+                                    vix_sub_start = bisect_right(vix_array, vix_min, left_cpci_idx, right_cpci_idx)
+                                    vix_sub_end = bisect_left(vix_array, vix_max, left_cpci_idx, right_cpci_idx)
+                                    if vix_sub_end <= vix_sub_start:
+                                        continue
+                                    total_profit = range_sum(csum, vix_sub_start, vix_sub_end)
+                                    count = vix_sub_end - vix_sub_start
+                                    if total_profit > best_profit:
+                                        best_profit = total_profit
+                                        best_params_final = (p, atr_t, cpci_min, cpci_max, vix_min, vix_max)
+                                        best_count = count
+
+    if best_params_final is None:
+        print("No optimal parameters found after considering ATR_Period.")
+        return
+
+    best_atr_period, best_atr_t, best_cpci_min, best_cpci_max, best_vix_min, best_vix_max = best_params_final
+
+    final_trades = precompute_trades(daily_df, min_df, vix_df, cpci_df, event_dates, initial_investment, best_atr_period)
+    final_df = pd.DataFrame(final_trades, columns=['Date','ATR_Period','ATR','CPCI','VIX_Open','Profit/Loss','Direction','Entry Price','Exit Price'])
+
+    final_filtered = final_df[
+        (final_df['ATR'] <= best_atr_t) &
+        (final_df['CPCI'] > best_cpci_min) & (final_df['CPCI'] < best_cpci_max) &
+        (final_df['VIX_Open'] > best_vix_min) & (final_df['VIX_Open'] < best_vix_max)
+    ]
+
+    print("\n=== Optimal Parameters ===")
+    print(f"ATR Period: {best_atr_period}")
+    print(f"ATR Threshold: {best_atr_t}")
+    print(f"CPCI Range: {best_cpci_min} < CPCI < {best_cpci_max}")
+    print(f"VIX Range: {best_vix_min} < VIX < {best_vix_max}")
+
+    print("\n=== Statistics with Optimal Parameters ===")
+    calculate_statistics(final_filtered)
+    simulate_trading(final_filtered, initial_investment)
+
+    print("\nNumber of Trades:", len(final_filtered))
+    print("Final Trades (Same ATR Period and Threshold):")
+    final_shown = final_filtered[['Date','Direction','Entry Price','Exit Price','Profit/Loss']].copy()
+    final_shown.sort_values('Date', inplace=True)
+    print(final_shown.to_string(index=False))
+
+
+if __name__ == "__main__":
+    initial_investment = 16000
+    spy_file = 'D6CK32X6.csv'
+    intraday_file = '5_MINUTES_DATA.csv'
+    vix_file = 'VIX_History.csv'
+    cpci_file = 'CPCI.csv'
+    events_file = 'events.csv'
+
+    analyze_best_strategy(
+        spy_file, intraday_file, vix_file, cpci_file, events_file,
+        initial_investment=initial_investment,
+        atr_period_min=2, atr_period_max=21,
+        atr_threshold_start=5.0, atr_threshold_end=30.0, atr_threshold_step=0.05,
+        cpci_step=0.05, cpci_range=(0.8,1.5),
+        vix_step=0.5, vix_range=(11.0,30.0)
+    )

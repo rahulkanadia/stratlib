@@ -1,0 +1,196 @@
+"""
+High Frequency Success #02 Strategy
+
+High frequency strategy with Tuesday And Stoch K Above D
+
+Strategy Type: High Frequency (Success)
+Category: high_frequency
+
+This is a standalone, beginner-friendly implementation.
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+current_file = Path(os.path.abspath(__file__))
+project_root = current_file.parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from utils.base_strategy_fixed import BaseStrategy
+
+class HighFrequencySuccess02Strategy(BaseStrategy):
+    """
+    High Frequency Success #02 Implementation
+    
+    High frequency trading optimized for success using Tuesday And Stoch K Above D
+    """
+    
+    def __init__(self, data_path=None):
+        super().__init__(
+            name="High Frequency Success #02",
+            description="HF - Tuesday And Stoch K Above D",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        )
+        
+        self.min_gap_percent = 0.3  # Smaller gaps for HF
+        self.holding_period = 'intraday'  # Always close same day
+        self.max_trades_per_day = 3  # Risk management
+        self.stoch_period = 9
+        self.stoch_smooth = 3
+        
+        if data_path:
+            self.load_data(data_path)
+    
+    def calculate_indicators(self):
+        """Calculate required indicators"""
+        df = self.data.copy()
+        
+        df['Gap_Percent'] = ((df['Open'] - df['Close'].shift(1)) / df['Close'].shift(1)) * 100
+        df['Intraday_Range'] = ((df['High'] - df['Low']) / df['Open']) * 100
+        
+        low_min = df['Low'].rolling(window=self.stoch_period).min()
+        high_max = df['High'].rolling(window=self.stoch_period).max()
+        df['Stoch_K'] = 100 * ((df['Close'] - low_min) / (high_max - low_min))
+        df['Stoch_D'] = df['Stoch_K'].rolling(window=self.stoch_smooth).mean()
+        
+        df['DayOfWeek'] = df['Date'].dt.dayofweek
+        df['Tuesday'] = df['DayOfWeek'] == 1
+        df['EarlyWeek'] = df['DayOfWeek'] <= 1
+        
+        return df
+    
+    def calculate_signals(self):
+        """Generate trading signals based on strategy rules"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.calculate_indicators()
+        signals = []
+        
+        daily_trades = {}  # Track trades per day
+        
+        for i in range(20, len(df)):
+            curr_day = df.iloc[i]
+            curr_date = curr_day['Date'].date()
+            
+            if curr_date in daily_trades and daily_trades[curr_date] >= self.max_trades_per_day:
+                continue
+            
+            if abs(curr_day['Gap_Percent']) < self.min_gap_percent:
+                continue
+            
+            signal = False
+            
+            if curr_day.get('Tuesday', False):
+                signal = True
+                direction = 'SHORT' if curr_day['Gap_Percent'] > 0 else 'LONG'
+            
+            if signal:
+                entry_price = curr_day['Open']
+                
+                gap_size = abs(curr_day['Gap_Percent'])
+                
+                if direction == 'LONG':
+                    target = entry_price * (1 + gap_size * 0.005)  # 50% of gap
+                    stop = entry_price * (1 - gap_size * 0.003)    # 30% stop
+                    
+                    if curr_day['High'] >= target:
+                        exit_price = target
+                    elif curr_day['Low'] <= stop:
+                        exit_price = stop
+                    else:
+                        exit_price = curr_day['Close']
+                else:  # SHORT
+                    target = entry_price * (1 - gap_size * 0.005)  # 50% of gap
+                    stop = entry_price * (1 + gap_size * 0.003)    # 30% stop
+                    
+                    if curr_day['Low'] <= target:
+                        exit_price = target
+                    elif curr_day['High'] >= stop:
+                        exit_price = stop
+                    else:
+                        exit_price = curr_day['Close']
+                
+                trade_signal = {
+                    'date': curr_day['Date'],
+                    'direction': direction,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'gap_percent': curr_day['Gap_Percent'],
+                    'signal_strength': 1.0
+                }
+                signals.append(trade_signal)
+                
+                if curr_date not in daily_trades:
+                    daily_trades[curr_date] = 0
+                daily_trades[curr_date] += 1
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+    
+    def run_backtest(self, initial_capital=10000, position_size=1.0):
+        """Run backtest simulation"""
+        return super().run_backtest(initial_capital, position_size)
+    
+    def get_summary_metrics(self):
+        """Get performance metrics with strategy-specific additions"""
+        if self.performance_metrics is None:
+            return None
+        
+        metrics = self.performance_metrics.copy()
+        
+        
+        
+        return metrics
+
+def main():
+    """Run the strategy with example usage"""
+    print("=" * 60)
+    print("HIGH FREQUENCY SUCCESS #02 STRATEGY")
+    print("=" * 60)
+    print("\nHigh frequency approach using Tuesday And Stoch K Above D")
+    print("=" * 60)
+    
+    data_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    
+    strategy = HighFrequencySuccess02Strategy(data_path)
+    
+    print("\nSearching for trading opportunities...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} trading signals")
+    
+    if len(signals) > 0:
+        print(f"\nFirst signal example:")
+        first_signal = signals.iloc[0]
+        print(f"  Date: {first_signal['date']}")
+        print(f"  Direction: {first_signal.get('direction', 'N/A')}")
+        print(f"  Entry: ${first_signal.get('entry_price', 0):.2f}")
+    
+    print("\nRunning backtest with $10,000 initial capital...")
+    strategy.run_backtest(initial_capital=10000)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\n" + "=" * 60)
+    print("STRATEGY RESULTS")
+    print("=" * 60)
+    if metrics:
+        print(f"Total Trades: {metrics['total_trades']}")
+        print(f"Win Rate: {metrics['win_rate']:.1f}%")
+        print(f"Total Profit/Loss: ${metrics['total_profit']:.2f}")
+        print(f"Sharpe Ratio: {metrics.get('sharpe_ratio', 0):.2f}")
+        print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+        print(f"Win/Loss Ratio: {metrics.get('win_loss_ratio', 0):.2f}")
+    else:
+        print("No trades executed. Check strategy parameters.")
+    
+    print("\n" + "=" * 60)
+    print("💡 TIP: Adjust parameters in __init__ to optimize performance")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,476 @@
+"""
+Create individual Python files for top 100 Gap & Go strategies
+Splits by success rate and profit
+"""
+
+import pandas as pd
+import os
+import shutil
+
+def create_strategy_file(rank, strategy_name, indicator1, indicator2, success_rate, 
+                        total_trades, total_profit, roi, file_prefix, output_dir):
+    """Create individual Python file for a Gap & Go strategy"""
+    
+    safe_name = strategy_name.replace(' + ', '_and_').replace(' ', '_').replace('/', '_').lower()
+    filename = f"{file_prefix}_{rank:02d}_{safe_name}.py"
+    filepath = os.path.join(output_dir, filename)
+    
+    calculations = get_indicator_calculations(indicator1, indicator2)
+    
+    condition1_code = get_condition_code(indicator1)
+    condition2_code = get_condition_code(indicator2)
+    
+    content = f'''"""
+Gap & Go Strategy: {strategy_name}
+Success Rate: {success_rate:.2f}% | Total Profit: ${total_profit:,.2f} | Trades: {total_trades}
+
+This strategy combines:
+1. {indicator1}
+2. {indicator2}
+
+Strategy Type: Gap & Go (trades in direction of gap expecting continuation)
+Minimum Trade Requirement: 100+ trades (ACHIEVED: {total_trades} trades)
+"""
+
+import pandas as pd
+import numpy as np
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from gap_and_go_utils import *
+
+class {strategy_name.replace(" + ", "And").replace(" ", "").replace("-", "").replace("_", "")}GapAndGoStrategy:
+    """
+    Gap & Go Two-Indicator Strategy: {strategy_name}
+    
+    Entry: When gap occurs AND both indicators confirm
+    Exit: Profit target (1%) or Stop loss (0.5%) or end of day
+    """
+    
+    def __init__(self):
+        self.name = "{strategy_name}"
+        self.indicator1 = "{indicator1}"
+        self.indicator2 = "{indicator2}"
+        self.initial_investment = 16000
+        self.min_gap_percent = 0.3
+        self.profit_target_percent = 1.0
+        self.stop_loss_percent = 0.5
+        
+    def calculate_indicators(self, df):
+        """Calculate required indicators"""
+{calculations}
+        
+        return df
+    
+    def get_filter_conditions(self, df):
+        """Get the two indicator conditions"""
+        condition1 = {condition1_code}
+        
+        condition2 = {condition2_code}
+        
+        return condition1 & condition2
+    
+    def run_strategy(self, data_file):
+        """Run the Gap & Go strategy"""
+        df = load_data(data_file)
+        
+        df = self.calculate_indicators(df)
+        
+        filter_condition = self.get_filter_conditions(df)
+        
+        trades = []
+        for i in range(1, len(df)):
+            if not filter_condition.iloc[i]:
+                continue
+                
+            prev_day = df.iloc[i - 1]
+            curr_day = df.iloc[i]
+            
+            gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+            if not is_gap_valid(gap, self.min_gap_percent):
+                continue
+            
+            trade_direction = determine_gap_and_go_direction(gap)
+            entry_price = curr_day['Open']
+            exit_price, success, exit_type = calculate_gap_and_go_exit(
+                trade_direction, curr_day, entry_price,
+                self.profit_target_percent, self.stop_loss_percent
+            )
+            
+            profit_loss = calculate_profit_loss(
+                trade_direction, entry_price, exit_price, self.initial_investment
+            )
+            
+            trades.append({{
+                'Date': curr_day['Date'],
+                'Trade Direction': trade_direction,
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'Gap': gap,
+                'Success': success,
+                'Exit Type': exit_type,
+                'Profit/Loss': profit_loss
+            }})
+        
+        trades_df = pd.DataFrame(trades)
+        
+        if len(trades_df) < 100:
+            print(f"WARNING: Strategy only generated {{len(trades_df)}} trades, below minimum of 100")
+        
+        stats = calculate_statistics(trades_df, self.name, self.initial_investment)
+        
+        return stats, trades_df
+    
+    def print_results(self, stats, trades_df):
+        """Print formatted results"""
+        print(f"\\n{{'='*70}}")
+        print(f"{{self.name}} - Gap & Go Trading Strategy")
+        print(f"{{'='*70}}")
+        print(f"Strategy Type: Gap & Go (trade with gap direction)")
+        print(f"Indicators: {{self.indicator1}} + {{self.indicator2}}")
+        print(f"Total Trades: {{len(trades_df)}} (min required: 100)")
+        
+        print(f"\\nPerformance Metrics:")
+        print(f"Success Rate: {{stats['Success Rate']:.2f}}%")
+        print(f"Total Profit: ${{stats['Total Profit']:,.2f}}")
+        print(f"Average Profit per Trade: ${{stats['Average Profit']:.2f}}")
+        print(f"ROI: {{stats['ROI']:.2f}}%")
+        print(f"Final Equity: ${{stats['Final Equity']:,.2f}}")
+        print(f"Profit Factor: {{stats['Profit Factor']:.2f}}")
+        print(f"Sharpe Ratio: {{stats['Sharpe Ratio']:.2f}}")
+        
+        if len(trades_df) > 0:
+            exit_types = trades_df['Exit Type'].value_counts()
+            print(f"\\nExit Analysis:")
+            for exit_type, count in exit_types.items():
+                print(f"{{exit_type}}: {{count}} ({{count/len(trades_df)*100:.1f}}%)")
+            
+            winning_trades = trades_df[trades_df['Profit/Loss'] > 0]
+            losing_trades = trades_df[trades_df['Profit/Loss'] < 0]
+            
+            if len(winning_trades) > 0:
+                avg_win = winning_trades['Profit/Loss'].mean()
+                max_win = winning_trades['Profit/Loss'].max()
+                print(f"\\nWinning Trades: {{len(winning_trades)}}")
+                print(f"Average Win: ${{avg_win:.2f}}")
+                print(f"Largest Win: ${{max_win:.2f}}")
+            
+            if len(losing_trades) > 0:
+                avg_loss = losing_trades['Profit/Loss'].mean()
+                max_loss = losing_trades['Profit/Loss'].min()
+                print(f"\\nLosing Trades: {{len(losing_trades)}}")
+                print(f"Average Loss: ${{avg_loss:.2f}}")
+                print(f"Largest Loss: ${{max_loss:.2f}}")
+        
+        print(f"{{'='*70}}\\n")
+
+def main():
+    """Run the Gap & Go strategy"""
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv') 
+                and not f.startswith('gap_and_go')]
+    
+    if csv_files:
+        data_file = csv_files[0]
+    else:
+        data_file = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/7J0OK1VR.csv'
+        if not os.path.exists(data_file):
+            print("Error: No CSV data file found.")
+            return
+    
+    print(f"Using data file: {{data_file}}")
+    
+    strategy = {strategy_name.replace(" + ", "And").replace(" ", "").replace("-", "").replace("_", "")}GapAndGoStrategy()
+    
+    try:
+        stats, trades_df = strategy.run_strategy(data_file)
+        strategy.print_results(stats, trades_df)
+        
+        output_file = f"{{strategy.name.replace(' ', '_')}}_trades.csv"
+        trades_df.to_csv(output_file, index=False)
+        print(f"Trade details saved to: {{output_file}}")
+        
+    except Exception as e:
+        print(f"Error running strategy: {{e}}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    main()
+'''
+    
+    with open(filepath, 'w') as f:
+        f.write(content)
+    
+    return filename
+
+def get_indicator_calculations(indicator1, indicator2):
+    """Generate calculation code based on indicators"""
+    calculations = set()
+    indicators = [indicator1, indicator2]
+    
+    for ind in indicators:
+        if 'SMA' in ind and 'EMA' not in ind:
+            calculations.add('sma')
+        if 'EMA' in ind:
+            calculations.add('ema')
+        if 'RSI' in ind:
+            calculations.add('rsi')
+        if 'ATR' in ind or 'Volatility' in ind:
+            calculations.add('atr')
+        if 'BB' in ind or 'Bollinger' in ind:
+            calculations.add('bb')
+        if 'MACD' in ind:
+            calculations.add('macd')
+        if 'Stoch' in ind:
+            calculations.add('stoch')
+        if 'Volume' in ind or 'OBV' in ind or 'MFI' in ind:
+            calculations.add('volume')
+        if 'ADX' in ind:
+            calculations.add('adx')
+        if 'CCI' in ind:
+            calculations.add('cci')
+        if 'Williams' in ind:
+            calculations.add('williams')
+        if 'ROC' in ind or 'Momentum' in ind:
+            calculations.add('momentum')
+        if any(day in ind for day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']):
+            calculations.add('dayofweek')
+        if 'Gap' in ind:
+            calculations.add('gap')
+        if 'trend' in ind.lower() or 'Price_Above' in ind or 'Price_Near' in ind:
+            calculations.add('price_levels')
+            
+    code_parts = ["        # Calculate all necessary indicators"]
+    
+    if 'sma' in calculations:
+        code_parts.append("""
+        for period in [5, 10, 20, 50, 100, 200]:
+            df[f'SMA_{period}'] = calculate_sma(df, period)""")
+    
+    if 'ema' in calculations:
+        code_parts.append("""
+        for period in [8, 13, 21, 34, 55]:
+            df[f'EMA_{period}'] = calculate_ema(df, period)""")
+    
+    if 'rsi' in calculations:
+        code_parts.append("""
+        for period in [7, 14, 21]:
+            df[f'RSI_{period}'] = calculate_rsi(df, period)""")
+    
+    if 'atr' in calculations:
+        code_parts.append("""
+        for period in [10, 14, 20]:
+            df[f'ATR_{period}'] = calculate_atr(df, period)""")
+    
+    if 'bb' in calculations:
+        code_parts.append("""
+        upper_bb, middle_bb, lower_bb = calculate_bollinger_bands(df)
+        df['BB_Upper'] = upper_bb
+        df['BB_Middle'] = middle_bb
+        df['BB_Lower'] = lower_bb
+        df['BB_Width'] = df['BB_Upper'] - df['BB_Lower']""")
+    
+    if 'macd' in calculations:
+        code_parts.append("""
+        macd_line, signal_line = calculate_macd(df)
+        df['MACD'] = macd_line
+        df['MACD_Signal'] = signal_line
+        df['MACD_Histogram'] = df['MACD'] - df['MACD_Signal']""")
+    
+    if 'stoch' in calculations:
+        code_parts.append("""
+        k_percent, d_percent = calculate_stochastic(df)
+        df['Stoch_K'] = k_percent
+        df['Stoch_D'] = d_percent""")
+    
+    if 'volume' in calculations:
+        code_parts.append("""
+        df['OBV'] = calculate_obv(df)
+        df['Volume_SMA'] = df['Volume'].rolling(window=20).mean().shift(1)
+        df['Volume_Ratio'] = (df['Volume'] / df['Volume_SMA']).shift(1).fillna(1.0)
+        df['MFI'] = calculate_mfi(df)""")
+    
+    if 'adx' in calculations:
+        code_parts.append("""
+        df['ADX'] = calculate_adx(df)""")
+    
+    if 'cci' in calculations:
+        code_parts.append("""
+        df['CCI'] = calculate_cci(df)""")
+    
+    if 'williams' in calculations:
+        code_parts.append("""
+        df['Williams_R'] = calculate_williams_r(df)""")
+    
+    if 'momentum' in calculations:
+        code_parts.append("""
+        df['ROC'] = calculate_roc(df)
+        df['Momentum_5'] = ((df['Close'] - df['Close'].shift(5)) / df['Close'].shift(5) * 100).shift(1)
+        df['Momentum_10'] = ((df['Close'] - df['Close'].shift(10)) / df['Close'].shift(10) * 100).shift(1)""")
+    
+    if 'dayofweek' in calculations:
+        code_parts.append("""
+        df['DayOfWeek'] = pd.to_datetime(df['Date']).dt.dayofweek""")
+    
+    if 'gap' in calculations:
+        code_parts.append("""
+        df['PrevClose'] = df['Close'].shift(1)
+        df['Gap'] = ((df['Open'] - df['PrevClose']) / df['PrevClose']) * 100""")
+    
+    if 'price_levels' in calculations:
+        code_parts.append("""
+        df['Price_Above_SMA20'] = (df['Close'] > df['SMA_20']).shift(1).fillna(False)
+        df['Price_Above_SMA50'] = (df['Close'] > df['SMA_50']).shift(1).fillna(False)
+        df['SMA20_Rising'] = (df['SMA_20'] > df['SMA_20'].shift(1)).shift(1).fillna(False)
+        df['SMA50_Rising'] = (df['SMA_50'] > df['SMA_50'].shift(1)).shift(1).fillna(False)""")
+    
+    code_parts.append("""
+        df['High_Low_Range'] = (df['High'] - df['Low']).shift(1)
+        df['ATR_Ratio'] = (df['ATR_14'] / df['Close']).shift(1).fillna(0.015)
+        df['BB_Squeeze'] = (df['BB_Width'] < df['BB_Width'].rolling(20).mean()).shift(1).fillna(False)""")
+    
+    return '\n'.join(code_parts)
+
+def get_condition_code(indicator):
+    """Get the condition code for a specific indicator"""
+    conditions_map = {
+        "Uptrend_SMA20": "df['Price_Above_SMA20']",
+        "Downtrend_SMA20": "~df['Price_Above_SMA20']",
+        "Uptrend_SMA50": "df['Price_Above_SMA50']",
+        "Downtrend_SMA50": "~df['Price_Above_SMA50']",
+        "SMA_5_Above_10": "df['SMA_5'] > df['SMA_10']",
+        "SMA_10_Above_20": "df['SMA_10'] > df['SMA_20']",
+        "EMA_8_Above_21": "df['EMA_8'] > df['EMA_21']",
+        "Strong_Uptrend": "(df['SMA_5'] > df['SMA_10']) & (df['SMA_10'] > df['SMA_20'])",
+        "Strong_Downtrend": "(df['SMA_5'] < df['SMA_10']) & (df['SMA_10'] < df['SMA_20'])",
+        "Trend_Alignment": "df['SMA20_Rising'] & df['SMA50_Rising']",
+        
+        "RSI_Bullish": "df['RSI_14'] > 50",
+        "RSI_Bearish": "df['RSI_14'] < 50",
+        "RSI_Strong": "(df['RSI_14'] > 60) & (df['RSI_14'] < 80)",
+        "RSI_Weak": "(df['RSI_14'] > 20) & (df['RSI_14'] < 40)",
+        "MACD_Bullish": "df['MACD'] > df['MACD_Signal']",
+        "MACD_Bearish": "df['MACD'] < df['MACD_Signal']",
+        "Momentum_Positive": "df['Momentum_10'] > 0",
+        "Momentum_Negative": "df['Momentum_10'] < 0",
+        "ROC_Positive": "df['ROC'] > 0",
+        "ROC_Negative": "df['ROC'] < 0",
+        
+        "High_Volume": "df['Volume_Ratio'] > 1.2",
+        "Normal_Volume": "(df['Volume_Ratio'] > 0.8) & (df['Volume_Ratio'] < 1.2)",
+        "Low_Volume": "df['Volume_Ratio'] < 0.8",
+        "Volume_Surge": "df['Volume_Ratio'] > 1.5",
+        "OBV_Rising": "df['OBV'] > df['OBV'].shift(5)",
+        "OBV_Falling": "df['OBV'] < df['OBV'].shift(5)",
+        "MFI_Strong": "df['MFI'] > 50",
+        "MFI_Weak": "df['MFI'] < 50",
+        "Volume_Trend_Up": "df['Volume_SMA'] > df['Volume_SMA'].shift(5)",
+        "Volume_Trend_Down": "df['Volume_SMA'] < df['Volume_SMA'].shift(5)",
+        
+        "High_Volatility": "df['ATR_Ratio'] > 0.02",
+        "Normal_Volatility": "(df['ATR_Ratio'] > 0.01) & (df['ATR_Ratio'] < 0.02)",
+        "Low_Volatility": "df['ATR_Ratio'] < 0.01",
+        "BB_Wide": "df['BB_Width'] > df['BB_Width'].rolling(20).mean()",
+        "BB_Narrow": "df['BB_Width'] < df['BB_Width'].rolling(20).mean()",
+        "BB_Squeeze_Active": "df['BB_Squeeze']",
+        "ATR_Expanding": "df['ATR_14'] > df['ATR_14'].shift(5)",
+        "ATR_Contracting": "df['ATR_14'] < df['ATR_14'].shift(5)",
+        "Price_Near_BB_Upper": "(df['Close'] > df['BB_Middle']) & (df['Close'] < df['BB_Upper'])",
+        "Price_Near_BB_Lower": "(df['Close'] < df['BB_Middle']) & (df['Close'] > df['BB_Lower'])",
+        
+        "Monday": "df['DayOfWeek'] == 0",
+        "Tuesday": "df['DayOfWeek'] == 1",
+        "Wednesday": "df['DayOfWeek'] == 2",
+        "Thursday": "df['DayOfWeek'] == 3",
+        "Friday": "df['DayOfWeek'] == 4",
+        "Early_Week": "df['DayOfWeek'].isin([0, 1])",
+        "Mid_Week": "df['DayOfWeek'].isin([2, 3])",
+        "Late_Week": "df['DayOfWeek'] == 4",
+        "Not_Monday": "df['DayOfWeek'] != 0",
+        "Not_Friday": "df['DayOfWeek'] != 4",
+        
+        "ADX_Trending": "df['ADX'] > 25",
+        "ADX_NonTrending": "df['ADX'] < 25",
+        "ADX_Strong": "df['ADX'] > 40",
+        "CCI_Bullish": "df['CCI'] > 0",
+        "CCI_Bearish": "df['CCI'] < 0",
+        "Williams_Oversold": "df['Williams_R'] < -80",
+        "Williams_Overbought": "df['Williams_R'] > -20",
+        "Stoch_Bullish": "df['Stoch_K'] > df['Stoch_D']",
+        "Stoch_Bearish": "df['Stoch_K'] < df['Stoch_D']",
+        "Stoch_Neutral": "(df['Stoch_K'] > 20) & (df['Stoch_K'] < 80)",
+        
+        "Large_Gap": "abs(df['Gap']) > 1.0",
+        "Medium_Gap": "(abs(df['Gap']) > 0.5) & (abs(df['Gap']) <= 1.0)",
+        "Small_Gap": "(abs(df['Gap']) >= 0.3) & (abs(df['Gap']) <= 0.5)",
+        "Gap_Up": "df['Gap'] > 0.3",
+        "Gap_Down": "df['Gap'] < -0.3",
+    }
+    
+    return conditions_map.get(indicator, "pd.Series([True]*len(df))")
+
+def create_top_100_strategies():
+    """Create individual files for top 100 Gap & Go strategies"""
+    print("Creating top 100 Gap & Go strategy files...")
+    
+    all_results = pd.read_csv('gap_and_go_all_results.csv')
+    
+    main_dir = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/GAP_AND_GO_1000_STRATEGIES'
+    top_100_dir = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/GAP_AND_GO_TOP_100'
+    
+    top_success = all_results.nlargest(100, 'Success Rate')
+    print(f"\nCreating files for top 100 strategies by success rate...")
+    
+    for i, row in enumerate(top_success.iterrows(), 1):
+        _, data = row
+        filename = create_strategy_file(
+            i, data['Strategy'], data['Indicator1'], data['Indicator2'],
+            data['Success Rate'], data['Total Trades'], data['Total Profit'],
+            data['ROI'], 'gap_go_success', main_dir
+        )
+        print(f"Created: {filename}")
+        shutil.copy(os.path.join(main_dir, filename), os.path.join(top_100_dir, filename))
+    
+    top_profit = all_results.nlargest(100, 'Total Profit')
+    print(f"\nCreating files for top 100 strategies by profit...")
+    
+    for i, row in enumerate(top_profit.iterrows(), 1):
+        _, data = row
+        filename = create_strategy_file(
+            i, data['Strategy'], data['Indicator1'], data['Indicator2'],
+            data['Success Rate'], data['Total Trades'], data['Total Profit'],
+            data['ROI'], 'gap_go_profit', main_dir
+        )
+        print(f"Created: {filename}")
+        shutil.copy(os.path.join(main_dir, filename), os.path.join(top_100_dir, filename))
+    
+    result_files = [
+        'gap_and_go_all_results.csv',
+        'gap_and_go_top100_success_rate.csv',
+        'gap_and_go_top100_profit.csv',
+        'gap_and_go_top100_roi.csv',
+        'gap_and_go_summary.json'
+    ]
+    
+    for file in result_files:
+        if os.path.exists(file):
+            shutil.copy(file, os.path.join(top_100_dir, file))
+            print(f"Copied {file} to TOP_100 folder")
+    
+    utils_file = 'gap_and_go_utils.py'
+    if os.path.exists(utils_file):
+        shutil.copy(utils_file, os.path.join(top_100_dir, utils_file))
+        print(f"Copied {utils_file} to TOP_100 folder")
+    
+    print(f"\nCompleted! Created 200 strategy files (100 by success rate, 100 by profit)")
+    print(f"All files copied to: {top_100_dir}")
+
+def main():
+    """Create top 100 strategy files"""
+    os.chdir('/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/GAP_AND_GO_1000_STRATEGIES')
+    
+    create_top_100_strategies()
+
+if __name__ == "__main__":
+    main()

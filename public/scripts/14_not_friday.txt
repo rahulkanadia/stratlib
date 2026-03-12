@@ -1,0 +1,62 @@
+import pandas as pd
+import numpy as np
+from base_strategy import GapStrategy
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from gap_utils import *
+
+class NotFridayStrategy(GapStrategy):
+    """
+    Not Friday Strategy
+    Success Rate: 68.36% | Total Profit: $6,829.26 | Trades: 917
+    
+    This temporal strategy excludes Friday trades, avoiding potential weekend 
+    risk effects and option expiration dynamics.
+    """
+    
+    def __init__(self):
+        super().__init__(
+            name="Not Friday",
+            description="Fade gaps on all days except Friday"
+        )
+    
+    def calculate_indicators(self, df):
+        """Calculate day of week"""
+        df['DayOfWeek'] = pd.to_datetime(df['Date']).dt.dayofweek
+        
+        return df
+    
+    def get_filter_condition(self, df):
+        """Trade any day except Friday (day 4)"""
+        return df['DayOfWeek'] != 4
+
+def main():
+    """Run the strategy"""
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv') and f not in ['gap_strategies_all_results.csv', 'gap_strategies_top10_profit.csv', 'gap_strategies_top10_success_rate.csv']]
+    
+    if csv_files:
+        data_file = csv_files[0]
+        print(f"Using data file: {data_file}")
+    else:
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_file = os.path.join(parent_dir, '..', '7J0OK1VR.csv')
+        if not os.path.exists(data_file):
+            print("Error: No CSV data file found. Please place a CSV file in the current directory.")
+            return
+    
+    strategy = NotFridayStrategy()
+    
+    try:
+        stats, trades_df = strategy.run_strategy(data_file)
+        strategy.print_results(stats, trades_df)
+        
+        output_file = f"{strategy.name.replace(' ', '_')}_trades.csv"
+        trades_df.to_csv(output_file, index=False)
+        print(f"Trade details saved to: {output_file}")
+        
+    except Exception as e:
+        print(f"Error running strategy: {e}")
+
+if __name__ == "__main__":
+    main()

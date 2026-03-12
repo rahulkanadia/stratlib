@@ -1,0 +1,180 @@
+import pandas as pd
+import numpy as np
+import numba  # for JIT compilation
+import os
+
+@numba.njit
+def analyze_bollinger_with_profit_nb(
+    close_values, open_values, lower_band, look_forward_days
+):
+    """
+    Numba-accelerated function:
+    Checks for each index i whether lower_band[i] > open_values[i].
+    If so, it opens a trade, then looks up to `look_forward_days` ahead
+    for the first time close > open (success). 
+    If never found, exit on the last day in that window or end of data.
+
+    Returns:
+        (total_occurrences, success_count, total_profit)
+    """
+    n = len(close_values)
+    total_occurrences = 0
+    success_count = 0
+    total_profit = 0.0
+
+    for i in range(n):
+        if np.isnan(lower_band[i]):
+            continue
+        
+        current_boll = lower_band[i]
+        current_open = open_values[i]
+        
+        if current_boll > current_open:
+            total_occurrences += 1
+            entry_price = current_open
+            exit_price = entry_price
+            trade_success = False
+
+            for j in range(look_forward_days):
+                idx = i + j
+                if idx >= n:  # out of data
+                    break
+                if close_values[idx] > entry_price:
+                    exit_price = close_values[idx]
+                    trade_success = True
+                    break
+
+            if not trade_success:
+                last_idx = min(i + look_forward_days - 1, n - 1)
+                exit_price = close_values[last_idx]
+
+            profit = exit_price - entry_price
+            total_profit += profit
+            if trade_success:
+                success_count += 1
+
+    return (total_occurrences, success_count, total_profit)
+
+def optimize_bollinger_parameters_fast(
+    csv_filename,
+    k_range=range(1, 31),
+    multiplier_values=None,
+    look_forward_days=10,
+    min_occurrences=0
+):
+    """
+    Reads the CSV once, precomputes rolling mean & std for all k in k_range,
+    then for each (k, multiplier) computes Bollinger lower band and
+    runs a numba-accelerated loop to measure occurrences, success rate,
+    and total profit.
+    
+    :param csv_filename: CSV file name (str) with 'Date', 'Close', 'Open' columns.
+    :param k_range: range or list of integers (for Bollinger window sizes).
+    :param multiplier_values: array-like of floats (for std multipliers).
+    :param look_forward_days: how many days to look ahead for success.
+    :param min_occurrences: filter out any (k, multiplier) result that has fewer than this count.
+    :return: DataFrame of results (filtered by min_occurrences if > 0).
+    """
+    if multiplier_values is None:
+        multiplier_values = np.arange(0.5, 4.01, 0.05)
+
+    if not os.path.exists(csv_filename):
+        print(f"File '{csv_filename}' not found.")
+        return None
+
+    df = pd.read_csv(csv_filename, usecols=["Date", "Close", "Open"])
+    df.sort_values("Date", inplace=True, ignore_index=True)
+
+    close_arr = df["Close"].values
+    open_arr = df["Open"].values
+    n = len(df)
+
+    max_k = max(k_range)
+    tmp_close_s = pd.Series(close_arr)
+    rolling_means = {}
+    rolling_stds  = {}
+    for k in range(1, max_k+1):
+        roll_mean = tmp_close_s.rolling(k, min_periods=k).mean()
+        roll_std  = tmp_close_s.rolling(k, min_periods=k).std(ddof=0)  # ddof=0 -> population std
+        rolling_means[k] = roll_mean.values
+        rolling_stds[k]  = roll_std.values
+
+    results = []
+    for k in k_range:
+        mean_k = rolling_means[k]
+        std_k  = rolling_stds[k]
+
+        for m in multiplier_values:
+            lower_band = mean_k - (m * std_k)
+            occ, succ, profit = analyze_bollinger_with_profit_nb(
+                close_arr, open_arr, lower_band, look_forward_days
+            )
+
+            if occ > 0:
+                sr = succ / occ
+            else:
+                sr = 0.0
+
+            results.append({
+                'k': k,
+                'multiplier': round(float(m), 3),
+                'occurrences': occ,
+                'success_count': succ,
+                'success_rate': sr,
+                'total_profit': profit
+            })
+
+    df_results = pd.DataFrame(results)
+    if df_results.empty:
+        print("No results computed.")
+        return None
+
+    if min_occurrences > 0:
+        df_filtered = df_results[df_results['occurrences'] >= min_occurrences].copy()
+    else:
+        df_filtered = df_results
+
+    if df_filtered.empty:
+        print(f"\nAll results had fewer than {min_occurrences} occurrences. Nothing to display.")
+        return df_filtered  # Return an empty DF
+
+    df_sorted_profit = df_filtered.sort_values(by='total_profit', ascending=False).reset_index(drop=True)
+    df_sorted_sr     = df_filtered.sort_values(by='success_rate', ascending=False).reset_index(drop=True)
+
+    print("\n===== Top 10 by Total Profit (meeting min_occurrences) =====")
+    print(df_sorted_profit.head(10).to_string(index=False))
+
+    print("\n===== Top 10 by Success Rate (meeting min_occurrences) =====")
+    print(df_sorted_sr.head(10).to_string(index=False))
+
+    best_profit = df_sorted_profit.iloc[0]
+    best_sr = df_sorted_sr.iloc[0]
+
+    print("\n--- Best by Total Profit ---")
+    print(f"k={best_profit['k']}, multiplier={best_profit['multiplier']}, "
+          f"occurrences={best_profit['occurrences']}, "
+          f"success_rate={best_profit['success_rate']:.2f}, "
+          f"total_profit={best_profit['total_profit']:.2f}")
+
+    print("\n--- Best by Success Rate ---")
+    print(f"k={best_sr['k']}, multiplier={best_sr['multiplier']}, "
+          f"occurrences={best_sr['occurrences']}, "
+          f"success_rate={best_sr['success_rate']:.2f}, "
+          f"total_profit={best_sr['total_profit']:.2f}")
+
+    return df_filtered  # Return after filter
+
+if __name__ == "__main__":
+    csv_file = "IWM.csv"  # Example file
+    k_values = range(, 31)  # 1..30
+    multiplier_values = np.arange(0.3, 4.01, 0.01)  # 0.5..4.0 with step=0.05
+
+    min_occurrences = 220
+
+    all_results = optimize_bollinger_parameters_fast(
+        csv_filename=csv_file,
+        k_range=k_values,
+        multiplier_values=multiplier_values,
+        look_forward_days=10,
+        min_occurrences=min_occurrences
+    )

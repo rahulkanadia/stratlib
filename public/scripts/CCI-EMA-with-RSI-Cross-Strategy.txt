@@ -1,0 +1,149 @@
+
+> 策略名称
+
+CCI-EMA-with-RSI-Cross-Strategy
+
+> 策略作者
+
+张超
+
+> 策略描述
+
+This strategy uses the CCI + 2 RSIs + 2 EMAs to generate trade signals. Trades are only taken during the normal trading session and all open trades are closed 15 min before the close of the current session. A trailing stop loss is used and is customizable.
+
+Not trading advice, use at your own risk.
+
+**backtest**
+
+ ![IMG](https:
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|v_input_1|9|(?EMA Settings)Fast EMA Length|
+|v_input_2|20|Slow EMA Length|
+|v_input_int_1|9|(?RSI Settings)Fast RSI Length|
+|v_input_source_1_close|0|Fast RSI Source: close|high|low|open|hl2|hlc3|hlcc4|ohlc4|
+|v_input_int_2|20|Slow RSI Length|
+|v_input_source_2_close|0|Slow RSI Source: close|high|low|open|hl2|hlc3|hlcc4|ohlc4|
+|v_input_int_3|20|(?CCI Settings)CCI Length|
+|v_input_3_hlc3|0|CCI Source: hlc3|high|low|open|hl2|close|hlcc4|ohlc4|
+|v_input_int_4|50|CCI Cutoff|
+|v_input_float_1|0.67|(?Stop Settings)Trail Loss ($)|
+
+
+> 源码 (PineScript)
+
+``` javascript
+
+
+
+
+
+
+strategy("CCI + EMA with RSI Cross Strategy", overlay=true, margin_long=100, margin_short=100, process_orders_on_close=true)
+
+
+fastLen = input(title='Fast EMA Length', defval=9, group='EMA Settings')
+slowLen = input(title='Slow EMA Length', defval=20, group='EMA Settings')
+
+fastEMA = ta.ema(close, fastLen)
+slowEMA = ta.ema(close, slowLen)
+
+fema = plot(fastEMA, title='FastEMA', color=color.new(color.green, 0), linewidth=1, style=plot.style_line)
+sema = plot(slowEMA, title='SlowEMA', color=color.new(color.red, 0), linewidth=1, style=plot.style_line)
+
+
+
+
+
+Bull = fastEMA > slowEMA
+
+Bear = fastEMA < slowEMA
+
+
+rsiLength1Input = input.int(9, minval=1, title="Fast RSI Length", group="RSI Settings")
+rsiSource1Input = input.source(close, "Fast RSI Source", group="RSI Settings")
+rsiLength2Input = input.int(20, minval=1, title="Slow RSI Length", group="RSI Settings")
+rsiSource2Input = input.source(close, "Slow RSI Source", group="RSI Settings")
+
+up1 = ta.rma(math.max(ta.change(rsiSource1Input), 0), rsiLength1Input)
+down1 = ta.rma(-math.min(ta.change(rsiSource1Input), 0), rsiLength1Input)
+rsi = down1 == 0 ? 100 : up1 == 0 ? 0 : 100 - (100 / (1 + up1 / down1))
+up2 = ta.rma(math.max(ta.change(rsiSource2Input), 0), rsiLength2Input)
+down2 = ta.rma(-math.min(ta.change(rsiSource2Input), 0), rsiLength2Input)
+rsi2 = down2 == 0 ? 100 : up2 == 0 ? 0 : 100 - (100 / (1 + up2 / down2))
+rsiBull = rsi > rsi2 and rsi > rsi[1]
+rsiBear = rsi < rsi2 and rsi < rsi[1]
+
+
+cciLength = input.int(title='CCI Length', group='CCI Settings', defval=20, minval=1)
+src = input(hlc3, title='CCI Source', group='CCI Settings')
+ma = ta.sma(src, cciLength)
+cci = (src - ma) / (0.015 * ta.dev(src, cciLength))
+cciCut = input.int(title = 'CCI Cutoff', group='CCI Settings', defval = 50)
+cciBull = cci > cciCut
+cciBear = cci < cciCut * -1
+
+
+trstp = input.float(title="Trail Loss ($)", group='Stop Settings', minval = 0.0, step = 0.01, defval = 0.67)
+
+longStop = 0.0, shortStop = 0.0
+
+longStop := if Bull or strategy.position_size > 0
+    stopValue = slowEMA - trstp
+    math.max(stopValue, longStop[1])
+else
+    0.0
+
+shortStop := if Bear or strategy.position_size < 0
+    stopValue = slowEMA + trstp
+    math.min(stopValue, shortStop[1])
+else
+    999999
+    
+
+
+
+
+
+
+
+
+
+
+longCondition = cciBull and ta.crossover(rsi,rsi2) and close > slowEMA
+
+if (longCondition)
+    strategy.entry("Long", strategy.long)
+    
+
+longExit = close < longStop
+
+if (longExit)
+    strategy.close("Long")
+
+
+shortCondition = cciBear and ta.crossunder(rsi,rsi2) and close < slowEMA
+
+if (shortCondition)
+    strategy.entry("Short", strategy.short)
+
+
+shortExit = close > shortStop
+
+if (shortExit)
+    strategy.close("Short")
+
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2022-05-09 17:00:24

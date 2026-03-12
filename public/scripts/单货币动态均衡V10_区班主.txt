@@ -1,0 +1,90 @@
+
+> 策略名称
+
+单货币动态均衡V10_区班主
+
+> 策略作者
+
+区班量化
+
+> 策略描述
+
+"Talk is cheap. Show me the code"
+
+教学性质, 实盘慎用.
+
+
+注: ` 策略使用了交易模板类库`
+
+`希望新手从此策略入门, 一步步学习编写策略, 并体验到模拟与真实环境对交易系统的影响`
+
+https:
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|Interval|60|轮询周期(秒)|
+|changeRatio|0.1|切换预警比率|
+
+
+> 源码 (javascript)
+
+``` javascript
+
+
+
+
+function main() {
+    var STATE_IDLE  = -1;
+    var state = STATE_IDLE; 
+    var entryPrice = 0;
+    var initAccount = _C(exchange.GetAccount);
+    var obj;
+    var allAmount;
+    var cashRatio;
+    Log(initAccount);
+    while (true) {
+        var account = _C(exchange.GetAccount);
+        var ticker = _C(exchange.GetTicker);
+        if (state === STATE_IDLE) {  
+            obj = $.Buy(_N(account.Balance * 0.5 / ticker.Sell, 3));
+            if (obj) { 
+                opAmount = obj.amount;
+                entryPrice = obj.price;
+                state = PD_LONG;
+                account = _C(exchange.GetAccount);
+                Log("开仓买入",obj.amount,"价格",obj.price,"目前持币数", account.Stocks);
+            }
+        } else { 
+            allAmount=account.Balance+account.Stocks*ticker.Sell; 
+            cashRatio=parseFloat((account.Balance/allAmount).toFixed(3));
+            
+            if (cashRatio>0.5+changeRatio) { 
+                obj = $.Buy(_N(allAmount*(cashRatio-0.5)/ticker.Sell/2.0, 3)); 
+                if(obj){
+                    Log("开仓买入",obj.amount,"价格",obj.price);
+                    Log("目前资金",allAmount, "盈利",allAmount - initAccount.Balance);
+                }
+            }else if(cashRatio<0.5-changeRatio){  
+                obj = $.Sell(_N(allAmount*(0.5-cashRatio)/ticker.Sell/2.0, 3)); 
+                if(obj){
+                    Log("平仓买出",obj.amount,"价格",obj.price);
+                    Log("目前资金",allAmount, "盈利",allAmount - initAccount.Balance);
+                }
+            }
+        }
+        Sleep(Interval*1000);
+    }
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2019-10-12 16:48:48

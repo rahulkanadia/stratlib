@@ -1,0 +1,201 @@
+import pandas as pd
+from datetime import datetime
+
+def generate_high_frequency_rtf_summary():
+    """Generate RTF summary report with TOP 250 tables for high-frequency strategies"""
+    
+    csv_locations = [
+        'high_frequency_all_results.csv',
+        '/mnt/c/Windows/System32/high_frequency_all_results.csv',
+        '../high_frequency_all_results.csv',
+        '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/GAP_CLOSE_OPTIMIZATIONS/HIGH_FREQUENCY_TWO_INDICATORS/high_frequency_all_results.csv'
+    ]
+    
+    all_results = None
+    for location in csv_locations:
+        try:
+            all_results = pd.read_csv(location)
+            print(f"Found results file at: {location}")
+            break
+        except:
+            continue
+    
+    if all_results is None:
+        print("Error: Could not find high_frequency_all_results.csv")
+        return
+    
+    top_success = all_results.nlargest(250, 'Success Rate')
+    top_profit = all_results.nlargest(250, 'Total Profit')
+    top_roi = all_results.nlargest(250, 'ROI')
+    
+    total_strategies = len(all_results)
+    profitable_strategies = len(all_results[all_results['Total Profit'] > 0])
+    avg_success_rate = all_results['Success Rate'].mean()
+    avg_profit = all_results['Total Profit'].mean()
+    avg_trades = all_results['Total Trades'].mean()
+    best_success = all_results['Success Rate'].max()
+    best_profit = all_results['Total Profit'].max()
+    most_trades = all_results['Total Trades'].max()
+    
+    rtf_content = r'''{\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang1033{\fonttbl{\f0\fswiss\fcharset0 Arial;}{\f1\fmodern\fcharset0 Courier New;}}
+{\colortbl ;\red0\green0\blue255;\red0\green128\blue0;\red255\green0\blue0;\red128\green0\blue128;}
+{\*\generator Riched20 10.0.19041}\viewkind4\uc1 
+\pard\sa200\sl276\slmult1\b\f0\fs32 HIGH-FREQUENCY TWO-INDICATOR GAP TRADING STRATEGIES - TOP 250 EDITION\b0\fs22\par
+\par
+\b\fs28 EXECUTIVE SUMMARY\b0\fs22\par
+This document presents the results of testing ''' + f"{total_strategies:,}" + r''' high-frequency two-indicator gap trading strategies on SPY data from 2020-2024. Each strategy combines two technical indicators and requires a minimum of 100 trades to qualify as "high-frequency". All strategies were tested with an initial investment of $16,000 and are free from look-ahead bias.\par
+\par
+\b\fs24 Key Findings:\b0\fs22\par
+- Total High-Frequency Strategies: ''' + f"{total_strategies:,}" + r'''\par
+- Profitable Strategies: ''' + f"{profitable_strategies:,}" + f" ({profitable_strategies/total_strategies*100:.1f}%)" + r'''\par
+- Average Success Rate: ''' + f"{avg_success_rate:.2f}%" + r'''\par
+- Average Profit: $''' + f"{avg_profit:,.2f}" + r'''\par
+- Average Trades per Strategy: ''' + f"{avg_trades:.0f}" + r'''\par
+- Best Success Rate: ''' + f"{best_success:.2f}%" + r'''\par
+- Best Total Profit: $''' + f"{best_profit:,.2f}" + r'''\par
+- Most Active Strategy: ''' + f"{most_trades:,}" + r''' trades\par
+\par
+\cf4\b NOTE: This expanded edition shows the TOP 250 strategies in each category for more comprehensive analysis.\cf0\b0\par
+\par'''
+
+    rtf_content += r'''\b\fs28\cf1 TOP 250 STRATEGIES BY SUCCESS RATE\cf0\b0\fs22\par
+\par
+\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrt\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 '''
+
+    rtf_content += r'''\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx5800\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl\b Rank\cell Strategy (Indicator 1 + Indicator 2)\cell Success Rate\cell Total Trades\cell Total Profit\cell ROI\cell Final Equity\cell\b0\row'''
+
+    for i, (_, row) in enumerate(top_success.iterrows(), 1):
+        rtf_content += r'''\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 \clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx5800\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl '''
+        rtf_content += f"{i}\\cell {row['Strategy']}\\cell {row['Success Rate']:.2f}%\\cell {row['Total Trades']}\\cell ${row['Total Profit']:,.2f}\\cell {row['ROI']:.2f}%\\cell ${row['Final Equity']:,.2f}\\cell\\row"
+
+    rtf_content += r'''\pard\par
+\par
+\b\fs28\cf2 TOP 250 STRATEGIES BY TOTAL PROFIT\cf0\b0\fs22\par
+\par
+\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrt\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 '''
+
+    rtf_content += r'''\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx6000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7300\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl\b Rank\cell Strategy (Indicator 1 + Indicator 2)\cell Total Profit\cell Success Rate\cell Total Trades\cell ROI\cell Final Equity\cell\b0\row'''
+
+    for i, (_, row) in enumerate(top_profit.iterrows(), 1):
+        rtf_content += r'''\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 \clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx6000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7300\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl '''
+        rtf_content += f"{i}\\cell {row['Strategy']}\\cell ${row['Total Profit']:,.2f}\\cell {row['Success Rate']:.2f}%\\cell {row['Total Trades']}\\cell {row['ROI']:.2f}%\\cell ${row['Final Equity']:,.2f}\\cell\\row"
+
+    rtf_content += r'''\pard\par
+\par
+\b\fs28 TOP 250 STRATEGIES BY ROI\b0\fs22\par
+\par
+\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrt\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 '''
+
+    rtf_content += r'''\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx5700\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl\b Rank\cell Strategy (Indicator 1 + Indicator 2)\cell ROI\cell Total Profit\cell Success Rate\cell Total Trades\cell Final Equity\cell\b0\row'''
+
+    for i, (_, row) in enumerate(top_roi.iterrows(), 1):
+        rtf_content += r'''\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 \clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx5700\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl '''
+        rtf_content += f"{i}\\cell {row['Strategy']}\\cell {row['ROI']:.2f}%\\cell ${row['Total Profit']:,.2f}\\cell {row['Success Rate']:.2f}%\\cell {row['Total Trades']}\\cell ${row['Final Equity']:,.2f}\\cell\\row"
+
+    rtf_content += r'''\pard\par
+\par
+\b\fs28 HIGH-FREQUENCY STRATEGY ANALYSIS (TOP 250)\b0\fs22\par
+\par
+\b\fs24 Most Common Winning Indicators (From Top 250):\b0\fs22\par'''
+
+    all_indicators = []
+    for _, row in top_success.head(125).iterrows():  # Top 125 from each category
+        all_indicators.extend([row['Indicator1'], row['Indicator2']])
+    for _, row in top_profit.head(125).iterrows():
+        all_indicators.extend([row['Indicator1'], row['Indicator2']])
+    
+    indicator_counts = pd.Series(all_indicators).value_counts().head(20)
+    
+    for indicator, count in indicator_counts.items():
+        rtf_content += f"\\par - {indicator}: Appears in {count} top high-frequency strategies"
+
+    rtf_content += r'''\par
+\par
+\b\fs24 Extended Analysis (Top 250 Strategies):\b0\fs22\par'''
+    
+    success_ranges = [
+        (80, 100, "80-100%"),
+        (75, 80, "75-80%"),
+        (70, 75, "70-75%"),
+        (65, 70, "65-70%"),
+        (60, 65, "60-65%")
+    ]
+    
+    rtf_content += r'''\par
+\b Success Rate Distribution:\b0\par'''
+    for low, high, label in success_ranges:
+        count = len(top_success[(top_success['Success Rate'] >= low) & (top_success['Success Rate'] < high)])
+        rtf_content += f"\\par - {label}: {count} strategies"
+    
+    rtf_content += r'''\par
+\par
+\b Profit Distribution (Top 250):\b0\par'''
+    rtf_content += f"\\par - Average Profit: ${top_profit['Total Profit'].mean():,.2f}"
+    rtf_content += f"\\par - Median Profit: ${top_profit['Total Profit'].median():,.2f}"
+    rtf_content += f"\\par - Profit Range: ${top_profit['Total Profit'].min():,.2f} to ${top_profit['Total Profit'].max():,.2f}"
+    
+    rtf_content += r'''\par
+\par
+\b Trade Frequency (Top 250):\b0\par'''
+    rtf_content += f"\\par - Average Trades: {top_success['Total Trades'].mean():.0f}"
+    rtf_content += f"\\par - Most Active: {top_success['Total Trades'].max()} trades"
+    rtf_content += f"\\par - Least Active: {top_success['Total Trades'].min()} trades"
+
+    rtf_content += r'''\par
+\par
+\b\fs24 High-Frequency Strategy Insights (Extended Analysis):\b0\fs22\par
+\par
+1. \b Broader Perspective:\b0 With 250 strategies shown, patterns become more apparent across different market conditions.\par
+\par
+2. \b Consistency Check:\b0 Strategies appearing in multiple top 250 lists (Success Rate, Profit, ROI) demonstrate robustness.\par
+\par
+3. \b Indicator Diversity:\b0 The top 250 shows which indicators maintain effectiveness across a wider range of combinations.\par
+\par
+4. \b Risk-Return Profile:\b0 Extended data allows better assessment of risk-adjusted returns across strategies.\par
+\par
+5. \b Implementation Pool:\b0 Having 250 top strategies provides more options for portfolio diversification.\par
+\par
+\b\fs28 IMPLEMENTATION FOR HIGH-FREQUENCY TRADING\b0\fs22\par
+\par
+\b\fs24 Portfolio Approach:\b0\fs22\par
+With 250 top strategies, consider implementing multiple uncorrelated strategies to smooth returns.\par
+\par
+\b\fs24 Strategy Selection:\b0\fs22\par
+1. Cross-reference strategies appearing in multiple top 250 lists\par
+2. Select strategies with different indicator types to reduce correlation\par
+3. Balance high success rate with adequate trade frequency\par
+4. Consider market regime when selecting strategies\par
+\par
+\b\fs24 Risk Management (Extended):\b0\fs22\par
+1. Allocate capital across multiple strategies from the top 250\par
+2. Set individual strategy exposure limits\par
+3. Monitor correlation between active strategies\par
+4. Use the extended data to set realistic profit targets\par
+5. Implement dynamic position sizing based on recent performance\par
+\par
+\b\fs24 Performance Monitoring:\b0\fs22\par
+1. Track each strategy against its historical metrics\par
+2. Compare live performance to backtest results\par
+3. Rotate strategies based on recent performance\par
+4. Use the top 250 as a benchmark for strategy health\par
+\par
+\cf3\b\fs24 Important Notes:\cf0\b0\fs22\par
+- The top 250 provides extensive options but requires careful selection\par
+- Not all strategies will work well together - check correlations\par
+- Transaction costs become critical with multiple strategies\par
+- Regular rebalancing may be needed to maintain optimal mix\par
+\par
+\cf3\b\fs24 Disclaimer:\cf0\b0\fs22\par
+Past performance does not guarantee future results. High-frequency trading involves additional risks including execution risk, technology risk, and higher transaction costs. These results are based on historical data from 2020-2024 and should not be considered as investment advice.\par
+\par
+\b Report Generated:\b0 ''' + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + r'''\par
+}'''
+
+    output_path = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/GAP_CLOSE_OPTIMIZATIONS/HIGH_FREQUENCY_TWO_INDICATORS/HIGH_FREQUENCY_STRATEGIES_TOP_250.rtf'
+    with open(output_path, 'w') as f:
+        f.write(rtf_content)
+    
+    print(f"High-frequency RTF summary report (TOP 250) generated: {output_path}")
+
+if __name__ == "__main__":
+    generate_high_frequency_rtf_summary()

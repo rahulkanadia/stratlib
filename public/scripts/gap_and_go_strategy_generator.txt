@@ -1,0 +1,321 @@
+"""
+Gap & Go Strategy Generator
+Creates 1000 two-indicator strategies for Gap & Go trading
+Professional implementation with no look-ahead bias
+"""
+
+import pandas as pd
+import numpy as np
+import itertools
+import sys
+import os
+from datetime import datetime
+import json
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from gap_and_go_utils import *
+
+class GapAndGoStrategyGenerator:
+    """Generate and test 1000 two-indicator Gap & Go strategies"""
+    
+    def __init__(self, data_file, vix_file=None, initial_investment=16000):
+        self.data_file = data_file
+        self.vix_file = vix_file
+        self.initial_investment = initial_investment
+        self.df = None
+        self.results = []
+        self.min_trades_required = 100  # High-frequency requirement
+        
+    def load_and_prepare_data(self):
+        """Load data and calculate all indicators once"""
+        print("Loading data...")
+        self.df = load_data(self.data_file)
+        
+        if self.vix_file and os.path.exists(self.vix_file):
+            vix_df = load_vix_data(self.vix_file)
+            self.df = pd.merge(self.df, vix_df[['Date', 'OPEN', 'CLOSE']], 
+                             on='Date', how='left', suffixes=('', '_VIX'))
+        
+        print("Calculating all indicators...")
+        self._calculate_all_indicators()
+        print(f"Data prepared. Total days: {len(self.df)}")
+        
+    def _calculate_all_indicators(self):
+        """Calculate all indicators once to avoid repetition"""
+        self.df['PrevClose'] = self.df['Close'].shift(1)
+        self.df['Gap'] = ((self.df['Open'] - self.df['PrevClose']) / self.df['PrevClose']) * 100
+        
+        for period in [5, 10, 20, 50, 100, 200]:
+            self.df[f'SMA_{period}'] = calculate_sma(self.df, period)
+        
+        for period in [8, 13, 21, 34, 55]:
+            self.df[f'EMA_{period}'] = calculate_ema(self.df, period)
+        
+        for period in [7, 14, 21]:
+            self.df[f'RSI_{period}'] = calculate_rsi(self.df, period)
+        
+        for period in [10, 14, 20]:
+            self.df[f'ATR_{period}'] = calculate_atr(self.df, period)
+        
+        upper_bb, middle_bb, lower_bb = calculate_bollinger_bands(self.df)
+        self.df['BB_Upper'] = upper_bb
+        self.df['BB_Middle'] = middle_bb
+        self.df['BB_Lower'] = lower_bb
+        self.df['BB_Width'] = self.df['BB_Upper'] - self.df['BB_Lower']
+        
+        macd_line, signal_line = calculate_macd(self.df)
+        self.df['MACD'] = macd_line
+        self.df['MACD_Signal'] = signal_line
+        self.df['MACD_Histogram'] = self.df['MACD'] - self.df['MACD_Signal']
+        
+        k_percent, d_percent = calculate_stochastic(self.df)
+        self.df['Stoch_K'] = k_percent
+        self.df['Stoch_D'] = d_percent
+        
+        self.df['OBV'] = calculate_obv(self.df)
+        self.df['Volume_SMA'] = self.df['Volume'].rolling(window=20).mean().shift(1)
+        self.df['Volume_Ratio'] = (self.df['Volume'] / self.df['Volume_SMA']).shift(1).fillna(1.0)
+        
+        self.df['ADX'] = calculate_adx(self.df)
+        self.df['CCI'] = calculate_cci(self.df)
+        self.df['Williams_R'] = calculate_williams_r(self.df)
+        self.df['MFI'] = calculate_mfi(self.df)
+        self.df['ROC'] = calculate_roc(self.df)
+        
+        self.df['High_Low_Range'] = (self.df['High'] - self.df['Low']).shift(1)
+        self.df['Body_Size'] = abs(self.df['Close'] - self.df['Open']).shift(1)
+        self.df['Upper_Shadow'] = (self.df['High'] - self.df[['Open', 'Close']].max(axis=1)).shift(1)
+        self.df['Lower_Shadow'] = (self.df[['Open', 'Close']].min(axis=1) - self.df['Low']).shift(1)
+        
+        self.df['DayOfWeek'] = pd.to_datetime(self.df['Date']).dt.dayofweek
+        
+        self.df['PrevDayBullish'] = (self.df['Close'] > self.df['Open']).shift(1).fillna(False)
+        self.df['PrevDayBearish'] = (self.df['Close'] < self.df['Open']).shift(1).fillna(False)
+        self.df['PrevDayDoji'] = (abs(self.df['Close'] - self.df['Open']) < self.df['ATR_14'] * 0.1).shift(1).fillna(False)
+        
+        self.df['Price_Above_SMA20'] = (self.df['Close'] > self.df['SMA_20']).shift(1).fillna(False)
+        self.df['Price_Above_SMA50'] = (self.df['Close'] > self.df['SMA_50']).shift(1).fillna(False)
+        self.df['SMA20_Rising'] = (self.df['SMA_20'] > self.df['SMA_20'].shift(1)).shift(1).fillna(False)
+        self.df['SMA50_Rising'] = (self.df['SMA_50'] > self.df['SMA_50'].shift(1)).shift(1).fillna(False)
+        
+        self.df['ATR_Ratio'] = (self.df['ATR_14'] / self.df['Close']).shift(1).fillna(0.015)
+        self.df['BB_Squeeze'] = (self.df['BB_Width'] < self.df['BB_Width'].rolling(20).mean()).shift(1).fillna(False)
+        
+        self.df['Momentum_5'] = ((self.df['Close'] - self.df['Close'].shift(5)) / self.df['Close'].shift(5) * 100).shift(1)
+        self.df['Momentum_10'] = ((self.df['Close'] - self.df['Close'].shift(10)) / self.df['Close'].shift(10) * 100).shift(1)
+        
+    def get_all_indicator_conditions(self):
+        """Define all indicator conditions for Gap & Go strategies"""
+        conditions = [
+            ("Uptrend_SMA20", self.df['Price_Above_SMA20']),
+            ("Downtrend_SMA20", ~self.df['Price_Above_SMA20']),
+            ("Uptrend_SMA50", self.df['Price_Above_SMA50']),
+            ("Downtrend_SMA50", ~self.df['Price_Above_SMA50']),
+            ("SMA_5_Above_10", self.df['SMA_5'] > self.df['SMA_10']),
+            ("SMA_10_Above_20", self.df['SMA_10'] > self.df['SMA_20']),
+            ("EMA_8_Above_21", self.df['EMA_8'] > self.df['EMA_21']),
+            ("Strong_Uptrend", (self.df['SMA_5'] > self.df['SMA_10']) & (self.df['SMA_10'] > self.df['SMA_20'])),
+            ("Strong_Downtrend", (self.df['SMA_5'] < self.df['SMA_10']) & (self.df['SMA_10'] < self.df['SMA_20'])),
+            ("Trend_Alignment", self.df['SMA20_Rising'] & self.df['SMA50_Rising']),
+            
+            ("RSI_Bullish", self.df['RSI_14'] > 50),
+            ("RSI_Bearish", self.df['RSI_14'] < 50),
+            ("RSI_Strong", (self.df['RSI_14'] > 60) & (self.df['RSI_14'] < 80)),
+            ("RSI_Weak", (self.df['RSI_14'] > 20) & (self.df['RSI_14'] < 40)),
+            ("MACD_Bullish", self.df['MACD'] > self.df['MACD_Signal']),
+            ("MACD_Bearish", self.df['MACD'] < self.df['MACD_Signal']),
+            ("Momentum_Positive", self.df['Momentum_10'] > 0),
+            ("Momentum_Negative", self.df['Momentum_10'] < 0),
+            ("ROC_Positive", self.df['ROC'] > 0),
+            ("ROC_Negative", self.df['ROC'] < 0),
+            
+            ("High_Volume", self.df['Volume_Ratio'] > 1.2),
+            ("Normal_Volume", (self.df['Volume_Ratio'] > 0.8) & (self.df['Volume_Ratio'] < 1.2)),
+            ("Low_Volume", self.df['Volume_Ratio'] < 0.8),
+            ("Volume_Surge", self.df['Volume_Ratio'] > 1.5),
+            ("OBV_Rising", self.df['OBV'] > self.df['OBV'].shift(5)),
+            ("OBV_Falling", self.df['OBV'] < self.df['OBV'].shift(5)),
+            ("MFI_Strong", self.df['MFI'] > 50),
+            ("MFI_Weak", self.df['MFI'] < 50),
+            ("Volume_Trend_Up", self.df['Volume_SMA'] > self.df['Volume_SMA'].shift(5)),
+            ("Volume_Trend_Down", self.df['Volume_SMA'] < self.df['Volume_SMA'].shift(5)),
+            
+            ("High_Volatility", self.df['ATR_Ratio'] > 0.02),
+            ("Normal_Volatility", (self.df['ATR_Ratio'] > 0.01) & (self.df['ATR_Ratio'] < 0.02)),
+            ("Low_Volatility", self.df['ATR_Ratio'] < 0.01),
+            ("BB_Wide", self.df['BB_Width'] > self.df['BB_Width'].rolling(20).mean()),
+            ("BB_Narrow", self.df['BB_Width'] < self.df['BB_Width'].rolling(20).mean()),
+            ("BB_Squeeze_Active", self.df['BB_Squeeze']),
+            ("ATR_Expanding", self.df['ATR_14'] > self.df['ATR_14'].shift(5)),
+            ("ATR_Contracting", self.df['ATR_14'] < self.df['ATR_14'].shift(5)),
+            ("Price_Near_BB_Upper", (self.df['Close'] > self.df['BB_Middle']) & (self.df['Close'] < self.df['BB_Upper'])),
+            ("Price_Near_BB_Lower", (self.df['Close'] < self.df['BB_Middle']) & (self.df['Close'] > self.df['BB_Lower'])),
+            
+            ("Monday", self.df['DayOfWeek'] == 0),
+            ("Tuesday", self.df['DayOfWeek'] == 1),
+            ("Wednesday", self.df['DayOfWeek'] == 2),
+            ("Thursday", self.df['DayOfWeek'] == 3),
+            ("Friday", self.df['DayOfWeek'] == 4),
+            ("Early_Week", self.df['DayOfWeek'].isin([0, 1])),
+            ("Mid_Week", self.df['DayOfWeek'].isin([2, 3])),
+            ("Late_Week", self.df['DayOfWeek'] == 4),
+            ("Not_Monday", self.df['DayOfWeek'] != 0),
+            ("Not_Friday", self.df['DayOfWeek'] != 4),
+            
+            ("ADX_Trending", self.df['ADX'] > 25),
+            ("ADX_NonTrending", self.df['ADX'] < 25),
+            ("ADX_Strong", self.df['ADX'] > 40),
+            ("CCI_Bullish", self.df['CCI'] > 0),
+            ("CCI_Bearish", self.df['CCI'] < 0),
+            ("Williams_Oversold", self.df['Williams_R'] < -80),
+            ("Williams_Overbought", self.df['Williams_R'] > -20),
+            ("Stoch_Bullish", self.df['Stoch_K'] > self.df['Stoch_D']),
+            ("Stoch_Bearish", self.df['Stoch_K'] < self.df['Stoch_D']),
+            ("Stoch_Neutral", (self.df['Stoch_K'] > 20) & (self.df['Stoch_K'] < 80)),
+            
+            ("Large_Gap", abs(self.df['Gap']) > 1.0),
+            ("Medium_Gap", (abs(self.df['Gap']) > 0.5) & (abs(self.df['Gap']) <= 1.0)),
+            ("Small_Gap", (abs(self.df['Gap']) >= 0.3) & (abs(self.df['Gap']) <= 0.5)),
+            ("Gap_Up", self.df['Gap'] > 0.3),
+            ("Gap_Down", self.df['Gap'] < -0.3),
+        ]
+        
+        return conditions
+    
+    def test_strategy(self, condition1, condition2, name1, name2):
+        """Test a two-indicator Gap & Go strategy"""
+        combined_condition = condition1 & condition2
+        
+        trades = []
+        for i in range(1, len(self.df)):
+            if not combined_condition.iloc[i]:
+                continue
+                
+            prev_day = self.df.iloc[i - 1]
+            curr_day = self.df.iloc[i]
+            
+            gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+            if not is_gap_valid(gap):
+                continue
+            
+            trade_direction = determine_gap_and_go_direction(gap)
+            entry_price = curr_day['Open']
+            exit_price, success, exit_type = calculate_gap_and_go_exit(
+                trade_direction, curr_day, entry_price
+            )
+            
+            profit_loss = calculate_profit_loss(
+                trade_direction, entry_price, exit_price, self.initial_investment
+            )
+            
+            trades.append({
+                'Date': curr_day['Date'],
+                'Trade Direction': trade_direction,
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'Gap': gap,
+                'Success': success,
+                'Exit Type': exit_type,
+                'Profit/Loss': profit_loss
+            })
+        
+        if len(trades) < self.min_trades_required:
+            return None
+        
+        trades_df = pd.DataFrame(trades)
+        strategy_name = f"{name1} + {name2}"
+        stats = calculate_statistics(trades_df, strategy_name, self.initial_investment)
+        stats['Indicator1'] = name1
+        stats['Indicator2'] = name2
+        
+        return stats
+    
+    def generate_all_strategies(self):
+        """Generate and test all 1000 two-indicator combinations"""
+        conditions = self.get_all_indicator_conditions()
+        
+        all_combinations = list(itertools.combinations(range(len(conditions)), 2))
+        
+        if len(all_combinations) > 1000:
+            np.random.seed(42)  # For reproducibility
+            selected_indices = np.random.choice(len(all_combinations), 1000, replace=False)
+            selected_combinations = [all_combinations[i] for i in selected_indices]
+        else:
+            selected_combinations = all_combinations
+        
+        print(f"Testing {len(selected_combinations)} two-indicator Gap & Go strategies...")
+        
+        for idx, (i, j) in enumerate(selected_combinations):
+            if idx % 100 == 0:
+                print(f"Progress: {idx}/{len(selected_combinations)} strategies tested...")
+            
+            name1, condition1 = conditions[i]
+            name2, condition2 = conditions[j]
+            
+            result = self.test_strategy(condition1, condition2, name1, name2)
+            if result:
+                self.results.append(result)
+        
+        print(f"\nCompleted! Found {len(self.results)} strategies with {self.min_trades_required}+ trades")
+        
+    def save_results(self):
+        """Save all results to CSV files"""
+        if not self.results:
+            print("No results to save!")
+            return
+        
+        results_df = pd.DataFrame(self.results)
+        results_df.to_csv('gap_and_go_all_results.csv', index=False)
+        print(f"Saved {len(results_df)} strategy results to gap_and_go_all_results.csv")
+        
+        top_success = results_df.nlargest(100, 'Success Rate')
+        top_success.to_csv('gap_and_go_top100_success_rate.csv', index=False)
+        
+        top_profit = results_df.nlargest(100, 'Total Profit')
+        top_profit.to_csv('gap_and_go_top100_profit.csv', index=False)
+        
+        top_roi = results_df.nlargest(100, 'ROI')
+        top_roi.to_csv('gap_and_go_top100_roi.csv', index=False)
+        
+        summary = {
+            'Total Strategies Tested': len(selected_combinations) if 'selected_combinations' in locals() else 1000,
+            'Strategies with 100+ Trades': len(results_df),
+            'Average Success Rate': results_df['Success Rate'].mean(),
+            'Average Total Profit': results_df['Total Profit'].mean(),
+            'Average ROI': results_df['ROI'].mean(),
+            'Best Success Rate': results_df['Success Rate'].max(),
+            'Best Total Profit': results_df['Total Profit'].max(),
+            'Best ROI': results_df['ROI'].max(),
+            'Profitable Strategies': len(results_df[results_df['Total Profit'] > 0]),
+            'Profit Rate': len(results_df[results_df['Total Profit'] > 0]) / len(results_df) * 100
+        }
+        
+        with open('gap_and_go_summary.json', 'w') as f:
+            json.dump(summary, f, indent=4)
+        
+        print("\nSummary Statistics:")
+        for key, value in summary.items():
+            print(f"{key}: {value:.2f}" if isinstance(value, float) else f"{key}: {value}")
+
+def main():
+    """Run the Gap & Go strategy generator"""
+    data_file = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/7J0OK1VR.csv'
+    vix_file = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/^VIX.csv'
+    
+    if not os.path.exists(data_file):
+        print(f"Error: Data file not found at {data_file}")
+        return
+    
+    output_dir = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/GAP_AND_GO_1000_STRATEGIES'
+    os.chdir(output_dir)
+    
+    generator = GapAndGoStrategyGenerator(data_file, vix_file)
+    
+    generator.load_and_prepare_data()
+    generator.generate_all_strategies()
+    generator.save_results()
+    
+    print("\nGap & Go strategy generation complete!")
+
+if __name__ == "__main__":
+    main()

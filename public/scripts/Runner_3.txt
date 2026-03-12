@@ -1,0 +1,38 @@
+from os import walk
+
+import pandas as pd
+
+import Project_Daniel as PROJ
+def run(path):
+    mypath = path
+    filenames = next(walk(mypath), (None, None, []))[2]  # [] if no file
+    tmp=[]
+    for file in filenames:
+        try:
+            if PROJ.check_under_bol2(file, 10, 1.5, mypath): #bol1 for closed market bol2 for open market
+                tmp.append(file)
+        except:
+            print("error at"+file)
+    for stock in tmp:
+        path = path
+        name = path+stock
+        print("########## "+stock+" ###########")
+        PROJ.bol_finder(stock,10,1.5,path)
+        print("################################")
+        print()
+
+print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+print("@@@@@@@@@@ SNP500  @@@@@@@@@@@@@")
+print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+run('data/snp500/')
+
+print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+print("@@@@@@@@@@@@ RUSSLE @@@@@@@@@@@@")
+print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+run('data/russle/')
+
+print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+print("@@@@@@@@@@@@ ETFS @@@@@@@@@@@@@@")
+print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+run('data/etfs/')
+

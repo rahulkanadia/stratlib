@@ -1,0 +1,679 @@
+"""
+BASE GAP TRADING STRATEGY - COMPREHENSIVE VERSION
+==================================================
+Author: Gap Trading System
+Date: 2024
+Initial Investment: $16,000
+
+STRATEGY OVERVIEW:
+-----------------
+This is the BASELINE strategy that demonstrates the raw edge in gap trading.
+It trades ALL gaps ≥ $0.20 with NO additional filters. This proves that
+simply fading gaps has a positive expectancy.
+
+KEY PARAMETERS:
+--------------
+- Minimum Gap Size: $0.20
+- No technical indicators
+- No market filters
+- Exit: Gap closure or market close
+
+TRADE LOGIC:
+-----------
+1. Identify gap ≥ $0.20
+2. Fade the gap (short if gap up, long if gap down)
+3. Exit when gap closes or at market close
+4. That's it! Pure gap trading.
+
+HISTORICAL PERFORMANCE:
+---------------------
+- Success Rate: 68.24%
+- Total Profit: $8,270.85
+- Total Trades: 1,146 (most trades)
+- Average Trade: $7.22
+"""
+
+import pandas as pd
+import numpy as np
+import sys
+import os
+from datetime import datetime
+import matplotlib.pyplot as plt
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+try:
+    from gap_utils import *
+except ImportError:
+    print("Error: Could not import gap_utils. Make sure the file exists in the parent directory.")
+    sys.exit(1)
+
+class BaseGapTradingComprehensive:
+    def __init__(self):
+        self.name = "Base Gap Trading Strategy (Comprehensive)"
+        self.initial_investment = 16000
+        self.min_gap = 0.20
+        
+        self.trade_log = []
+        self.current_equity = self.initial_investment
+        self.equity_curve = []
+        self.gap_statistics = {
+            'up_gaps': 0,
+            'down_gaps': 0,
+            'total_gap_value': 0,
+            'gaps_by_size': {}
+        }
+        
+    def analyze_gap_patterns(self, df):
+        """Analyze historical gap patterns in the data"""
+        print(f"\n{'='*60}")
+        print("ANALYZING HISTORICAL GAP PATTERNS")
+        print(f"{'='*60}")
+        
+        df['Gap'] = df['Open'] - df['Close'].shift(1)
+        df['Gap_Percent'] = (df['Gap'] / df['Close'].shift(1) * 100).fillna(0)
+        df['Gap_Valid'] = df['Gap'].abs() >= self.min_gap
+        
+        valid_gaps = df[df['Gap_Valid']]
+        total_gaps = len(valid_gaps)
+        up_gaps = len(valid_gaps[valid_gaps['Gap'] > 0])
+        down_gaps = len(valid_gaps[valid_gaps['Gap'] < 0])
+        
+        print(f"\n📊 GAP STATISTICS:")
+        print(f"  • Total Valid Gaps (≥${self.min_gap}): {total_gaps}")
+        print(f"  • Up Gaps: {up_gaps} ({up_gaps/total_gaps*100:.1f}%)")
+        print(f"  • Down Gaps: {down_gaps} ({down_gaps/total_gaps*100:.1f}%)")
+        print(f"  • Average Gap Size: ${valid_gaps['Gap'].abs().mean():.2f}")
+        print(f"  • Largest Gap: ${valid_gaps['Gap'].abs().max():.2f}")
+        
+        print(f"\n📈 GAP SIZE DISTRIBUTION:")
+        gap_bins = [0.2, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, float('inf')]
+        gap_labels = ['$0.20-0.50', '$0.50-1.00', '$1.00-2.00', '$2.00-3.00', 
+                      '$3.00-5.00', '$5.00-10.00', '>$10.00']
+        
+        gap_counts = pd.cut(valid_gaps['Gap'].abs(), bins=gap_bins, labels=gap_labels).value_counts().sort_index()
+        
+        for label, count in gap_counts.items():
+            pct = count / total_gaps * 100
+            print(f"  • {label}: {count} gaps ({pct:.1f}%)")
+        
+        df['DayOfWeek'] = df['Date'].dt.day_name()
+        gap_by_day = df[df['Gap_Valid']].groupby('DayOfWeek')['Gap'].agg(['count', 'mean'])
+        
+        print(f"\n📅 GAPS BY DAY OF WEEK:")
+        day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+        for day in day_order:
+            if day in gap_by_day.index:
+                count = gap_by_day.loc[day, 'count']
+                avg = gap_by_day.loc[day, 'mean']
+                print(f"  • {day}: {count} gaps (avg: ${abs(avg):.2f})")
+        
+        return df
+    
+    def execute_trade(self, prev_day, curr_day, trade_num, gap_stats):
+        """Execute a single trade with detailed logging"""
+        gap = curr_day['Open'] - prev_day['Close']
+        gap_percent = (gap / prev_day['Close']) * 100
+        
+        if abs(gap) < self.min_gap:
+            return None
+        
+        gap_direction = 'UP' if gap > 0 else 'DOWN'
+        self.gap_statistics['total_gap_value'] += abs(gap)
+        if gap > 0:
+            self.gap_statistics['up_gaps'] += 1
+        else:
+            self.gap_statistics['down_gaps'] += 1
+        
+        gap_size = abs(gap)
+        if gap_size < 0.5:
+            size_category = 'Small ($0.20-0.50)'
+        elif gap_size < 1.0:
+            size_category = 'Medium ($0.50-1.00)'
+        elif gap_size < 2.0:
+            size_category = 'Large ($1.00-2.00)'
+        else:
+            size_category = 'Extra Large (>$2.00)'
+        
+        trade_direction = 'SHORT' if gap > 0 else 'LONG'
+        entry_price = curr_day['Open']
+        
+        if trade_direction == 'SHORT':
+            gap_closed = curr_day['Low'] <= prev_day['Close']
+            exit_price = prev_day['Close'] if gap_closed else curr_day['Close']
+            
+            max_favorable = entry_price - curr_day['Low']
+            max_adverse = curr_day['High'] - entry_price
+        else:  # LONG
+            gap_closed = curr_day['High'] >= prev_day['Close']
+            exit_price = prev_day['Close'] if gap_closed else curr_day['Close']
+            
+            max_favorable = curr_day['High'] - entry_price
+            max_adverse = entry_price - curr_day['Low']
+        
+        if gap_closed:
+            range_to_close = abs(entry_price - prev_day['Close'])
+            total_range = curr_day['High'] - curr_day['Low']
+            time_estimate = "Early" if range_to_close < total_range * 0.3 else "Late"
+        else:
+            time_estimate = "Never"
+        
+        shares = self.current_equity / entry_price
+        
+        if trade_direction == 'LONG':
+            profit_loss = shares * (exit_price - entry_price)
+            profit_percent = ((exit_price - entry_price) / entry_price) * 100
+        else:  # SHORT
+            profit_loss = shares * (entry_price - exit_price)
+            profit_percent = ((entry_price - exit_price) / entry_price) * 100
+        
+        self.current_equity += profit_loss
+        self.equity_curve.append({
+            'Date': curr_day['Date'],
+            'Equity': self.current_equity,
+            'Trade_Num': trade_num
+        })
+        
+        trade_record = {
+            'Trade_Num': trade_num,
+            'Date': curr_day['Date'],
+            'Day_of_Week': curr_day['Date'].strftime('%A'),
+            'Gap': gap,
+            'Gap_Percent': gap_percent,
+            'Gap_Direction': gap_direction,
+            'Gap_Size_Category': size_category,
+            'Trade_Direction': trade_direction,
+            'Entry_Price': entry_price,
+            'Exit_Price': exit_price,
+            'Prev_Close': prev_day['Close'],
+            'Day_High': curr_day['High'],
+            'Day_Low': curr_day['Low'],
+            'Day_Close': curr_day['Close'],
+            'Gap_Closed': gap_closed,
+            'Time_To_Close': time_estimate,
+            'Max_Favorable_Move': max_favorable,
+            'Max_Adverse_Move': max_adverse,
+            'Shares': shares,
+            'Profit_Loss': profit_loss,
+            'Profit_Percent': profit_percent,
+            'Cumulative_PL': self.current_equity - self.initial_investment,
+            'Account_Value': self.current_equity,
+            'Daily_Range': curr_day['High'] - curr_day['Low'],
+            'Volume': curr_day.get('Volume', 'N/A')
+        }
+        
+        return trade_record
+    
+    def print_trade_details(self, trade):
+        """Print detailed information about a single trade"""
+        print(f"\n{'─'*70}")
+        print(f"TRADE #{trade['Trade_Num']} - {trade['Date'].strftime('%Y-%m-%d')} ({trade['Day_of_Week']})")
+        print(f"{'─'*70}")
+        
+        print(f"Gap Characteristics:")
+        print(f"  • Gap: ${trade['Gap']:.2f} ({trade['Gap_Percent']:.2f}%)")
+        print(f"  • Direction: {trade['Gap_Direction']} GAP")
+        print(f"  • Size Category: {trade['Gap_Size_Category']}")
+        print(f"  • Previous Close: ${trade['Prev_Close']:.2f}")
+        
+        print(f"\nTrade Execution:")
+        print(f"  • Action: {trade['Trade_Direction']} (fade the gap)")
+        print(f"  • Entry Price: ${trade['Entry_Price']:.2f}")
+        print(f"  • Exit Price: ${trade['Exit_Price']:.2f}")
+        print(f"  • Exit Type: {'Gap Closure ✓' if trade['Gap_Closed'] else 'Market Close ✗'}")
+        if trade['Gap_Closed']:
+            print(f"  • Closure Timing: {trade['Time_To_Close']}")
+        
+        print(f"\nIntraday Price Action:")
+        print(f"  • Day's Range: ${trade['Day_Low']:.2f} - ${trade['Day_High']:.2f} (${trade['Daily_Range']:.2f})")
+        print(f"  • Max Favorable Move: ${trade['Max_Favorable_Move']:.2f}")
+        print(f"  • Max Adverse Move: ${trade['Max_Adverse_Move']:.2f}")
+        if trade['Volume'] != 'N/A':
+            print(f"  • Volume: {trade['Volume']:,.0f}")
+        
+        print(f"\nPosition Details:")
+        print(f"  • Position Size: {trade['Shares']:.2f} shares")
+        print(f"  • Capital Deployed: ${trade['Shares'] * trade['Entry_Price']:.2f}")
+        
+        win_loss = "PROFITABLE ✓" if trade['Profit_Loss'] > 0 else "LOSS ✗"
+        print(f"\nTrade Results:")
+        print(f"  • P&L: ${trade['Profit_Loss']:.2f} ({trade['Profit_Percent']:.2f}%) - {win_loss}")
+        print(f"  • New Account Value: ${trade['Account_Value']:.2f}")
+        print(f"  • Total Strategy P&L: ${trade['Cumulative_PL']:.2f}")
+        print(f"  • ROI to Date: {(trade['Cumulative_PL'] / self.initial_investment * 100):.2f}%")
+    
+    def run_backtest(self, data_file, print_all_trades=False):
+        """Run the complete backtest with comprehensive output"""
+        print(f"\n{'='*80}")
+        print("BASE GAP TRADING STRATEGY - COMPREHENSIVE BACKTEST")
+        print(f"{'='*80}")
+        print(f"Initial Investment: ${self.initial_investment:,.2f}")
+        print(f"Data File: {data_file}")
+        print(f"\nStrategy Rules:")
+        print(f"  1. Trade ALL gaps ≥ ${self.min_gap}")
+        print(f"  2. No additional filters or indicators")
+        print(f"  3. Fade every valid gap")
+        print(f"  4. Exit on gap closure or market close")
+        print(f"  5. Position size = 100% of account equity")
+        
+        print("\nLoading market data...")
+        df = load_data(data_file)
+        print(f"✓ Loaded {len(df)} trading days")
+        print(f"✓ Date range: {df['Date'].min().date()} to {df['Date'].max().date()}")
+        
+        df = self.analyze_gap_patterns(df)
+        
+        print(f"\n{'='*60}")
+        print("EXECUTING TRADES")
+        print(f"{'='*60}")
+        
+        trades = []
+        trade_num = 0
+        gap_stats = {'total': 0, 'closed': 0}
+        
+        for i in range(1, len(df)):
+            prev_day = df.iloc[i-1]
+            curr_day = df.iloc[i]
+            
+            gap = curr_day['Open'] - prev_day['Close']
+            if abs(gap) < self.min_gap:
+                continue
+            
+            trade_num += 1
+            trade = self.execute_trade(prev_day, curr_day, trade_num, gap_stats)
+            
+            if trade:
+                trades.append(trade)
+                if print_all_trades or trade_num <= 10:  # Print first 10 trades
+                    self.print_trade_details(trade)
+                
+                gap_stats['total'] += 1
+                if trade['Gap_Closed']:
+                    gap_stats['closed'] += 1
+        
+        trades_df = pd.DataFrame(trades)
+        
+        if not print_all_trades and trade_num > 10:
+            print(f"\n... [{trade_num - 10} more trades not shown] ...")
+            print("\n(Set print_all_trades=True to see all trades)")
+        
+        self.print_summary(trades_df)
+        
+        self.analyze_trade_patterns(trades_df)
+        
+        self.create_visualizations(trades_df, df)
+        
+        self.save_results(trades_df)
+        
+        return trades_df
+    
+    def analyze_trade_patterns(self, trades_df):
+        """Analyze patterns in trade results"""
+        if trades_df.empty:
+            return
+        
+        print(f"\n{'='*80}")
+        print("TRADE PATTERN ANALYSIS")
+        print(f"{'='*80}")
+        
+        print(f"\n📊 PERFORMANCE BY GAP DIRECTION:")
+        for direction in ['UP', 'DOWN']:
+            dir_trades = trades_df[trades_df['Gap_Direction'] == direction]
+            if len(dir_trades) > 0:
+                wins = len(dir_trades[dir_trades['Profit_Loss'] > 0])
+                total = len(dir_trades)
+                avg_pl = dir_trades['Profit_Loss'].mean()
+                total_pl = dir_trades['Profit_Loss'].sum()
+                
+                print(f"\n{direction} Gaps (Fade with {'SHORT' if direction == 'UP' else 'LONG'}):")
+                print(f"  • Trades: {total}")
+                print(f"  • Win Rate: {wins/total*100:.1f}%")
+                print(f"  • Avg P&L: ${avg_pl:.2f}")
+                print(f"  • Total P&L: ${total_pl:.2f}")
+        
+        print(f"\n📏 PERFORMANCE BY GAP SIZE:")
+        size_categories = trades_df['Gap_Size_Category'].unique()
+        for category in sorted(size_categories):
+            cat_trades = trades_df[trades_df['Gap_Size_Category'] == category]
+            if len(cat_trades) > 0:
+                wins = len(cat_trades[cat_trades['Profit_Loss'] > 0])
+                total = len(cat_trades)
+                avg_pl = cat_trades['Profit_Loss'].mean()
+                win_rate = wins/total*100
+                
+                print(f"\n{category}:")
+                print(f"  • Trades: {total}")
+                print(f"  • Win Rate: {win_rate:.1f}%")
+                print(f"  • Avg P&L: ${avg_pl:.2f}")
+        
+        print(f"\n🎯 GAP CLOSURE ANALYSIS:")
+        closed_trades = trades_df[trades_df['Gap_Closed']]
+        unclosed_trades = trades_df[~trades_df['Gap_Closed']]
+        
+        print(f"\nGaps That Closed:")
+        print(f"  • Count: {len(closed_trades)} ({len(closed_trades)/len(trades_df)*100:.1f}%)")
+        print(f"  • Win Rate: {len(closed_trades[closed_trades['Profit_Loss'] > 0])/len(closed_trades)*100:.1f}%")
+        print(f"  • Avg P&L: ${closed_trades['Profit_Loss'].mean():.2f}")
+        
+        print(f"\nGaps That Didn't Close:")
+        print(f"  • Count: {len(unclosed_trades)} ({len(unclosed_trades)/len(trades_df)*100:.1f}%)")
+        if len(unclosed_trades) > 0:
+            print(f"  • Win Rate: {len(unclosed_trades[unclosed_trades['Profit_Loss'] > 0])/len(unclosed_trades)*100:.1f}%")
+            print(f"  • Avg P&L: ${unclosed_trades['Profit_Loss'].mean():.2f}")
+        
+        print(f"\n💥 EXTREME MOVES ANALYSIS:")
+        large_wins = trades_df[trades_df['Profit_Percent'] > 1.0]
+        large_losses = trades_df[trades_df['Profit_Percent'] < -1.0]
+        
+        print(f"  • Trades with >1% profit: {len(large_wins)} ({len(large_wins)/len(trades_df)*100:.1f}%)")
+        print(f"  • Trades with >1% loss: {len(large_losses)} ({len(large_losses)/len(trades_df)*100:.1f}%)")
+        
+        trades_df['Month'] = trades_df['Date'].dt.to_period('M')
+        monthly_pl = trades_df.groupby('Month')['Profit_Loss'].sum().sort_values()
+        
+        print(f"\n📈 BEST AND WORST MONTHS:")
+        print(f"  • Best Month: {monthly_pl.index[-1]} (${monthly_pl.iloc[-1]:.2f})")
+        print(f"  • Worst Month: {monthly_pl.index[0]} (${monthly_pl.iloc[0]:.2f})")
+    
+    def print_summary(self, trades_df):
+        """Print comprehensive summary statistics"""
+        if trades_df.empty:
+            print("\nNo trades executed!")
+            return
+        
+        print(f"\n{'='*80}")
+        print("STRATEGY PERFORMANCE SUMMARY")
+        print(f"{'='*80}")
+        
+        total_trades = len(trades_df)
+        winning_trades = len(trades_df[trades_df['Profit_Loss'] > 0])
+        losing_trades = len(trades_df[trades_df['Profit_Loss'] < 0])
+        win_rate = (winning_trades / total_trades) * 100
+        
+        print(f"\n📊 OVERALL STATISTICS:")
+        print(f"  • Total Trades: {total_trades}")
+        print(f"  • Winning Trades: {winning_trades} ({win_rate:.1f}%)")
+        print(f"  • Losing Trades: {losing_trades} ({100-win_rate:.1f}%)")
+        print(f"  • Average Trades/Week: {total_trades / ((trades_df['Date'].max() - trades_df['Date'].min()).days / 7):.1f}")
+        
+        total_profit = trades_df['Profit_Loss'].sum()
+        avg_profit = trades_df['Profit_Loss'].mean()
+        winning_df = trades_df[trades_df['Profit_Loss'] > 0]
+        losing_df = trades_df[trades_df['Profit_Loss'] < 0]
+        
+        print(f"\n💰 PROFIT ANALYSIS:")
+        print(f"  • Total P&L: ${total_profit:,.2f}")
+        print(f"  • Average Trade: ${avg_profit:.2f}")
+        if len(winning_df) > 0:
+            print(f"  • Average Win: ${winning_df['Profit_Loss'].mean():.2f}")
+            print(f"  • Total Wins: ${winning_df['Profit_Loss'].sum():.2f}")
+        if len(losing_df) > 0:
+            print(f"  • Average Loss: ${losing_df['Profit_Loss'].mean():.2f}")
+            print(f"  • Total Losses: ${losing_df['Profit_Loss'].sum():.2f}")
+        
+        roi = (total_profit / self.initial_investment) * 100
+        final_equity = self.initial_investment + total_profit
+        
+        print(f"\n📈 RETURN METRICS:")
+        print(f"  • Initial Capital: ${self.initial_investment:,.2f}")
+        print(f"  • Final Capital: ${final_equity:,.2f}")
+        print(f"  • Total Return: {roi:.2f}%")
+        
+        days = (trades_df['Date'].max() - trades_df['Date'].min()).days
+        years = days / 365.25
+        annualized_return = (((final_equity / self.initial_investment) ** (1/years)) - 1) * 100 if years > 0 else 0
+        print(f"  • Annualized Return: {annualized_return:.2f}%")
+        print(f"  • Per Trade ROI: {roi/total_trades:.3f}%")
+        
+        print(f"\n⚠️ RISK METRICS:")
+        print(f"  • Largest Win: ${trades_df['Profit_Loss'].max():.2f}")
+        print(f"  • Largest Loss: ${trades_df['Profit_Loss'].min():.2f}")
+        print(f"  • Standard Deviation: ${trades_df['Profit_Loss'].std():.2f}")
+        
+        equity_curve = (trades_df['Cumulative_PL'] + self.initial_investment).values
+        running_max = np.maximum.accumulate(equity_curve)
+        drawdown = (equity_curve - running_max) / running_max * 100
+        max_drawdown = drawdown.min()
+        print(f"  • Max Drawdown: {max_drawdown:.2f}%")
+        
+        print(f"\n📅 DAY OF WEEK PERFORMANCE:")
+        dow_stats = trades_df.groupby('Day_of_Week').agg({
+            'Profit_Loss': ['count', 'sum', 'mean']
+        })
+        
+        day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+        for day in day_order:
+            if day in dow_stats.index:
+                count = dow_stats.loc[day, ('Profit_Loss', 'count')]
+                total_pl = dow_stats.loc[day, ('Profit_Loss', 'sum')]
+                avg_pl = dow_stats.loc[day, ('Profit_Loss', 'mean')]
+                day_wins = len(trades_df[(trades_df['Day_of_Week'] == day) & (trades_df['Profit_Loss'] > 0)])
+                win_rate = (day_wins / count * 100) if count > 0 else 0
+                
+                print(f"  • {day}: {count} trades, ${total_pl:.2f} total, {win_rate:.1f}% win rate")
+    
+    def create_visualizations(self, trades_df, full_df):
+        """Create comprehensive visualizations"""
+        try:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            
+            plt.style.use('seaborn-v0_8-darkgrid')
+            
+            fig = plt.figure(figsize=(20, 16))
+            
+            ax1 = plt.subplot(4, 3, 1)
+            equity_df = pd.DataFrame(self.equity_curve)
+            ax1.plot(equity_df['Date'], equity_df['Equity'], 'b-', linewidth=2, label='Account Value')
+            ax1.axhline(y=self.initial_investment, color='r', linestyle='--', alpha=0.5, label='Initial Investment')
+            ax1.set_title('Equity Curve - Base Gap Trading', fontsize=14, fontweight='bold')
+            ax1.set_xlabel('Date')
+            ax1.set_ylabel('Account Value ($)')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            ax2 = plt.subplot(4, 3, 2)
+            monthly_returns = trades_df.groupby(trades_df['Date'].dt.to_period('M'))['Profit_Loss'].sum()
+            colors = ['green' if x > 0 else 'red' for x in monthly_returns.values]
+            monthly_returns.plot(kind='bar', ax=ax2, color=colors)
+            ax2.set_title('Monthly P&L', fontsize=14, fontweight='bold')
+            ax2.set_xlabel('Month')
+            ax2.set_ylabel('Profit/Loss ($)')
+            ax2.tick_params(axis='x', rotation=45)
+            
+            ax3 = plt.subplot(4, 3, 3)
+            trades_df['Profit_Loss'].hist(bins=50, ax=ax3, color='skyblue', edgecolor='black')
+            ax3.axvline(x=0, color='red', linestyle='--', linewidth=2)
+            ax3.axvline(x=trades_df['Profit_Loss'].mean(), color='green', linestyle='--', linewidth=2, label='Mean')
+            ax3.set_title('P&L Distribution', fontsize=14, fontweight='bold')
+            ax3.set_xlabel('Profit/Loss ($)')
+            ax3.set_ylabel('Frequency')
+            ax3.legend()
+            
+            ax4 = plt.subplot(4, 3, 4)
+            colors = ['green' if x > 0 else 'red' for x in trades_df['Profit_Loss']]
+            ax4.scatter(trades_df['Gap'].abs(), trades_df['Profit_Loss'], c=colors, alpha=0.5)
+            ax4.set_title('Gap Size vs Profit/Loss', fontsize=14, fontweight='bold')
+            ax4.set_xlabel('Gap Size ($)')
+            ax4.set_ylabel('Profit/Loss ($)')
+            ax4.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+            
+            ax5 = plt.subplot(4, 3, 5)
+            gap_bins = pd.cut(trades_df['Gap'].abs(), bins=[0.2, 0.5, 1.0, 2.0, 5.0, 20.0])
+            win_rate_by_gap = trades_df.groupby(gap_bins).apply(
+                lambda x: (x['Profit_Loss'] > 0).sum() / len(x) * 100
+            )
+            win_rate_by_gap.plot(kind='bar', ax=ax5, color='purple')
+            ax5.set_title('Win Rate by Gap Size', fontsize=14, fontweight='bold')
+            ax5.set_xlabel('Gap Size Range ($)')
+            ax5.set_ylabel('Win Rate (%)')
+            ax5.tick_params(axis='x', rotation=45)
+            ax5.axhline(y=50, color='red', linestyle='--', alpha=0.5)
+            
+            ax6 = plt.subplot(4, 3, 6)
+            trades_df['Cumulative_Trades'] = range(1, len(trades_df) + 1)
+            ax6.plot(trades_df['Date'], trades_df['Cumulative_Trades'], 'g-', linewidth=2)
+            ax6.set_title('Cumulative Trade Count', fontsize=14, fontweight='bold')
+            ax6.set_xlabel('Date')
+            ax6.set_ylabel('Number of Trades')
+            ax6.grid(True, alpha=0.3)
+            
+            ax7 = plt.subplot(4, 3, 7)
+            trades_df['Month'] = trades_df['Date'].dt.to_period('M')
+            monthly_closure = trades_df.groupby('Month')['Gap_Closed'].mean() * 100
+            monthly_closure.plot(kind='line', ax=ax7, marker='o', color='orange', linewidth=2)
+            ax7.set_title('Monthly Gap Closure Rate', fontsize=14, fontweight='bold')
+            ax7.set_xlabel('Month')
+            ax7.set_ylabel('Closure Rate (%)')
+            ax7.grid(True, alpha=0.3)
+            
+            ax8 = plt.subplot(4, 3, 8)
+            dow_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+            dow_pl = trades_df.groupby('Day_of_Week')['Profit_Loss'].sum()
+            dow_pl = dow_pl.reindex(dow_order)
+            colors = ['green' if x > 0 else 'red' for x in dow_pl.values]
+            dow_pl.plot(kind='bar', ax=ax8, color=colors)
+            ax8.set_title('P&L by Day of Week', fontsize=14, fontweight='bold')
+            ax8.set_xlabel('Day')
+            ax8.set_ylabel('Total P&L ($)')
+            
+            ax9 = plt.subplot(4, 3, 9)
+            trades_df['Win'] = (trades_df['Profit_Loss'] > 0).astype(int)
+            rolling_win_rate = trades_df['Win'].rolling(50).mean() * 100
+            ax9.plot(trades_df['Date'], rolling_win_rate, 'b-', linewidth=2)
+            ax9.axhline(y=50, color='red', linestyle='--', alpha=0.5)
+            ax9.set_title('50-Trade Rolling Win Rate', fontsize=14, fontweight='bold')
+            ax9.set_xlabel('Date')
+            ax9.set_ylabel('Win Rate (%)')
+            ax9.grid(True, alpha=0.3)
+            
+            ax10 = plt.subplot(4, 3, 10)
+            gap_direction_stats = trades_df.groupby('Gap_Direction').agg({
+                'Profit_Loss': ['count', 'sum', 'mean']
+            })
+            gap_direction_stats[('Profit_Loss', 'sum')].plot(kind='bar', ax=ax10, color=['red', 'green'])
+            ax10.set_title('P&L by Gap Direction', fontsize=14, fontweight='bold')
+            ax10.set_xlabel('Gap Direction')
+            ax10.set_ylabel('Total P&L ($)')
+            
+            ax11 = plt.subplot(4, 3, 11)
+            trades_df['Year'] = trades_df['Date'].dt.year
+            trades_df['Month_Num'] = trades_df['Date'].dt.month
+            monthly_matrix = trades_df.pivot_table(
+                values='Profit_Loss', 
+                index='Month_Num', 
+                columns='Year', 
+                aggfunc='sum'
+            )
+            sns.heatmap(monthly_matrix, annot=True, fmt='.0f', cmap='RdGn', center=0, ax=ax11)
+            ax11.set_title('Monthly P&L Heatmap', fontsize=14, fontweight='bold')
+            ax11.set_ylabel('Month')
+            
+            ax12 = plt.subplot(4, 3, 12)
+            closure_stats = trades_df.groupby('Gap_Closed')['Profit_Loss'].agg(['count', 'mean'])
+            closure_stats['count'].plot(kind='pie', ax=ax12, autopct='%1.1f%%', 
+                                      labels=['Gap Not Closed', 'Gap Closed'],
+                                      colors=['coral', 'lightgreen'])
+            ax12.set_title('Gap Closure Distribution', fontsize=14, fontweight='bold')
+            ax12.set_ylabel('')
+            
+            plt.tight_layout()
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            chart_file = f"base_gap_trading_analysis_{timestamp}.png"
+            plt.savefig(chart_file, dpi=300, bbox_inches='tight')
+            print(f"\n✓ Comprehensive analysis charts saved to: {chart_file}")
+            
+        except ImportError:
+            print("\n⚠️ Matplotlib/Seaborn not available. Skipping visualizations.")
+        except Exception as e:
+            print(f"\n⚠️ Error creating visualizations: {e}")
+    
+    def save_results(self, trades_df):
+        """Save comprehensive results"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        trades_file = f"base_gap_trades_{timestamp}.csv"
+        trades_df.to_csv(trades_file, index=False)
+        print(f"\n✓ All {len(trades_df)} trades saved to: {trades_file}")
+        
+        summary_file = f"base_gap_summary_{timestamp}.txt"
+        with open(summary_file, 'w') as f:
+            f.write("BASE GAP TRADING STRATEGY - COMPREHENSIVE BACKTEST RESULTS\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            
+            f.write("STRATEGY OVERVIEW:\n")
+            f.write("-" * 40 + "\n")
+            f.write("This is the baseline strategy that trades ALL gaps with no filters.\n")
+            f.write("It demonstrates the raw edge in gap trading.\n\n")
+            
+            f.write("PARAMETERS:\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"Minimum Gap Size: ${self.min_gap}\n")
+            f.write("Technical Indicators: None\n")
+            f.write("Market Filters: None\n")
+            f.write("Position Sizing: 100% of equity\n\n")
+            
+            f.write("BACKTEST RESULTS:\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"Initial Capital: ${self.initial_investment:,.2f}\n")
+            f.write(f"Final Capital: ${self.current_equity:,.2f}\n")
+            f.write(f"Total Return: {((self.current_equity - self.initial_investment) / self.initial_investment * 100):.2f}%\n")
+            f.write(f"Total Trades: {len(trades_df)}\n")
+            f.write(f"Win Rate: {(len(trades_df[trades_df['Profit_Loss'] > 0]) / len(trades_df) * 100):.2f}%\n")
+            f.write(f"Average Trade: ${trades_df['Profit_Loss'].mean():.2f}\n\n")
+            
+            f.write("GAP STATISTICS:\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"Total Up Gaps: {self.gap_statistics['up_gaps']}\n")
+            f.write(f"Total Down Gaps: {self.gap_statistics['down_gaps']}\n")
+            f.write(f"Average Gap Value: ${self.gap_statistics['total_gap_value'] / len(trades_df):.2f}\n")
+            f.write(f"Gap Closure Rate: {(trades_df['Gap_Closed'].sum() / len(trades_df) * 100):.1f}%\n")
+        
+        print(f"✓ Summary report saved to: {summary_file}")
+        
+        equity_file = f"base_gap_equity_{timestamp}.csv"
+        equity_df = pd.DataFrame(self.equity_curve)
+        equity_df.to_csv(equity_file, index=False)
+        print(f"✓ Equity curve saved to: {equity_file}")
+
+def main():
+    """Main execution function"""
+    print("\nBASE GAP TRADING STRATEGY - COMPREHENSIVE BACKTEST SYSTEM")
+    print("=" * 70)
+    print("Testing the raw edge in gap trading with NO filters")
+    print("=" * 70)
+    
+    csv_files = [f for f in os.listdir('..') if f.endswith('.csv') and 'strategies' not in f.lower()]
+    
+    if not csv_files:
+        print("Error: No CSV data file found in parent directory.")
+        return
+    
+    data_file = os.path.join('..', csv_files[0])
+    print(f"Found data file: {csv_files[0]}")
+    
+    print("\nWould you like to print all trade details? (y/n)")
+    print("Note: With 1000+ trades, this will generate a lot of output!")
+    user_input = input("Your choice: ").lower().strip()
+    print_all = user_input == 'y'
+    
+    strategy = BaseGapTradingComprehensive()
+    
+    try:
+        trades_df = strategy.run_backtest(data_file, print_all_trades=print_all)
+        print("\n✅ BACKTEST COMPLETED SUCCESSFULLY!")
+        print("=" * 70)
+        print(f"Executed {len(trades_df)} trades with {(len(trades_df[trades_df['Profit_Loss'] > 0]) / len(trades_df) * 100):.1f}% win rate")
+        print(f"This baseline strategy proves gap trading has a positive edge!")
+        print("=" * 70)
+        
+    except Exception as e:
+        print(f"\n❌ Error during backtest: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    main()

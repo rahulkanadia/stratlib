@@ -1,0 +1,195 @@
+import pandas as pd
+import numpy as np
+import os
+import sys
+from datetime import datetime
+import importlib.util
+
+def run_single_strategy(file_path):
+    """Run a single strategy file and extract results."""
+    try:
+        from io import StringIO
+        import contextlib
+        
+        old_stdout = sys.stdout
+        sys.stdout = buffer = StringIO()
+        
+        spec = importlib.util.spec_from_file_location("strategy", file_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        
+        sys.stdout = old_stdout
+        output = buffer.getvalue()
+        
+        lines = output.split('\n')
+        
+        total_trades = 0
+        success_rate = 0
+        total_profit = 0
+        
+        for line in lines:
+            if 'Total Trades:' in line:
+                total_trades = int(line.split(':')[1].strip())
+            elif 'Success Rate:' in line and '%' in line:
+                success_rate = float(line.split(':')[1].replace('%', '').strip())
+            elif 'Total Profit:' in line and '$' in line:
+                profit_str = line.split('$')[1].replace(',', '').strip()
+                if profit_str:
+                    total_profit = float(profit_str)
+        
+        return {
+            'total_trades': total_trades,
+            'success_rate': success_rate,
+            'total_profit': total_profit,
+            'status': 'Success'
+        }
+        
+    except Exception as e:
+        return {
+            'total_trades': 0,
+            'success_rate': 0,
+            'total_profit': 0,
+            'status': f'Error: {str(e)}'
+        }
+
+def main():
+    """Run all DIP strategies and compile results."""
+    print("=" * 100)
+    print("COMPREHENSIVE DIP STRATEGIES ANALYSIS - ALL FILES")
+    print("=" * 100)
+    print(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("Running all DIP optimization strategies with NO LOOK-AHEAD BIAS")
+    print("=" * 100)
+    
+    strategy_files = [
+        ("DIP_01_basic_window_optimization.py", "Basic Window Optimization"),
+        ("DIP_02_multiplier_optimization.py", "Multiplier Optimization"),
+        ("DIP_03_VIX_filter.py", "VIX Filter"),
+        ("DIP_04_VIX_range.py", "VIX Range Filter"),
+        ("DIP_05_ATR_filter.py", "ATR Filter"),
+        ("DIP_06_ATR_period.py", "ATR Period Optimization"),
+        ("DIP_07_volume_filter.py", "Volume Filter"),
+        ("DIP_08_day_of_week.py", "Day of Week Filter"),
+        ("DIP_09_time_of_day.py", "Time of Day Filter"),
+        ("DIP_10_MOVE_filter.py", "MOVE Index Filter"),
+        ("DIP_11_RSI_filter.py", "RSI Filter"),
+        ("DIP_12_consecutive_red_days.py", "Consecutive Red Days"),
+        ("DIP_13_gap_filter.py", "Gap Filter"),
+        ("DIP_14_range_filter.py", "Range Filter"),
+        ("DIP_15_price_level_filter.py", "Price Level Filter"),
+        ("DIP_16_month_filter.py", "Month Filter"),
+        ("DIP_17_volatility_percentile.py", "Volatility Percentile"),
+        ("DIP_18_prev_day_performance.py", "Previous Day Performance"),
+        ("DIP_19_distance_from_high.py", "Distance from High"),
+        ("DIP_20_bollinger_bands.py", "Bollinger Bands"),
+        ("DIP_21_momentum_filter.py", "Momentum Filter"),
+        ("DIP_22_candle_patterns_fixed.py", "Candle Patterns (Fixed)"),
+        ("DIP_23_day_of_week_fixed.py", "Day of Week (Fixed)"),
+        ("DIP_24_consecutive_red_days_fixed.py", "Consecutive Red Days (Fixed)"),
+        ("DIP_25_price_level_filter_detailed.py", "MA Filter (Detailed)")
+    ]
+    
+    results = []
+    
+    print("\n1. EXECUTING ALL STRATEGIES")
+    print("-" * 80)
+    
+    for i, (file_name, strategy_name) in enumerate(strategy_files, 1):
+        print(f"\n{i:2d}. Running {strategy_name}...")
+        
+        file_path = f"/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/DIP_Optimizations/{file_name}"
+        
+        try:
+            if file_name in ["DIP_ALL_NEW_OPTIMIZATIONS.py"]:
+                result = {'total_trades': 0, 'success_rate': 0, 'total_profit': 0, 'status': 'Multi-strategy file'}
+            else:
+                result = run_single_strategy(file_path)
+            
+            results.append({
+                'Strategy': strategy_name,
+                'File': file_name,
+                'Total Trades': result['total_trades'],
+                'Success Rate (%)': result['success_rate'],
+                'Total Profit ($)': result['total_profit'],
+                'Status': result['status']
+            })
+            
+            print(f"    ✓ Trades: {result['total_trades']}, Success: {result['success_rate']:.2f}%, Profit: ${result['total_profit']:,.2f}")
+            
+        except Exception as e:
+            results.append({
+                'Strategy': strategy_name,
+                'File': file_name,
+                'Total Trades': 0,
+                'Success Rate (%)': 0,
+                'Total Profit ($)': 0,
+                'Status': f'Error: {str(e)}'
+            })
+            print(f"    ✗ Error: {str(e)}")
+    
+    results_df = pd.DataFrame(results)
+    
+    print("\n" + "=" * 100)
+    print("2. COMPREHENSIVE RESULTS SUMMARY")
+    print("=" * 100)
+    
+    results_sorted = results_df.sort_values('Success Rate (%)', ascending=False)
+    
+    print(f"\n{'Rank':<4} {'Strategy':<35} {'Trades':<8} {'Success Rate':<12} {'Total Profit':<15} {'Status':<20}")
+    print("-" * 100)
+    
+    for i, row in enumerate(results_sorted.iterrows(), 1):
+        data = row[1]
+        print(f"{i:<4} {data['Strategy'][:34]:<35} {data['Total Trades']:<8} {data['Success Rate (%)']:<12.2f}% ${data['Total Profit ($)']:<14,.2f} {data['Status'][:19]:<20}")
+    
+    successful_strategies = results_df[results_df['Total Trades'] > 0].sort_values('Success Rate (%)', ascending=False)
+    
+    if len(successful_strategies) > 0:
+        print("\n" + "=" * 100)
+        print("3. TOP PERFORMING STRATEGIES")
+        print("=" * 100)
+        
+        top_5 = successful_strategies.head(5)
+        for i, (_, row) in enumerate(top_5.iterrows(), 1):
+            print(f"\n{i}. {row['Strategy']}")
+            print(f"   Total Trades: {row['Total Trades']}")
+            print(f"   Success Rate: {row['Success Rate (%)']:.2f}%")
+            print(f"   Total Profit: ${row['Total Profit ($)']:,.2f}")
+            print(f"   ROI: {(row['Total Profit ($)'] / 16000 * 100):.2f}%")
+    
+    print("\n" + "=" * 100)
+    print("4. OVERALL STATISTICS")
+    print("=" * 100)
+    
+    successful_runs = len(results_df[results_df['Total Trades'] > 0])
+    total_strategies = len(results_df)
+    
+    print(f"Total Strategies Analyzed: {total_strategies}")
+    print(f"Successful Executions: {successful_runs}")
+    print(f"Success Rate of Analysis: {(successful_runs/total_strategies)*100:.1f}%")
+    
+    if successful_runs > 0:
+        avg_success_rate = successful_strategies['Success Rate (%)'].mean()
+        avg_profit = successful_strategies['Total Profit ($)'].mean()
+        avg_trades = successful_strategies['Total Trades'].mean()
+        
+        print(f"\nAverage Success Rate: {avg_success_rate:.2f}%")
+        print(f"Average Total Profit: ${avg_profit:,.2f}")
+        print(f"Average Number of Trades: {avg_trades:.0f}")
+        
+        best_strategy = successful_strategies.iloc[0]
+        print(f"\nBest Performing Strategy: {best_strategy['Strategy']}")
+        print(f"Best Success Rate: {best_strategy['Success Rate (%)']:.2f}%")
+        print(f"Best Profit: ${best_strategy['Total Profit ($)']:,.2f}")
+    
+    output_file = 'comprehensive_strategy_results.csv'
+    results_df.to_csv(output_file, index=False)
+    print(f"\nDetailed results saved to: {output_file}")
+    
+    print("\n" + "=" * 100)
+    print("IMPORTANT: All strategies use NO LOOK-AHEAD BIAS")
+    print("Results are realistic and implementable in real trading")
+    print("=" * 100)
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,265 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_rolling_average_drop(df, window=21):
+    """Calculate rolling average of drops on red days - NO LOOK-AHEAD BIAS."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=window).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    return df
+
+def identify_candle_patterns(df):
+    """Identify candle patterns using ONLY PREVIOUS DAY'S data - NO LOOK-AHEAD BIAS."""
+    df['Body'] = abs(df['Close'] - df['Open'])
+    df['UpperWick'] = df['High'] - df[['Open', 'Close']].max(axis=1)
+    df['LowerWick'] = df[['Open', 'Close']].min(axis=1) - df['Low']
+    df['Range'] = df['High'] - df['Low']
+    
+    df['BodyRatio'] = np.where(df['Range'] > 0, df['Body'] / df['Range'], 0)
+    df['LowerWickRatio'] = np.where(df['Range'] > 0, df['LowerWick'] / df['Range'], 0)
+    
+    df['PrevClose'] = df['Close'].shift(1)
+    df['PrevOpen'] = df['Open'].shift(1)
+    df['PrevHigh'] = df['High'].shift(1)
+    df['PrevLow'] = df['Low'].shift(1)
+    df['IsBullish'] = df['Close'] > df['Open']
+    df['PrevIsBullish'] = df['IsBullish'].shift(1)
+    
+    df['Hammer_Prev'] = (
+        (df['Body'].shift(1) < df['Range'].shift(1) * 0.3) &
+        (df['LowerWick'].shift(1) > df['Body'].shift(1) * 2) &
+        (df['UpperWick'].shift(1) < df['Body'].shift(1))
+    )
+    
+    df['InvertedHammer_Prev'] = (
+        (df['Body'].shift(1) < df['Range'].shift(1) * 0.3) &
+        (df['UpperWick'].shift(1) > df['Body'].shift(1) * 2) &
+        (df['LowerWick'].shift(1) < df['Body'].shift(1))
+    )
+    
+    df['Doji_Prev'] = df['Body'].shift(1) < df['Range'].shift(1) * 0.1
+    
+    df['BullishEngulfing_Prev'] = (
+        df['IsBullish'].shift(1) &  # Yesterday was bullish
+        (~df['IsBullish'].shift(2)) &  # Day before yesterday was bearish
+        (df['Open'].shift(1) < df['Close'].shift(2)) &  # Yesterday opened below day before close
+        (df['Close'].shift(1) > df['Open'].shift(2))  # Yesterday closed above day before open
+    )
+    
+    df['MorningStar_Prev'] = (
+        (~df['IsBullish'].shift(3)) &  # 3 days ago was red
+        (df['Body'].shift(2) < df['Body'].shift(3) * 0.3) &  # 2 days ago was small body
+        (df['IsBullish'].shift(1)) &  # Yesterday was green
+        (df['Close'].shift(1) > (df['Close'].shift(3) + df['Open'].shift(3)) / 2)  # Yesterday closed above midpoint of 3-day-ago candle
+    )
+    
+    df['BullishPattern_Prev'] = (
+        df['Hammer_Prev'] | 
+        df['InvertedHammer_Prev'] | 
+        df['Doji_Prev'] | 
+        df['BullishEngulfing_Prev'] | 
+        df['MorningStar_Prev']
+    )
+    
+    df['BullishPattern_Prev'].fillna(False, inplace=True)
+    
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def analyze_candle_pattern_strategy(df, initial_investment=16000):
+    """Implement DIP strategy with candle pattern filter - NO LOOK-AHEAD BIAS."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    df = identify_candle_patterns(df)
+    
+    trades = []
+    pattern_counts = {
+        'Hammer': 0,
+        'InvertedHammer': 0,
+        'Doji': 0,
+        'BullishEngulfing': 0,
+        'MorningStar': 0
+    }
+    
+    for i in range(len(df)):
+        if i < 21:  # Need history for calculations
+            continue
+        
+        current_day = df.iloc[i]
+        
+        avg_drop = current_day['RollingAvgDrop']  # Already shifted, uses past data
+        has_pattern_prev = current_day['BullishPattern_Prev']  # Previous day's pattern
+        
+        if avg_drop <= 0 or pd.isna(has_pattern_prev) or not has_pattern_prev:
+            continue
+        
+        patterns_found = []
+        if current_day['Hammer_Prev']:
+            patterns_found.append('Hammer')
+            pattern_counts['Hammer'] += 1
+        if current_day['InvertedHammer_Prev']:
+            patterns_found.append('InvertedHammer')
+            pattern_counts['InvertedHammer'] += 1
+        if current_day['Doji_Prev']:
+            patterns_found.append('Doji')
+            pattern_counts['Doji'] += 1
+        if current_day['BullishEngulfing_Prev']:
+            patterns_found.append('BullishEngulfing')
+            pattern_counts['BullishEngulfing'] += 1
+        if current_day['MorningStar_Prev']:
+            patterns_found.append('MorningStar')
+            pattern_counts['MorningStar'] += 1
+        
+        open_price = current_day['Open']  # Known at market open
+        desired_entry = open_price - avg_drop
+        
+        low_price = current_day['Low']
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = current_day['Close']  # Exit at close
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            trades.append({
+                'Date': current_day['Date'],
+                'Entry': entry_price,
+                'Exit': exit_price,
+                'Profit/Loss': profit_loss,
+                'Pattern': ', '.join(patterns_found),
+                'Open': open_price,
+                'High': current_day['High'],
+                'Low': low_price,
+                'Close': current_day['Close'],
+                'AvgDrop': avg_drop
+            })
+    
+    return trades, pattern_counts
+
+def calculate_detailed_statistics(trades):
+    """Calculate comprehensive statistics for the trades."""
+    if not trades:
+        return None
+    
+    df_trades = pd.DataFrame(trades)
+    
+    total_trades = len(trades)
+    profitable_trades = df_trades[df_trades['Profit/Loss'] > 0]
+    losing_trades = df_trades[df_trades['Profit/Loss'] < 0]
+    
+    num_winners = len(profitable_trades)
+    num_losers = len(losing_trades)
+    success_rate = num_winners / total_trades * 100
+    
+    total_profit = df_trades['Profit/Loss'].sum()
+    avg_profit_all = df_trades['Profit/Loss'].mean()
+    
+    avg_winner = profitable_trades['Profit/Loss'].mean() if num_winners > 0 else 0
+    avg_loser = losing_trades['Profit/Loss'].mean() if num_losers > 0 else 0
+    
+    largest_winner = profitable_trades['Profit/Loss'].max() if num_winners > 0 else 0
+    largest_loser = losing_trades['Profit/Loss'].min() if num_losers > 0 else 0
+    
+    profit_factor = abs(profitable_trades['Profit/Loss'].sum() / losing_trades['Profit/Loss'].sum()) if num_losers > 0 else float('inf')
+    win_loss_ratio = abs(avg_winner / avg_loser) if avg_loser != 0 else float('inf')
+    
+    pattern_stats = df_trades.groupby('Pattern').agg({
+        'Profit/Loss': ['sum', 'count', 'mean', lambda x: (x > 0).sum() / len(x) * 100]
+    }).round(2)
+    
+    return {
+        'total_trades': total_trades,
+        'num_winners': num_winners,
+        'num_losers': num_losers,
+        'success_rate': success_rate,
+        'total_profit': total_profit,
+        'avg_profit_all': avg_profit_all,
+        'avg_winner': avg_winner,
+        'avg_loser': avg_loser,
+        'largest_winner': largest_winner,
+        'largest_loser': largest_loser,
+        'profit_factor': profit_factor,
+        'win_loss_ratio': win_loss_ratio,
+        'pattern_stats': pattern_stats
+    }
+
+def main():
+    """Main function to run the candle pattern analysis - NO LOOK-AHEAD BIAS."""
+    print("="*80)
+    print("CANDLE PATTERN DIP STRATEGY - FIXED (NO LOOK-AHEAD BIAS)")
+    print("="*80)
+    print(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Initial Investment: $16,000")
+    print("Key Fix: Uses PREVIOUS day's patterns for CURRENT day's decisions")
+    print("="*80)
+    
+    df = load_data('../7J0OK1VR.csv')
+    
+    trades, pattern_counts = analyze_candle_pattern_strategy(df)
+    
+    if not trades:
+        print("No trades found!")
+        return
+    
+    stats = calculate_detailed_statistics(trades)
+    
+    print("\n1. OVERALL PERFORMANCE SUMMARY")
+    print("-"*50)
+    print(f"Total Trades: {stats['total_trades']}")
+    print(f"Winning Trades: {stats['num_winners']}")
+    print(f"Losing Trades: {stats['num_losers']}")
+    print(f"Success Rate: {stats['success_rate']:.2f}%")
+    print(f"Total Profit: ${stats['total_profit']:,.2f}")
+    print(f"Average Profit per Trade: ${stats['avg_profit_all']:.2f}")
+    
+    print("\n2. RISK/REWARD METRICS")
+    print("-"*50)
+    print(f"Average Winner: ${stats['avg_winner']:.2f}")
+    print(f"Average Loser: ${stats['avg_loser']:.2f}")
+    print(f"Win/Loss Ratio: {stats['win_loss_ratio']:.2f}")
+    print(f"Profit Factor: {stats['profit_factor']:.2f}")
+    print(f"Largest Winner: ${stats['largest_winner']:.2f}")
+    print(f"Largest Loser: ${stats['largest_loser']:.2f}")
+    
+    print("\n3. PATTERN DISTRIBUTION")
+    print("-"*50)
+    for pattern, count in pattern_counts.items():
+        if count > 0:
+            print(f"{pattern}: {count} occurrences")
+    
+    print("\n4. PATTERN PERFORMANCE BREAKDOWN")
+    print("-"*50)
+    if not stats['pattern_stats'].empty:
+        print(stats['pattern_stats'])
+    
+    df_trades = pd.DataFrame(trades)
+    print("\n5. FIRST 10 TRADES")
+    print("-"*70)
+    sample_trades = df_trades.head(10)[['Date', 'Entry', 'Exit', 'Profit/Loss', 'Pattern']]
+    print(sample_trades.to_string(index=False))
+    
+    print("\n6. EQUITY CURVE ANALYSIS")
+    print("-"*50)
+    df_trades['Cumulative'] = df_trades['Profit/Loss'].cumsum() + 16000
+    print(f"Final Equity: ${df_trades['Cumulative'].iloc[-1]:,.2f}")
+    print(f"Return on Investment: {(df_trades['Cumulative'].iloc[-1] - 16000) / 16000 * 100:.2f}%")
+    
+    output_file = 'candle_pattern_fixed_results.csv'
+    df_trades.to_csv(output_file, index=False)
+    print(f"\nDetailed trade log saved to: {output_file}")
+
+if __name__ == "__main__":
+    main()

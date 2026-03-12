@@ -1,0 +1,164 @@
+import subprocess
+import os
+import sys
+
+os.chdir('/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/DIP_Optimizations')
+
+strategies = [
+    ('Candle Patterns Strategy', 'DIP_22_candle_patterns_detailed.py'),
+    ('Day of Week Strategy', 'DIP_23_day_of_week_detailed.py'),
+    ('Consecutive Red Days Strategy', 'DIP_24_consecutive_red_days_detailed.py'),
+    ('Moving Average Filter Strategy', 'DIP_25_price_level_filter_detailed.py')
+]
+
+print("="*80)
+print("RUNNING ALL DETAILED DIP STRATEGIES")
+print("="*80)
+
+results_summary = []
+
+for strategy_name, script_file in strategies:
+    print(f"\n{'='*60}")
+    print(f"RUNNING: {strategy_name}")
+    print('='*60)
+    
+    try:
+        result = subprocess.run([sys.executable, script_file], 
+                              capture_output=True, 
+                              text=True, 
+                              timeout=120)
+        
+        output = result.stdout
+        
+        lines = output.split('\n')
+        
+        total_trades = None
+        success_rate = None
+        total_profit = None
+        largest_winner = None
+        largest_loser = None
+        
+        for line in lines:
+            if 'Total Trades:' in line:
+                try:
+                    total_trades = int(line.split(':')[-1].strip())
+                except:
+                    pass
+            elif 'Success Rate:' in line:
+                try:
+                    success_rate = float(line.split(':')[-1].strip().rstrip('%'))
+                except:
+                    pass
+            elif 'Total Profit:' in line:
+                try:
+                    profit_str = line.split('$')[-1].replace(',', '')
+                    total_profit = float(profit_str)
+                except:
+                    pass
+            elif 'Largest Winner:' in line:
+                try:
+                    winner_str = line.split('$')[-1].replace(',', '')
+                    largest_winner = float(winner_str)
+                except:
+                    pass
+            elif 'Largest Loser:' in line:
+                try:
+                    loser_str = line.split('$')[-1].replace(',', '')
+                    largest_loser = float(loser_str)
+                except:
+                    pass
+        
+        results_summary.append({
+            'Strategy': strategy_name,
+            'Total Trades': total_trades,
+            'Success Rate': success_rate,
+            'Total Profit': total_profit,
+            'Largest Winner': largest_winner,
+            'Largest Loser': largest_loser,
+            'Status': 'SUCCESS'
+        })
+        
+        print(f"✓ {strategy_name} completed successfully")
+        print(f"  Trades: {total_trades}, Success Rate: {success_rate}%, Profit: ${total_profit:,.2f}" if all([total_trades, success_rate, total_profit]) else "  Metrics extracted")
+        
+        print("\nKey Results:")
+        summary_lines = [line for line in lines if any(keyword in line for keyword in ['Total Trades:', 'Success Rate:', 'Total Profit:', 'Best', 'Final Equity:'])]
+        for line in summary_lines[:8]:  # Show first 8 relevant lines
+            if line.strip():
+                print(f"  {line.strip()}")
+        
+    except subprocess.TimeoutExpired:
+        print(f"✗ {strategy_name} timed out")
+        results_summary.append({
+            'Strategy': strategy_name,
+            'Total Trades': None,
+            'Success Rate': None,
+            'Total Profit': None,
+            'Largest Winner': None,
+            'Largest Loser': None,
+            'Status': 'TIMEOUT'
+        })
+    except Exception as e:
+        print(f"✗ Error running {strategy_name}: {e}")
+        results_summary.append({
+            'Strategy': strategy_name,
+            'Total Trades': None,
+            'Success Rate': None,
+            'Total Profit': None,
+            'Largest Winner': None,
+            'Largest Loser': None,
+            'Status': f'ERROR: {str(e)}'
+        })
+
+print("\n" + "="*80)
+print("COMPREHENSIVE STRATEGY COMPARISON")
+print("="*80)
+
+print(f"\n{'Strategy':<30} {'Trades':<8} {'Success Rate':<12} {'Total Profit':<15} {'Largest Win':<12} {'Largest Loss':<12}")
+print("-"*100)
+
+valid_results = [r for r in results_summary if r['Success Rate'] is not None]
+sorted_results = sorted(valid_results, key=lambda x: x['Success Rate'], reverse=True)
+
+for result in sorted_results:
+    strategy = result['Strategy'][:28]  # Truncate long names
+    trades = result['Total Trades'] if result['Total Trades'] else 'N/A'
+    success = f"{result['Success Rate']:.1f}%" if result['Success Rate'] else 'N/A'
+    profit = f"${result['Total Profit']:,.0f}" if result['Total Profit'] else 'N/A'
+    winner = f"${result['Largest Winner']:,.0f}" if result['Largest Winner'] else 'N/A'
+    loser = f"${result['Largest Loser']:,.0f}" if result['Largest Loser'] else 'N/A'
+    
+    print(f"{strategy:<30} {trades:<8} {success:<12} {profit:<15} {winner:<12} {loser:<12}")
+
+failed_results = [r for r in results_summary if r['Success Rate'] is None]
+if failed_results:
+    print(f"\nFailed Runs:")
+    for result in failed_results:
+        print(f"  {result['Strategy']}: {result['Status']}")
+
+print(f"\n{'='*60}")
+print("PERFORMANCE RANKING")
+print('='*60)
+
+if sorted_results:
+    print("\n1. BY SUCCESS RATE:")
+    for i, result in enumerate(sorted_results, 1):
+        print(f"   {i}. {result['Strategy']}: {result['Success Rate']:.2f}%")
+    
+    profit_sorted = sorted(valid_results, key=lambda x: x['Total Profit'] if x['Total Profit'] else 0, reverse=True)
+    print("\n2. BY TOTAL PROFIT:")
+    for i, result in enumerate(profit_sorted, 1):
+        print(f"   {i}. {result['Strategy']}: ${result['Total Profit']:,.2f}")
+    
+    print("\n3. BY RETURN ON INVESTMENT (ROI):")
+    for result in profit_sorted:
+        if result['Total Profit']:
+            roi = (result['Total Profit'] / 16000) * 100
+            print(f"   {result['Strategy']}: {roi:.1f}%")
+
+print(f"\n{'='*60}")
+print("ANALYSIS COMPLETE")
+print('='*60)
+print("All detailed strategy files have been executed.")
+print("Individual CSV files with trade details have been generated.")
+print("Check the DIP_Optimizations folder for detailed results.")

@@ -1,0 +1,203 @@
+"""
+Master script to fix and run any strategy
+This handles all path and import issues automatically
+"""
+
+import os
+import sys
+import subprocess
+from pathlib import Path
+
+def setup_environment():
+    """Setup the environment to run strategies from anywhere"""
+    script_dir = Path(__file__).parent.absolute()
+    
+    sys.path.insert(0, str(script_dir))
+    sys.path.insert(0, str(script_dir / 'utils'))
+    
+    os.chdir(script_dir)
+    
+    return script_dir
+
+def list_all_strategies(base_dir):
+    """Find all strategy Python files"""
+    strategies_dir = base_dir / 'strategies'
+    strategies = []
+    
+    for root, dirs, files in os.walk(strategies_dir):
+        for file in files:
+            if file.endswith('.py') and not file.startswith('__'):
+                full_path = Path(root) / file
+                relative_path = full_path.relative_to(base_dir)
+                strategies.append(str(relative_path))
+    
+    return sorted(strategies)
+
+def run_strategy(strategy_path, base_dir):
+    """Run a single strategy with proper environment"""
+    full_path = base_dir / strategy_path
+    
+    print(f"\n{'='*60}")
+    print(f"Running: {strategy_path}")
+    print(f"{'='*60}")
+    
+    wrapper_code = f"""
+import sys
+import os
+from pathlib import Path
+
+base_dir = Path(r'{base_dir}')
+sys.path.insert(0, str(base_dir))
+sys.path.insert(0, str(base_dir / 'utils'))
+os.chdir(base_dir)
+
+exec(open(r'{full_path}').read())
+"""
+    
+    try:
+        result = subprocess.run(
+            [sys.executable, '-c', wrapper_code],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode == 0:
+            print("✅ Success!")
+            print(result.stdout)
+        else:
+            print("❌ Error!")
+            print(result.stderr)
+            
+    except subprocess.TimeoutExpired:
+        print("⏱️ Timeout - Strategy took too long to run")
+    except Exception as e:
+        print(f"❌ Failed to run: {e}")
+
+def run_specific_strategy(base_dir):
+    """Run a specific strategy by user choice"""
+    strategies = list_all_strategies(base_dir)
+    
+    print("\nAvailable strategies:")
+    print("-" * 60)
+    
+    categories = {}
+    for s in strategies:
+        category = s.split('/')[1] if '/' in s else 'other'
+        if category not in categories:
+            categories[category] = []
+        categories[category].append(s)
+    
+    for i, (category, strats) in enumerate(sorted(categories.items())):
+        print(f"\n{category.upper()} ({len(strats)} strategies)")
+        if i < 3:  # Show first few strategies of first 3 categories
+            for j, strat in enumerate(strats[:5]):
+                print(f"  {strat}")
+            if len(strats) > 5:
+                print(f"  ... and {len(strats) - 5} more")
+    
+    print("\n" + "-" * 60)
+    print("Enter strategy path (e.g., strategies/spy_strategies/spy_dip_buy.py)")
+    print("Or enter category name to see all in that category")
+    print("Or press Enter to run a default strategy")
+    
+    choice = input("\nYour choice: ").strip()
+    
+    if not choice:
+        default = "strategies/spy_strategies/spy_dip_buy.py"
+        if default in strategies:
+            run_strategy(default, base_dir)
+        else:
+            print("Default strategy not found")
+    elif choice in categories:
+        print(f"\nStrategies in {choice}:")
+        for s in categories[choice]:
+            print(f"  {s}")
+        print("\nNow enter specific strategy path:")
+        specific = input().strip()
+        if specific in strategies:
+            run_strategy(specific, base_dir)
+    elif choice in strategies:
+        run_strategy(choice, base_dir)
+    else:
+        print(f"Strategy not found: {choice}")
+
+def create_simple_test():
+    """Create a simple test script to verify environment"""
+    test_code = '''
+"""Simple test to verify Python environment"""
+
+print("Python environment test:")
+print("-" * 40)
+
+try:
+    import pandas as pd
+    print("✅ pandas imported successfully")
+except ImportError:
+    print("❌ pandas not installed - run: pip install pandas")
+
+try:
+    import numpy as np
+    print("✅ numpy imported successfully")
+except ImportError:
+    print("❌ numpy not installed - run: pip install numpy")
+
+from pathlib import Path
+data_dir = Path(__file__).parent / "data"
+if data_dir.exists():
+    csv_files = list(data_dir.glob("*.csv"))
+    print(f"✅ Found {len(csv_files)} data files")
+else:
+    print("❌ Data directory not found")
+
+try:
+    import sys
+    sys.path.append(str(Path(__file__).parent))
+    from utils.base_strategy import BaseStrategy
+    print("✅ BaseStrategy imported successfully")
+except Exception as e:
+    print(f"❌ Could not import BaseStrategy: {e}")
+
+print("-" * 40)
+print("Environment test complete!")
+'''
+    
+    return test_code
+
+def main():
+    """Main function"""
+    print("🚀 Strategy Runner & Fixer")
+    print("=" * 60)
+    
+    base_dir = setup_environment()
+    print(f"Project directory: {base_dir}")
+    
+    while True:
+        print("\nOptions:")
+        print("1. Run a specific strategy")
+        print("2. Test Python environment")
+        print("3. List all strategies")
+        print("4. Exit")
+        
+        choice = input("\nSelect option (1-4): ").strip()
+        
+        if choice == '1':
+            run_specific_strategy(base_dir)
+        elif choice == '2':
+            print("\nTesting environment...")
+            exec(create_simple_test())
+        elif choice == '3':
+            strategies = list_all_strategies(base_dir)
+            print(f"\nFound {len(strategies)} strategies")
+            for s in strategies[:10]:
+                print(f"  {s}")
+            if len(strategies) > 10:
+                print(f"  ... and {len(strategies) - 10} more")
+        elif choice == '4':
+            print("Goodbye!")
+            break
+        else:
+            print("Invalid choice")
+
+if __name__ == "__main__":
+    main()

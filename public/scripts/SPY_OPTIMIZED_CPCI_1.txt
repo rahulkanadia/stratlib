@@ -1,0 +1,309 @@
+import pandas as pd
+import numpy as np
+import warnings
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', None)      # Display all rows
+pd.set_option('display.max_columns', None)   # Display all columns
+pd.set_option('display.width', None)         # Adjust display width to fit the console
+pd.set_option('display.max_colwidth', None)  # Display full content in each column
+
+def load_data(file_name):
+    """
+    Loads the SPY CSV file into a DataFrame, parses the 'Date' column, sorts it, and resets the index.
+    """
+    df = pd.read_csv(file_name)
+    df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d', errors='coerce')  # Adjust format as needed
+    df.dropna(subset=['Date'], inplace=True)  # Remove rows with invalid dates
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_cpci_data(cpci_file_name):
+    """
+    Loads the CPCI CSV file into a DataFrame, parses the 'Date' column, sorts it, and resets the index.
+    """
+    cpci_df = pd.read_csv(cpci_file_name)
+    cpci_df.rename(columns={'foll': 'Date'}, inplace=True)  # Rename 'foll' to 'Date'
+    cpci_df['Date'] = pd.to_datetime(cpci_df['Date'], format='%m/%d/%Y', errors='coerce')  # Adjust format as needed
+    cpci_df.dropna(subset=['Date'], inplace=True)
+    cpci_df.sort_values('Date', inplace=True)
+    cpci_df.reset_index(drop=True, inplace=True)
+    return cpci_df
+
+def calculate_day_range(day):
+    """
+    Calculates the trading range of a day (High - Low).
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    Calculates the gap between the previous day's close and the current day's open.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    """
+    Checks if the gap meets the specified conditions:
+    - At least $0.20
+    - Between 15% and 85% of the previous day's range
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap, reverse=False):
+    """
+    Determines the trade direction based on the gap and whether to reverse the standard interpretation.
+    - Standard Interpretation (reverse=False):
+        - Gap up: Short position
+        - Gap down: Long position
+    - Reversed Interpretation (reverse=True):
+        - Gap up: Long position
+        - Gap down: Short position
+    """
+    if reverse:
+        return 'Long' if gap > 0 else 'Short'
+    else:
+        return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """
+    Checks if the gap is closed during the trading day and returns the exit price.
+    """
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long position
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    Calculates the profit or loss of a trade.
+    """
+    number_of_shares = position_size / entry_price
+
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:  # Short position
+        profit_loss = number_of_shares * (entry_price - exit_price)
+
+    return profit_loss
+
+def precompute_trades(df, cpci_df, initial_investment):
+    """
+    Precomputes all valid trades and their associated CPCI values and profits for both standard and reversed interpretations.
+    Returns a DataFrame containing all trades.
+    """
+    trades = []
+    total_days = len(df)
+
+    df = df.merge(cpci_df[['Date', 'Last']], on='Date', how='left', suffixes=('', '_CPCI'))
+    df.rename(columns={'Last': 'CPCI'}, inplace=True)
+
+    for i_day in range(1, total_days):
+        prev_day = df.iloc[i_day - 1]
+        curr_day = df.iloc[i_day]
+        current_date = curr_day['Date']
+
+        cpci_value = curr_day['CPCI']
+        if pd.isna(cpci_value):
+            continue  # Skip if no CPCI data
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue  # Avoid division by zero
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction_standard = determine_trade_direction(gap, reverse=False)
+        trade_direction_reversed = determine_trade_direction(gap, reverse=True)
+
+        entry_price = curr_day['Open']
+
+        exit_price_standard, _ = check_gap_closure(trade_direction_standard, curr_day, prev_day['Close'])
+        profit_loss_standard = calculate_profit_loss(trade_direction_standard, entry_price, exit_price_standard, initial_investment)
+
+        exit_price_reversed, _ = check_gap_closure(trade_direction_reversed, curr_day, prev_day['Close'])
+        profit_loss_reversed = calculate_profit_loss(trade_direction_reversed, entry_price, exit_price_reversed, initial_investment)
+
+        trades.append({
+            'Date': current_date,
+            'Gap': gap,
+            'Trade Direction Standard': trade_direction_standard,
+            'Trade Direction Reversed': trade_direction_reversed,
+            'Entry Price': entry_price,
+            'Exit Price Standard': exit_price_standard,
+            'Exit Price Reversed': exit_price_reversed,
+            'CPCI': cpci_value,
+            'Profit/Loss Standard': profit_loss_standard,
+            'Profit/Loss Reversed': profit_loss_reversed
+        })
+
+    trades_df = pd.DataFrame(trades)
+    return trades_df
+
+def find_best_cpci_conditions_optimized(trades_df, step=0.01):
+    """
+    Optimized function to find the best CPCI conditions and trade direction that maximize profit.
+    Considers both standard and reversed trade directions for each CPCI range.
+    Returns the best CPCI range, trade direction, and a DataFrame of all results.
+    """
+    cpci_min_value = trades_df['CPCI'].min()
+    cpci_max_value = trades_df['CPCI'].max()
+
+    print(f"Exploring CPCI values from {cpci_min_value} to {cpci_max_value} with a step of {step}")
+
+    cpci_values = np.round(np.arange(cpci_min_value, cpci_max_value + step, step), 2)
+    cpci_pairs = [(i, j) for i in cpci_values for j in cpci_values if i < j]
+
+    cpci_array = trades_df['CPCI'].values
+    profit_loss_standard = trades_df['Profit/Loss Standard'].values
+    profit_loss_reversed = trades_df['Profit/Loss Reversed'].values
+
+    results = []
+
+    cpci_array_broadcasted = cpci_array[:, np.newaxis]
+    for i, j in cpci_pairs:
+        mask = (cpci_array_broadcasted > i) & (cpci_array_broadcasted < j)
+        total_profit_standard = np.sum(profit_loss_standard[mask.flatten()])
+        total_profit_reversed = np.sum(profit_loss_reversed[mask.flatten()])
+
+        if total_profit_standard > total_profit_reversed:
+            total_profit = total_profit_standard
+            trade_direction = 'Standard'
+        else:
+            total_profit = total_profit_reversed
+            trade_direction = 'Reversed'
+
+        results.append({
+            'CPCI_Min': i,
+            'CPCI_Max': j,
+            'Total Profit': total_profit,
+            'Trade Direction': trade_direction
+        })
+
+    results_df = pd.DataFrame(results)
+
+    best_idx = results_df['Total Profit'].idxmax()
+    best_cpci_min = results_df.loc[best_idx, 'CPCI_Min']
+    best_cpci_max = results_df.loc[best_idx, 'CPCI_Max']
+    best_profit = results_df.loc[best_idx, 'Total Profit']
+    best_trade_direction = results_df.loc[best_idx, 'Trade Direction']
+
+    results_df_sorted = results_df.sort_values(by='Total Profit', ascending=False).reset_index(drop=True)
+
+    print("\n=== Optimization Complete ===")
+    print(f"Best CPCI Conditions: {best_cpci_min} < CPCI < {best_cpci_max}")
+    print(f"Trade Direction: {best_trade_direction}")
+    print(f"Total Profit: ${best_profit:,.2f}\n")
+
+    print("Top 10 CPCI Conditions by Total Profit:")
+    print(results_df_sorted.head(10).to_string(index=False))
+
+    return best_cpci_min, best_cpci_max, best_profit, best_trade_direction, results_df_sorted
+
+def analyze_spy_gaps_optimized(main_file, cpci_file, initial_investment):
+    """
+    Main function that orchestrates the gap analysis and optimized CPCI condition search.
+    """
+    print("Loading trading data...")
+    df = load_data(main_file)
+    print("Loading CPCI data...")
+    cpci_df = load_cpci_data(cpci_file)
+
+    print("Precomputing trades...")
+    trades_df = precompute_trades(df, cpci_df, initial_investment)
+
+    if trades_df.empty:
+        print("No valid trades found based on initial criteria.")
+        return None, None
+
+    print(f"Total Valid Trades: {len(trades_df)}")
+
+    best_cpci_min, best_cpci_max, best_profit, best_trade_direction, all_results = find_best_cpci_conditions_optimized(
+        trades_df=trades_df,
+        step=0.01  # You can adjust the step size as needed
+    )
+
+    all_results.to_csv('cpci_optimization_results.csv', index=False)
+    print("\nCPCI optimization results saved to 'cpci_optimization_results.csv'.")
+
+    print(f"\nBest CPCI Conditions for Maximum Profit:")
+    print(f"{best_cpci_min} < CPCI < {best_cpci_max}")
+    print(f"Trade Direction: {best_trade_direction}")
+    print(f"Total Profit = ${best_profit:,.2f}")
+
+    return trades_df, all_results, best_cpci_min, best_cpci_max, best_trade_direction
+
+def count_winning_trades(trades_df, trade_direction):
+    """
+    Returns the number of trades with Profit/Loss greater than zero for the given trade direction.
+    """
+    if trade_direction == 'Standard':
+        return trades_df[trades_df['Profit/Loss Standard'] > 0].shape[0]
+    else:
+        return trades_df[trades_df['Profit/Loss Reversed'] > 0].shape[0]
+
+def count_losing_trades(trades_df, trade_direction):
+    """
+    Returns the number of trades with Profit/Loss less than zero for the given trade direction.
+    """
+    if trade_direction == 'Standard':
+        return trades_df[trades_df['Profit/Loss Standard'] < 0].shape[0]
+    else:
+        return trades_df[trades_df['Profit/Loss Reversed'] < 0].shape[0]
+
+if __name__ == "__main__":
+    initial_investment = 16000  # $16,000 initial investment
+
+    main_file = '9UZ09RGM.csv'
+    cpci_file = 'CPCI.csv'
+
+    trades, all_results, best_cpci_min, best_cpci_max, best_trade_direction = analyze_spy_gaps_optimized(main_file, cpci_file, initial_investment)
+
+    if trades is not None:
+        if best_trade_direction == 'Standard':
+            trades_filtered = trades[
+                (trades['CPCI'] > best_cpci_min) &
+                (trades['CPCI'] < best_cpci_max)
+            ]
+            trades_filtered['Profit/Loss'] = trades_filtered['Profit/Loss Standard']
+            trades_filtered['Trade Direction'] = trades_filtered['Trade Direction Standard']
+            trades_filtered['Exit Price'] = trades_filtered['Exit Price Standard']
+        else:
+            trades_filtered = trades[
+                (trades['CPCI'] > best_cpci_min) &
+                (trades['CPCI'] < best_cpci_max)
+            ]
+            trades_filtered['Profit/Loss'] = trades_filtered['Profit/Loss Reversed']
+            trades_filtered['Trade Direction'] = trades_filtered['Trade Direction Reversed']
+            trades_filtered['Exit Price'] = trades_filtered['Exit Price Reversed']
+
+        print("\nTrade Details:")
+        print(trades_filtered[['Date', 'Trade Direction', 'Entry Price', 'Exit Price', 'CPCI', 'Profit/Loss']].to_string(index=False))
+
+        num_winning_trades = count_winning_trades(trades_filtered, best_trade_direction)
+        num_losing_trades = count_losing_trades(trades_filtered, best_trade_direction)
+
+        print(f"\nNumber of Winning Trades: {num_winning_trades}")
+        print(f"Number of Losing Trades: {num_losing_trades}")
+
+        total_profit = trades_filtered['Profit/Loss'].sum()
+        print(f"Total Profit from Trades: ${total_profit:,.2f}")

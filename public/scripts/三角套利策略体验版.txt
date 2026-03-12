@@ -1,0 +1,94 @@
+
+> 策略名称
+
+三角套利策略体验版
+
+> 策略作者
+
+shoujing
+
+
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|Q3|0.5|搬砖数量|
+
+
+> 源码 (javascript)
+
+``` javascript
+
+
+var initAccount={
+	BTC:0.009,
+	LTC:0.7,
+	USDT:55,
+}
+
+var doAccount={
+	BTC:0.009,
+	LTC:0.7,
+	USDT:55,
+}
+
+var tax = 0.0015;
+
+function getBaseData(){
+	var P1,P2,P3;
+	P1 = exchanges[0].GetTicker();
+	P2 = exchanges[1].GetTicker();
+	P3 = exchanges[2].GetTicker();
+	return [P1,P2,P3];
+}
+
+function main() {
+	Log(initAccount);
+	var xunhuan  = true;
+	while(xunhuan){
+		var baseData =  getBaseData();
+		if((baseData[1].Buy-baseData[0].Sell*baseData[2].Sell)*Q3>Q3*tax*(2*baseData[1].Buy+baseData[0].Sell*baseData[2].Sell)){
+			if(xunhuan){
+				doAccount.LTC = doAccount.LTC + Q3*(1-tax);
+				doAccount.BTC = doAccount.BTC - baseData[2].Sell*Q3;
+				doAccount.LTC = doAccount.LTC - Q3;
+				doAccount.USDT = doAccount.USDT + baseData[1].Buy*Q3*(1-tax);
+				doAccount.BTC = doAccount.BTC + baseData[2].Sell*Q3*(1-tax);
+				doAccount.USDT = doAccount.USDT - baseData[0].Sell*baseData[2].Sell*Q3;
+				Log('Usdt收益：',doAccount.USDT-initAccount.USDT,'usdt','正循环套利','#FF0000');
+				Log('真实收益：',doAccount.USDT-initAccount.USDT-(initAccount.LTC-doAccount.LTC)*baseData[1].Buy-(initAccount.BTC-doAccount.BTC)*baseData[2].Sell,'#0000FF')
+			    Log(doAccount.USDT-initAccount.USDT-(initAccount.LTC-doAccount.LTC)*baseData[1].Buy-(initAccount.BTC-doAccount.BTC)*baseData[2].Sell,'#0000FF')
+            }else{
+				xunhuan = false;
+			}
+		}else if(baseData[0].Buy*baseData[2].Buy-baseData[1].Sell>(2*baseData[0].Buy*baseData[2].Buy+baseData[1].Sell)*tax){
+			if(xunhuan){
+				doAccount.LTC = doAccount.LTC - Q3;
+				doAccount.BTC = doAccount.BTC + baseData[2].Buy*Q3*(1-tax);
+				doAccount.LTC = doAccount.LTC + Q3*(1-tax);
+				doAccount.USDT = doAccount.USDT - baseData[1].Sell*Q3;
+				doAccount.BTC = doAccount.BTC - baseData[2].Buy*Q3;
+				doAccount.USDT = doAccount.USDT + baseData[0].Buy*baseData[2].Buy*Q3*(1-tax);
+				Log('Usdt收益：',doAccount.USDT-initAccount.USDT,'usdt,逆循环套利','#FF0000');
+				Log('真实收益：',doAccount.USDT-initAccount.USDT-(initAccount.LTC-doAccount.LTC)*baseData[1].Sell-(initAccount.BTC-doAccount.BTC)*baseData[2].Buy,'#0000FF')
+			    Log(doAccount.USDT-initAccount.USDT-(initAccount.LTC-doAccount.LTC)*baseData[1].Buy-(initAccount.BTC-doAccount.BTC)*baseData[2].Sell,'#0000FF')
+            }else{
+				xunhuan = false;
+			}
+		}
+		Sleep(1000);
+	}
+}
+
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2019-05-25 18:11:32

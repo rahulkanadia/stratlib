@@ -1,0 +1,280 @@
+import pandas as pd
+import numpy as np
+import itertools
+
+def load_data(file_name):
+    """
+    Loads the CSV file into a DataFrame, sorts it by date, and resets the index.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_day_range(day):
+    """
+    Calculates the trading range of a day (High - Low).
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    Calculates the gap between the previous day's close and the current day's open.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid_inverse(gap, prev_range, 
+                         lower_threshold=0.15, 
+                         upper_threshold=0.85):
+    """
+    Checks if the gap meets the "inverse" (Gap & Reverse) conditions:
+    - Gap is at least $0.20 in absolute terms
+    - Gap is between lower_threshold% and upper_threshold% of the previous day's range
+      (for example, between 15% and 85%)
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    
+    return (gap_percentage >= lower_threshold) and (gap_percentage <= upper_threshold)
+
+def determine_trade_direction_inverse(gap):
+    """
+    For the Gap & Reverse strategy:
+    - Gap up: Short position
+    - Gap down: Long position
+    """
+    return 'Short' if gap > 0 else 'Long'
+
+def determine_exit_price(curr_day):
+    """
+    For simplicity, exit at the day's closing price.
+    """
+    return curr_day['Close']
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    Calculates the profit or loss of a trade given a fixed position size.
+    """
+    number_of_shares = position_size / entry_price
+
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:  # Short position
+        profit_loss = number_of_shares * (entry_price - exit_price)
+
+    return profit_loss
+
+def analyze_trades_inverse(df, 
+                           lower_threshold=0.15, 
+                           upper_threshold=0.85):
+    """
+    Analyzes the DataFrame for valid Gap & Reverse trades based on the given thresholds.
+    Returns a DataFrame of identified trades.
+    """
+    trades = []
+    total_days = len(df)
+    
+    for i in range(1, total_days):
+        prev_day = df.iloc[i - 1]
+        curr_day = df.iloc[i]
+        
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue  # Avoid division by zero
+        
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        
+        if not is_gap_valid_inverse(gap, prev_range, 
+                                    lower_threshold=lower_threshold, 
+                                    upper_threshold=upper_threshold):
+            continue
+        
+        trade_direction = determine_trade_direction_inverse(gap)
+        
+        entry_price = curr_day['Open']
+        exit_price = determine_exit_price(curr_day)
+        
+        trades.append({
+            'Date': curr_day['Date'],
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price
+        })
+        
+    return pd.DataFrame(trades)
+
+def calculate_statistics(trades_df):
+    """
+    Calculates and prints statistics for the trades:
+    - Average Gain per Trade (in dollars)
+    - Average Loss per Trade (in dollars)
+    - Maximum Gain per Trade and date
+    - Maximum Loss per Trade and date
+    """
+    if trades_df.empty:
+        print("No trades met the criteria.")
+        return
+
+    gains = trades_df[trades_df['Profit/Loss'] > 0]
+    losses = trades_df[trades_df['Profit/Loss'] < 0]
+
+    average_gain = gains['Profit/Loss'].mean() if not gains.empty else 0
+    average_loss = losses['Profit/Loss'].mean() if not losses.empty else 0
+    max_gain = gains['Profit/Loss'].max() if not gains.empty else 0
+    max_loss = losses['Profit/Loss'].min() if not losses.empty else 0  # losses are negative
+
+    if not gains.empty:
+        max_gain_row = gains.loc[gains['Profit/Loss'].idxmax()]
+        max_gain_date = max_gain_row['Date']
+    else:
+        max_gain_date = None
+
+    if not losses.empty:
+        max_loss_row = losses.loc[losses['Profit/Loss'].idxmin()]
+        max_loss_date = max_loss_row['Date']
+    else:
+        max_loss_date = None
+
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Average Gain per Trade: ${average_gain:,.2f}")
+    print(f"Average Loss per Trade: ${average_loss:,.2f}")
+    if max_gain_date is not None:
+        print(f"Maximum Gain per Trade: ${max_gain:,.2f} on {max_gain_date.date()}")
+    else:
+        print("No gains to report.")
+
+    if max_loss_date is not None:
+        print(f"Maximum Loss per Trade: ${max_loss:,.2f} on {max_loss_date.date()}")
+    else:
+        print("No losses to report.")
+
+def simulate_trading(trades_df, initial_investment):
+    """
+    Simulates trading with a given initial investment and returns the final amount.
+    Updates the trades_df with the 'Profit/Loss' column.
+    """
+    if trades_df.empty:
+        print("No trades to simulate.")
+        return initial_investment
+
+    current_amount = initial_investment
+
+    profit_losses = []
+    for _, row in trades_df.iterrows():
+        trade_direction = row['Trade Direction']
+        entry_price = row['Entry Price']
+        exit_price = row['Exit Price']
+        
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, current_amount)
+        profit_losses.append(profit_loss)
+        current_amount += profit_loss
+
+    trades_df['Profit/Loss'] = profit_losses
+
+    total_profit_loss = sum(profit_losses)
+    final_amount = current_amount
+
+    print(f"Initial Investment: ${initial_investment:,.2f}")
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Total Profit/Loss from All Trades: ${total_profit_loss:,.2f}")
+    print(f"Final Amount after All Trades: ${final_amount:,.2f}")
+
+    return final_amount
+
+def find_best_inverse_thresholds(df, 
+                                 initial_investment=16000, 
+                                 lower_candidates=None,
+                                 upper_candidates=None):
+    """
+    Brute-force search for the best (lower_threshold, upper_threshold) combination
+    to maximize total profit in the inverse gap strategy.
+    
+    By default, we test thresholds from 0.05 to 0.45 for lower_candidates
+    and from 0.55 to 0.95 for upper_candidates in increments of 0.05.
+    (You can customize these lists to be narrower or broader.)
+    """
+    if lower_candidates is None:
+        lower_candidates = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45]
+    if upper_candidates is None:
+        upper_candidates = [0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+
+    best_result = None
+    best_profit = -np.inf
+    
+    all_results = []
+
+    for lower_thr, upper_thr in itertools.product(lower_candidates, upper_candidates):
+        if lower_thr >= upper_thr:
+            continue
+
+        trades_df = analyze_trades_inverse(df, lower_threshold=lower_thr, upper_threshold=upper_thr)
+        if trades_df.empty:
+            total_profit_loss = 0
+        else:
+            trades_copy = trades_df.copy()
+            simulate_trading(trades_copy, initial_investment)
+            total_profit_loss = trades_copy['Profit/Loss'].sum()
+
+        all_results.append({
+            'Lower_Threshold': lower_thr,
+            'Upper_Threshold': upper_thr,
+            'Total_Profit': total_profit_loss
+        })
+
+        if total_profit_loss > best_profit:
+            best_profit = total_profit_loss
+            best_result = (lower_thr, upper_thr, best_profit)
+
+    results_df = pd.DataFrame(all_results)
+    results_df.sort_values('Total_Profit', ascending=False, inplace=True)
+    results_df.reset_index(drop=True, inplace=True)
+
+    print("\n=== Thresholds Optimization for Gap & Reverse ===")
+    if best_result:
+        print(f"Best Combination: (lower={best_result[0]:.2f}, upper={best_result[1]:.2f}) "
+              f"with Total Profit: ${best_result[2]:,.2f}")
+    else:
+        print("No valid threshold combination found.")
+    print("\nTop 10 Results:")
+    print(results_df.head(10).to_string(index=False))
+
+    return best_result, results_df
+
+def analyze_spy_gap_and_reverse(file_name, initial_investment):
+    """
+    Main function for the Gap & Reverse analysis with threshold optimization.
+    1) Load data
+    2) Search best threshold combination
+    3) Run final simulation with best thresholds
+    4) Print final trade stats
+    """
+    df = load_data(file_name)
+
+    best_thresholds, results_df = find_best_inverse_thresholds(df, initial_investment)
+    if not best_thresholds:
+        print("No valid thresholds were found, stopping.")
+        return None, None
+
+    best_lower, best_upper, _ = best_thresholds
+
+    trades_df = analyze_trades_inverse(df, 
+                                       lower_threshold=best_lower, 
+                                       upper_threshold=best_upper)
+
+    final_amount = simulate_trading(trades_df, initial_investment)
+
+    calculate_statistics(trades_df)
+
+    return trades_df, final_amount
+
+if __name__ == "__main__":
+    initial_investment = 16000  # $16,000
+    file_name = "D6CK32X6.csv"   # Replace with the path to your data CSV
+
+    trades, final_portfolio_value = analyze_spy_gap_and_reverse(file_name, initial_investment)
+
+    if trades is not None and not trades.empty:
+        print("\nAll Trades with Best Threshold Combination:")
+        print(trades.to_string(index=False))

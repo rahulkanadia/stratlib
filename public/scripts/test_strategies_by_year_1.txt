@@ -1,0 +1,252 @@
+"""
+Test 10 Top Strategies Year by Year from 2000-2025
+Provides: Sharpe Ratio, Success Rate, Profit, ROI, Trades for each year
+"""
+import pandas as pd
+import numpy as np
+import sys
+import os
+from datetime import datetime
+
+
+def calculate_sharpe_ratio(returns):
+    """Calculate Sharpe Ratio"""
+    if len(returns) == 0 or returns.std() == 0:
+        return 0.0
+    return returns.mean() / returns.std()
+
+STRATEGIES = {
+    'Base Gap Trading': {
+        'description': 'No filters, pure gap fade',
+        'filter': lambda df: pd.Series([True] * len(df), index=df.index)
+    },
+    'Not Friday': {
+        'description': 'Exclude Friday trades',
+        'filter': lambda df: df['Date'].dt.dayofweek != 4
+    },
+    'MA 10/20 Cross': {
+        'description': 'MA10 > MA20',
+        'filter': lambda df: df['MA10'] > df['MA20']
+    },
+    'MA10 Above': {
+        'description': 'Price > MA10',
+        'filter': lambda df: df['Close'].shift(1) > df['MA10']
+    },
+    'MA 5/10 Cross': {
+        'description': 'MA5 > MA10',
+        'filter': lambda df: df['MA5'] > df['MA10']
+    },
+    'After Green Day': {
+        'description': 'Previous close > previous open',
+        'filter': lambda df: df['Close'].shift(1) > df['Open'].shift(1)
+    },
+    'MA20 Above': {
+        'description': 'Price > MA20',
+        'filter': lambda df: df['Close'].shift(1) > df['MA20']
+    },
+    'Mean Reversion': {
+        'description': 'Price deviation from MA20 > 2%',
+        'filter': lambda df: (abs(df['Close'].shift(1) - df['MA20']) / df['MA20']) > 0.02
+    },
+    'RSI Overbought 70': {
+        'description': 'RSI > 70',
+        'filter': lambda df: df['RSI'] > 70
+    }
+}
+
+def calculate_indicators(df):
+    """Calculate all technical indicators"""
+    df['MA5'] = df['Close'].rolling(window=5).mean().shift(1)
+    df['MA10'] = df['Close'].rolling(window=10).mean().shift(1)
+    df['MA20'] = df['Close'].rolling(window=20).mean().shift(1)
+
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = (100 - (100 / (1 + rs))).shift(1)
+
+    return df
+
+def analyze_trades(df, filter_condition, initial_investment=16000):
+    """Analyze trades based on filter condition"""
+    trades = []
+    total_days = len(df)
+
+    for i in range(1, total_days):
+        prev_day = df.iloc[i - 1]
+        curr_day = df.iloc[i]
+
+        if not filter_condition.iloc[i]:
+            continue
+
+        gap = curr_day['Open'] - prev_day['Close']
+
+        if abs(gap) < 0.20:
+            continue
+
+        if gap > 0:
+            trade_direction = "SHORT"
+        else:
+            trade_direction = "LONG"
+
+        entry_price = curr_day['Open']
+
+        if trade_direction == "LONG":
+            if curr_day['High'] >= prev_day['Close']:
+                exit_price = prev_day['Close']
+                gap_closed = True
+            else:
+                exit_price = curr_day['Close']
+                gap_closed = False
+        else:  # SHORT
+            if curr_day['Low'] <= prev_day['Close']:
+                exit_price = prev_day['Close']
+                gap_closed = True
+            else:
+                exit_price = curr_day['Close']
+                gap_closed = False
+
+        if trade_direction == "LONG":
+            profit_loss = ((exit_price - entry_price) / entry_price) * initial_investment
+        else:  # SHORT
+            profit_loss = ((entry_price - exit_price) / entry_price) * initial_investment
+
+        trades.append({
+            'date': curr_day['Date'],
+            'profit': profit_loss
+        })
+
+    return pd.DataFrame(trades)
+
+def test_strategy_by_year(data_file, strategy_name, strategy_config):
+    """Test a strategy year by year"""
+    print(f"\nTesting: {strategy_name}...")
+
+    df = pd.read_csv(data_file)
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.sort_values('Date').reset_index(drop=True)
+
+    df = calculate_indicators(df)
+
+    filter_condition = strategy_config['filter'](df)
+
+    df['Year'] = df['Date'].dt.year
+    years = sorted(df['Year'].unique())
+
+    results = []
+
+    for year in years:
+        year_df = df[df['Year'] == year].reset_index(drop=True)
+        year_filter = filter_condition[df['Year'] == year].reset_index(drop=True)
+
+        trades_df = analyze_trades(year_df, year_filter)
+
+        if len(trades_df) == 0:
+            results.append({
+                'Year': year,
+                'Total Trades': 0,
+                'Success Rate': 0,
+                'Total Profit': 0,
+                'ROI': 0,
+                'Sharpe Ratio': 0,
+                'Avg Win': 0,
+                'Avg Loss': 0
+            })
+            continue
+
+        winning_trades = len(trades_df[trades_df['profit'] > 0])
+        total_trades = len(trades_df)
+        success_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+
+        total_profit = trades_df['profit'].sum()
+        roi = (total_profit / 16000) * 100
+        sharpe = calculate_sharpe_ratio(trades_df['profit'])
+
+        wins = trades_df[trades_df['profit'] > 0]['profit']
+        losses = trades_df[trades_df['profit'] <= 0]['profit']
+        avg_win = wins.mean() if len(wins) > 0 else 0
+        avg_loss = losses.mean() if len(losses) > 0 else 0
+
+        results.append({
+            'Year': year,
+            'Total Trades': total_trades,
+            'Success Rate': round(success_rate, 2),
+            'Total Profit': round(total_profit, 2),
+            'ROI': round(roi, 2),
+            'Sharpe Ratio': round(sharpe, 3),
+            'Avg Win': round(avg_win, 2),
+            'Avg Loss': round(avg_loss, 2)
+        })
+
+    return pd.DataFrame(results)
+
+def main():
+    print("=" * 100)
+    print("HISTORICAL STRATEGY TESTING: 2000-2025")
+    print("Testing 10 strategies year by year with full metrics")
+    print("=" * 100)
+    print()
+
+    data_file = "QQQ_2000_2025_complete.csv"
+
+    if not os.path.exists(data_file):
+        print(f"ERROR: {data_file} not found!")
+        print("Please run download_historical_data.py first")
+        return
+
+    all_results = {}
+
+    for i, (strategy_name, strategy_config) in enumerate(STRATEGIES.items(), 1):
+        print(f"[{i}/9] {strategy_name}")
+        results_df = test_strategy_by_year(data_file, strategy_name, strategy_config)
+        all_results[strategy_name] = results_df
+
+    print("\n" + "=" * 100)
+    print("CREATING SUMMARY FILES")
+    print("=" * 100)
+
+    for strategy_name, results_df in all_results.items():
+        filename = f"results_{strategy_name.replace(' ', '_').replace('/', '_')}.csv"
+        results_df.to_csv(filename, index=False)
+        print(f"✓ Saved: {filename}")
+
+    with pd.ExcelWriter('MASTER_HISTORICAL_RESULTS.xlsx', engine='openpyxl') as writer:
+        for strategy_name, results_df in all_results.items():
+            sheet_name = strategy_name.replace('/', '_')[:31]  # Excel sheet name limit, remove invalid chars
+            results_df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        summary_data = []
+        for strategy_name, results_df in all_results.items():
+            summary_data.append({
+                'Strategy': strategy_name,
+                'Avg Success Rate': results_df['Success Rate'].mean(),
+                'Avg Sharpe': results_df['Sharpe Ratio'].mean(),
+                'Total Profit (All Years)': results_df['Total Profit'].sum(),
+                'Avg Annual ROI': results_df['ROI'].mean(),
+                'Total Trades (All Years)': results_df['Total Trades'].sum(),
+                'Years Profitable': len(results_df[results_df['Total Profit'] > 0]),
+                'Years Tested': len(results_df)
+            })
+
+        summary_df = pd.DataFrame(summary_data)
+        summary_df.to_excel(writer, sheet_name='Summary', index=False)
+
+    print(f"✓ Saved: MASTER_HISTORICAL_RESULTS.xlsx")
+
+    print("\n" + "=" * 100)
+    print("OVERALL SUMMARY (2000-2025)")
+    print("=" * 100)
+    print()
+
+    summary_df = pd.DataFrame(summary_data)
+    summary_df = summary_df.sort_values('Avg Sharpe', ascending=False)
+
+    print(summary_df.to_string(index=False))
+
+    print("\n" + "=" * 100)
+    print("COMPLETE! Check the Excel file for detailed year-by-year analysis")
+    print("=" * 100)
+
+if __name__ == "__main__":
+    main()

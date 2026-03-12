@@ -1,0 +1,368 @@
+import pandas as pd
+import numpy as np
+import os
+from itertools import product
+
+
+def load_data(file_name):
+    """
+    טוען את קובץ ה-S&P 500 (למשל D6CK32X6.csv), ממיין לפי תאריך ומאתחל אינדקס.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    """
+    טוען את קובץ ה-VIX (למשל VIX_History.csv), ממיין לפי תאריך ומאתחל אינדקס.
+    מצפה שהעמודה הראשית של התאריך היא 'DATE', עם מחירי OPEN, HIGH, LOW, CLOSE וכו'.
+    """
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df.dropna(subset=['Date'], inplace=True)  # מוודאים שיש תאריך תקין
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+
+def calculate_vix_atr(vix_df, lookback):
+    """
+    מחשב את ערך ה-ATR על ה-VIX עבור חלון (lookback) ימים.
+    שיטת החישוב: True Range => max(High-Low, High-PrevClose, Low-PrevClose),
+    ואז ממוצע נע (rolling mean) לתקופת ה-lookback.
+    """
+    df = vix_df.copy()
+    df['PrevClose'] = df['CLOSE'].shift(1)
+    df['High-Low'] = df['HIGH'] - df['LOW']
+    df['High-PrevClose'] = abs(df['HIGH'] - df['PrevClose'])
+    df['Low-PrevClose'] = abs(df['LOW'] - df['PrevClose'])
+    df['TR'] = df[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+    df['VIX_ATR'] = df['TR'].rolling(window=lookback).mean()
+    return df
+
+
+def merge_spy_vix(spy_df, vix_df_with_atr):
+    """
+    ממזג בין נתוני ה-S&P 500 לנתוני ה-VIX (כולל VIX_ATR) על בסיס 'Date'.
+    """
+    merged_df = pd.merge(
+        spy_df,
+        vix_df_with_atr[['Date', 'VIX_ATR']],
+        on='Date',
+        how='left'
+    )
+    return merged_df
+
+
+def calculate_day_range(day):
+    """
+    מחזיר את הטווח (High - Low) של יום נתון.
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    מחזיר את הגאפ בין סגירת היום הקודם לפתיחת היום הנוכחי.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    """
+    תנאי למינימום גאפ:
+      - לפחות $0.20
+      - בין 15% ל-85% מטווח היום הקודם
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return (0.15 <= gap_percentage <= 0.85)
+
+def determine_trade_direction(gap):
+    """
+    בוחר כיוון טרייד:
+      - gap חיובי => Short
+      - gap שלילי => Long
+    """
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """
+    בודק אם הגאפ נסגר באותו יום ומחזיר את מחיר היציאה (exit_price).
+    """
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    מחשב רווח/הפסד (Profit/Loss) לטרייד בודד בהתבסס על סכום ההשקעה position_size.
+    """
+    num_shares = position_size / entry_price
+    if trade_direction == 'Long':
+        pl = num_shares * (exit_price - entry_price)
+    else:  # Short
+        pl = num_shares * (entry_price - exit_price)
+    return pl
+
+
+def simulate_trades_with_atr_filter(spy_vix_df,
+                                    initial_investment,
+                                    lookback_atr,
+                                    atr_threshold,
+                                    freeze_days_atr):
+    """
+    מריץ אסטרטגיית גאפ עם מסנן המבוסס על ATR של ה-VIX:
+      - אם VIX_ATR > atr_threshold ביום מסוים => לא נכנסים לפוזיציות למשך freeze_days_atr ימים (כולל היום הנוכחי).
+      - מחשב רווח/הפסד כולל, מחזיר טבלת טריידים ורשימת skipped_days שבהם לא נסחרנו בגלל הקפאה.
+    """
+    trades = []
+    skipped_days = []  # הימים שבהם לא נסחר בגלל הקפאה
+    freeze_counter = 0  # מונה ימים בהקפאה
+
+    total_days = len(spy_vix_df)
+
+    for i in range(1, total_days):
+        current_day = spy_vix_df.iloc[i]
+        prev_day = spy_vix_df.iloc[i - 1]
+        curr_date = current_day['Date']
+
+        if freeze_counter > 0:
+            freeze_counter -= 1
+            skipped_days.append(curr_date)
+            continue  # לא נסחור היום
+
+        vix_atr_value = current_day['VIX_ATR']
+        if pd.notna(vix_atr_value) and vix_atr_value > atr_threshold:
+            freeze_counter = freeze_days_atr
+            skipped_days.append(curr_date)
+            continue  # לא נסחור היום
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+
+        gap = calculate_gap(prev_day['Close'], current_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+        entry_price = current_day['Open']
+        exit_price, gap_closed = check_gap_closure(trade_direction, current_day, prev_day['Close'])
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+
+        trades.append({
+            'Date': curr_date,
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed,
+            'Profit/Loss': profit_loss
+        })
+
+    trades_df = pd.DataFrame(trades)
+    if not trades_df.empty:
+        total_profit = trades_df['Profit/Loss'].sum()
+        occurrence_count = len(trades_df)
+        success_count = (trades_df['Profit/Loss'] > 0).sum()
+        success_rate = success_count / occurrence_count
+    else:
+        total_profit = 0.0
+        occurrence_count = 0
+        success_count = 0
+        success_rate = 0.0
+
+    results = {
+        'trades_df': trades_df,
+        'total_profit': total_profit,
+        'success_rate': success_rate,
+        'occurrence_count': occurrence_count,
+        'success_count': success_count,
+        'skipped_days': skipped_days
+    }
+    return results
+
+
+def optimize_atr_filter(spy_df,
+                        vix_df,
+                        initial_investment,
+                        lookback_atr_values,
+                        atr_threshold_values,
+                        freeze_days_atr_values):
+    """
+    מריץ לולאה על כל הצירופים (lookback_atr, atr_threshold, freeze_days_atr),
+    ומחזיר טבלת תוצאות + הפרמטרים האופטימליים.
+    """
+    results_list = []
+
+    for lb, thr, fz in product(lookback_atr_values, atr_threshold_values, freeze_days_atr_values):
+        vix_df_atr = calculate_vix_atr(vix_df, lb)
+        merged_df = merge_spy_vix(spy_df, vix_df_atr)
+        res = simulate_trades_with_atr_filter(
+            spy_vix_df=merged_df,
+            initial_investment=initial_investment,
+            lookback_atr=lb,
+            atr_threshold=thr,
+            freeze_days_atr=fz
+        )
+
+        results_list.append({
+            'lookback_atr': lb,
+            'atr_threshold': thr,
+            'freeze_days_atr': fz,
+            'Occurrences': res['occurrence_count'],
+            'Successes': res['success_count'],
+            'SuccessRate': res['success_rate'],
+            'TotalProfit': res['total_profit'],
+            'SkippedDays': res['skipped_days'],
+            'Trades': res['trades_df']
+        })
+
+    results_df = pd.DataFrame(results_list)
+    results_df.sort_values(by='TotalProfit', ascending=False, inplace=True)
+    results_df.reset_index(drop=True, inplace=True)
+
+    if not results_df.empty:
+        best_params = results_df.iloc[0]
+        best_lookback = best_params['lookback_atr']
+        best_threshold = best_params['atr_threshold']
+        best_freeze = best_params['freeze_days_atr']
+        best_trades = best_params['Trades']
+        best_skipped = best_params['SkippedDays']
+        best_total_profit = best_params['TotalProfit']
+        best_success_rate = best_params['SuccessRate']
+    else:
+        best_lookback = None
+        best_threshold = None
+        best_freeze = None
+        best_trades = pd.DataFrame()
+        best_skipped = []
+        best_total_profit = 0.0
+        best_success_rate = 0.0
+
+    return results_df, (
+        best_lookback,
+        best_threshold,
+        best_freeze,
+        best_total_profit,
+        best_success_rate,
+        best_trades,
+        best_skipped
+    )
+
+
+def analyze_spy_gaps_filter_atr(main_file,
+                                vix_file,
+                                initial_investment=16000,
+                                lookback_atr_values=range(5, 16),      # X: לדוגמה 5..15
+                                atr_threshold_values=np.arange(2.0, 5.1, 0.5),  # Y: לדוגמה [2, 2.5, 3, 3.5, 4, 4.5, 5]
+                                freeze_days_atr_values=range(1, 5)):  # Z: לדוגמה 1..4
+    """
+    פונקציית כניסה ראשית:
+    1) טוענת נתוני S&P (D6CK32X6.csv) ו-VIX (VIX_History.csv).
+    2) מריצה אופטימיזציה על שלושת הפרמטרים:
+         - lookback_atr (X)
+         - atr_threshold (Y)
+         - freeze_days_atr (Z)
+    3) מציגה בטבלה את התוצאות המובילות, ומדפיסה את הפרמטרים האופטימליים.
+    4) מציגה את רשימת הימים שהוציא מהמסחר ואת טבלת הטריידים של הפרמטרים הטובים ביותר.
+    """
+
+    if not os.path.exists(main_file):
+        print(f"Error: Main data file '{main_file}' not found.")
+        return
+    if not os.path.exists(vix_file):
+        print(f"Error: VIX data file '{vix_file}' not found.")
+        return
+
+    print("Loading S&P 500 data...")
+    spy_df = load_data(main_file)
+    print("Loading VIX data...")
+    vix_df = load_vix_data(vix_file)
+
+    print(f"\n=== Starting Optimization over {main_file} & {vix_file} ===")
+    print("Parameter Ranges:")
+    print(f"  lookback_atr_values: {list(lookback_atr_values)}")
+    print(f"  atr_threshold_values: {list(atr_threshold_values)}")
+    print(f"  freeze_days_atr_values: {list(freeze_days_atr_values)}")
+
+    results_df, best_info = optimize_atr_filter(
+        spy_df=spy_df,
+        vix_df=vix_df,
+        initial_investment=initial_investment,
+        lookback_atr_values=lookback_atr_values,
+        atr_threshold_values=atr_threshold_values,
+        freeze_days_atr_values=freeze_days_atr_values
+    )
+
+    (best_lookback,
+     best_threshold,
+     best_freeze,
+     best_total_profit,
+     best_success_rate,
+     best_trades,
+     best_skipped) = best_info
+
+    print("\n=== Top 10 Results (sorted by TotalProfit) ===")
+    if not results_df.empty:
+        display_cols = ['lookback_atr', 'atr_threshold', 'freeze_days_atr',
+                        'Occurrences', 'SuccessRate', 'TotalProfit']
+        print(results_df.head(10)[display_cols].to_string(index=False))
+    else:
+        print("No results to display (empty).")
+
+    print("\n=== Best Parameters ===")
+    if best_lookback is not None:
+        print(f"Best lookback_atr (X): {best_lookback}")
+        print(f"Best atr_threshold (Y): {best_threshold}")
+        print(f"Best freeze_days_atr (Z): {best_freeze}")
+        print(f"Best Total Profit: {best_total_profit:,.2f}")
+        print(f"Best Success Rate: {best_success_rate:.2f}")
+        print(f"Number of Trades in Best: {len(best_trades)}")
+    else:
+        print("No valid parameter combination found.")
+
+    print("\n=== Days Skipped with Best Parameters ===")
+    if best_skipped:
+        skipped_series = pd.Series(best_skipped).drop_duplicates().sort_values()
+        print(skipped_series.to_string(index=False))
+    else:
+        print("No days were skipped.")
+
+    print("\n=== Trades Table for Best Parameters ===")
+    if not best_trades.empty:
+        print(best_trades.to_string(index=False))
+    else:
+        print("No trades executed under the best parameters.")
+
+
+    return results_df, best_info
+
+
+
+if __name__ == "__main__":
+    main_file = 'D6CK32X6.csv'      # נתוני S&P 500
+    vix_file = 'VIX_History.csv'    # נתוני VIX
+    initial_investment = 16000      # הון התחלתי לדוגמה
+
+    analyze_spy_gaps_filter_atr(
+        main_file=main_file,
+        vix_file=vix_file,
+        initial_investment=initial_investment,
+        lookback_atr_values=range(5, 16),           # X
+        atr_threshold_values=np.arange(2.0, 5.1, 0.5),  # Y
+        freeze_days_atr_values=range(1, 5)          # Z
+    )

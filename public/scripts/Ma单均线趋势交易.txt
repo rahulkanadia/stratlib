@@ -1,0 +1,149 @@
+
+> 策略名称
+
+Ma单均线趋势交易
+
+> 策略作者
+
+ipqhjjybj
+
+
+
+
+
+> 源码 (javascript)
+
+``` javascript
+
+
+MA_Length  			=	120	   
+trailingPrcnt 		=   15    
+LoopInterval  		=   60 	   
+SlidePrice          =	0.3    
+function adjustFloat(v) {
+    return Math.floor(v*1000)/1000;
+}
+
+
+function CancelPendingOrders() {
+    while (true) {
+        var orders = null;
+        while (!(orders = exchange.GetOrders())) {
+            Sleep(Interval);
+        }
+
+        if (orders.length == 0) {
+            return;
+        }
+
+        for (var j = 0; j < orders.length; j++) {
+            exchange.CancelOrder(orders[j].Id, orders[j]);
+            if (j < (orders.length-1)) {
+                Sleep(Interval);
+            }
+        }
+    }
+}
+
+function GetAccount() {
+    var account;
+    while (!(account = exchange.GetAccount())) {
+        Sleep(Interval);
+    }
+    return account;
+}
+
+
+function GetTicker() {
+    var ticker;
+    while (!(ticker = exchange.GetTicker())) {
+        Sleep(Interval);
+    }
+    return ticker;
+}
+
+var minMoney			= 100;		
+var LastRecord 			= null;		
+
+
+function onTick(exchange) {
+
+	var ticker = GetTicker();
+    
+    CancelPendingOrders();
+    var account = GetAccount();
+
+    if (true) {
+        var records = exchange.GetRecords();
+        if (!records || records.length < (MA_Length + 3)) {
+            return;
+        }
+        
+        var newLast = records[records.length-1];
+        if ((!LastRecord) || (LastRecord.Time == newLast.Time && LastRecord.Close == newLast.Close)) {
+            LastRecord = newLast;
+            return;
+        }
+        LastRecord = newLast;
+
+        var kk_MA = TA.MA(records , MA_Length);
+
+        var ma_inc = kk_MA[kk_MA.length-1] / kk_MA[kk_MA.length-2];
+
+        Log( "kk_MA 1", kk_MA[kk_MA.length-1] , "kk_MA 2", kk_MA[kk_MA.length-2] )
+        
+        
+        
+        
+        
+
+        
+        if( account.Stocks <= exchange.GetMinStock() ){
+        	if(ma_inc > 1.000001){
+
+        		var price = ticker.Last + SlidePrice;
+		        var amount = adjustFloat(account.Balance / price);
+		        if (account.Balance > minMoney && amount >= exchange.GetMinStock()) {
+		        	Log("start buy");
+		        	if (exchange.Buy(price, amount, "做多")) {
+		        		LastBuyPrice = LastHighPrice = price;
+		        	}
+		        } 
+        	}
+        }
+        else if( exchange.GetMinStock() < account.Stocks ){
+        	if(ma_inc < 0.999999){	
+        		var price = ticker.Last - SlidePrice;
+		    	var sellAmount = account.Stocks;
+		    	if (sellAmount > exchange.GetMinStock()) {
+		    		Log("start sell");
+		    		exchange.Sell(ticker.Last - SlidePrice, sellAmount, "卖出");
+		    		LastSellPrice = LastLowPrice = price;
+		    	} 
+        	}
+        }
+    }
+}
+
+
+function main() {
+    InitAccount = GetAccount();
+    Log(exchange.GetName(), exchange.GetCurrency(), InitAccount);
+
+    LoopInterval = Math.max(LoopInterval, 1);  
+    while (true) {
+        onTick(exchange);
+        Sleep(LoopInterval*1000);
+    }
+}
+
+
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2017-06-04 21:55:07

@@ -1,0 +1,65 @@
+import pandas as pd
+import numpy as np
+from base_strategy import GapStrategy
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from gap_utils import *
+
+class After2RedDaysStrategy(GapStrategy):
+    """
+    After 2 Red Days Strategy
+    Success Rate: 71.93% | Total Profit: $6,084.76 | Trades: 228
+    
+    This strategy trades gaps after two consecutive red days, a less restrictive
+    version that generates more signals than the 3-day version.
+    """
+    
+    def __init__(self):
+        super().__init__(
+            name="After 2 Red Days",
+            description="Fade gaps after two consecutive red days"
+        )
+    
+    def calculate_indicators(self, df):
+        """Calculate consecutive red days pattern"""
+        df['IsRedDay'] = (df['Close'] < df['Open']).astype(bool)
+        
+        df['PrevDayRed'] = df['IsRedDay'].shift(1).fillna(False)
+        df['Prev2DaysRed'] = (df['PrevDayRed'] & df['IsRedDay'].shift(2)).fillna(False)
+        
+        return df
+    
+    def get_filter_condition(self, df):
+        """Must have 2 consecutive red days before current day"""
+        return df['Prev2DaysRed']
+
+def main():
+    """Run the strategy"""
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv') and f not in ['gap_strategies_all_results.csv', 'gap_strategies_top10_profit.csv', 'gap_strategies_top10_success_rate.csv']]
+    
+    if csv_files:
+        data_file = csv_files[0]
+        print(f"Using data file: {data_file}")
+    else:
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_file = os.path.join(parent_dir, '..', '7J0OK1VR.csv')
+        if not os.path.exists(data_file):
+            print("Error: No CSV data file found. Please place a CSV file in the current directory.")
+            return
+    
+    strategy = After2RedDaysStrategy()
+    
+    try:
+        stats, trades_df = strategy.run_strategy(data_file)
+        strategy.print_results(stats, trades_df)
+        
+        output_file = f"{strategy.name.replace(' ', '_')}_trades.csv"
+        trades_df.to_csv(output_file, index=False)
+        print(f"Trade details saved to: {output_file}")
+        
+    except Exception as e:
+        print(f"Error running strategy: {e}")
+
+if __name__ == "__main__":
+    main()

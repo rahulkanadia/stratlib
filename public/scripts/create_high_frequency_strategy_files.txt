@@ -1,0 +1,333 @@
+import pandas as pd
+import os
+import sys
+
+def create_strategy_file(rank, strategy_name, indicator1, indicator2, success_rate, 
+                        total_trades, total_profit, roi, file_prefix):
+    """Create individual Python file for a top high-frequency strategy"""
+    
+    filename = f"{file_prefix}_{rank:02d}_{strategy_name.replace(' + ', '_AND_').replace(' ', '_').lower()}.py"
+    
+    content = f'''import pandas as pd
+import numpy as np
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from gap_utils import *
+
+class {strategy_name.replace(" + ", "And").replace(" ", "").replace("-", "").replace("_", "")}HighFrequencyStrategy:
+    """
+    High-Frequency Two-Indicator Strategy: {strategy_name}
+    Success Rate: {success_rate:.2f}% | Total Profit: ${total_profit:,.2f} | Trades: {total_trades}
+    
+    This HIGH-FREQUENCY strategy combines:
+    1. {indicator1}
+    2. {indicator2}
+    
+    Minimum Trade Requirement: 100+ trades (ACHIEVED: {total_trades} trades)
+    """
+    
+    def __init__(self):
+        self.name = "{strategy_name} (High-Frequency)"
+        self.indicator1 = "{indicator1}"
+        self.indicator2 = "{indicator2}"
+        self.initial_investment = 16000
+        self.min_trades_required = 100
+        
+    def calculate_indicators(self, df):
+        """Calculate required indicators"""
+        {get_indicator_calculations(indicator1, indicator2)}
+        
+        return df
+    
+    def get_filter_conditions(self, df):
+        """Get the two indicator conditions"""
+        condition1 = {get_condition_code(indicator1)}
+        
+        condition2 = {get_condition_code(indicator2)}
+        
+        return condition1 & condition2
+    
+    def run_strategy(self, data_file):
+        """Run the complete high-frequency strategy"""
+        df = load_data(data_file)
+        
+        df = self.calculate_indicators(df)
+        
+        filter_condition = self.get_filter_conditions(df)
+        
+        trades = []
+        for i in range(1, len(df)):
+            if not filter_condition.iloc[i]:
+                continue
+                
+            prev_day = df.iloc[i - 1]
+            curr_day = df.iloc[i]
+            
+            gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+            if not is_gap_valid(gap):
+                continue
+            
+            trade_direction = determine_trade_direction(gap)
+            entry_price = curr_day['Open']
+            exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+            
+            profit_loss = calculate_profit_loss(
+                trade_direction, entry_price, exit_price, self.initial_investment
+            )
+            
+            trades.append({{
+                'Date': curr_day['Date'],
+                'Trade Direction': trade_direction,
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'Gap': gap,
+                'Gap Closed': gap_closed,
+                'Profit/Loss': profit_loss
+            }})
+        
+        trades_df = pd.DataFrame(trades)
+        
+        if len(trades_df) < self.min_trades_required:
+            print(f"WARNING: Strategy only generated {{len(trades_df)}} trades, below high-frequency threshold of {{self.min_trades_required}}")
+        
+        stats = calculate_statistics(trades_df, self.name, self.initial_investment)
+        
+        return stats, trades_df
+    
+    def print_results(self, stats, trades_df):
+        """Print formatted results"""
+        print(f"\\\\n{{'='*70}}")
+        print(f"{{self.name}} - High-Frequency Gap Trading Strategy")
+        print(f"{{'='*70}}")
+        print(f"Indicators: {{self.indicator1}} + {{self.indicator2}}")
+        print(f"High-Frequency Classification: {{len(trades_df)}} trades (requirement: {{self.min_trades_required}}+)")
+        print(f"\\\\nStrategy Performance:")
+        print(f"Total Trades: {{stats['Total Trades']}}")
+        print(f"Success Rate: {{stats['Success Rate']:.2f}}%")
+        print(f"Total Profit: ${{stats['Total Profit']:,.2f}}")
+        print(f"Average Profit per Trade: ${{stats['Total Profit']/max(1, stats['Total Trades']):.2f}}")
+        print(f"ROI: {{stats['ROI']:.2f}}%")
+        print(f"Final Equity: ${{stats['Final Equity']:,.2f}}")
+        
+        if len(trades_df) > 0:
+            profitable_trades = len(trades_df[trades_df['Profit/Loss'] > 0])
+            avg_win = trades_df[trades_df['Profit/Loss'] > 0]['Profit/Loss'].mean() if profitable_trades > 0 else 0
+            avg_loss = trades_df[trades_df['Profit/Loss'] < 0]['Profit/Loss'].mean() if len(trades_df) - profitable_trades > 0 else 0
+            max_win = trades_df['Profit/Loss'].max()
+            max_loss = trades_df['Profit/Loss'].min()
+            
+            print(f"\\\\nHigh-Frequency Analytics:")
+            print(f"Trades per Year: {{len(trades_df) / 5:.1f}}")  # 5-year period
+            print(f"Average Win: ${{avg_win:.2f}}")
+            print(f"Average Loss: ${{avg_loss:.2f}}")
+            print(f"Largest Win: ${{max_win:.2f}}")
+            print(f"Largest Loss: ${{max_loss:.2f}}")
+            print(f"Win/Loss Ratio: {{abs(avg_win/avg_loss):.2f if avg_loss != 0 else 'N/A'}}")
+        
+        print(f"{{'='*70}}\\\\n")
+
+def main():
+    """Run the high-frequency strategy"""
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv') 
+                and not f.startswith('high_frequency')]
+    
+    if csv_files:
+        data_file = csv_files[0]
+    else:
+        data_file = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/7J0OK1VR.csv'
+        if not os.path.exists(data_file):
+            print("Error: No CSV data file found.")
+            return
+    
+    print(f"Using data file: {{data_file}}")
+    
+    strategy = {strategy_name.replace(" + ", "And").replace(" ", "").replace("-", "").replace("_", "")}HighFrequencyStrategy()
+    
+    try:
+        stats, trades_df = strategy.run_strategy(data_file)
+        strategy.print_results(stats, trades_df)
+        
+        output_file = f"{{strategy.name.replace(' ', '_').replace('(', '').replace(')', '')}}_trades.csv"
+        trades_df.to_csv(output_file, index=False)
+        print(f"Trade details saved to: {{output_file}}")
+        
+    except Exception as e:
+        print(f"Error running high-frequency strategy: {{e}}")
+
+if __name__ == "__main__":
+    main()
+'''
+    
+    with open(filename, 'w') as f:
+        f.write(content)
+    
+    return filename
+
+def get_indicator_calculations(indicator1, indicator2):
+    """Generate calculation code based on indicators"""
+    calculations = []
+    indicators = [indicator1, indicator2]
+    
+    needs_sma = any('MA' in ind and 'EMA' not in ind for ind in indicators)
+    needs_ema = any('EMA' in ind for ind in indicators)
+    needs_rsi = any('RSI' in ind for ind in indicators)
+    needs_bb = any('BB' in ind or 'Bollinger' in ind for ind in indicators)
+    needs_atr = any('ATR' in ind or 'Range' in ind for ind in indicators)
+    needs_macd = any('MACD' in ind for ind in indicators)
+    needs_stoch = any('Stoch' in ind for ind in indicators)
+    needs_volume = any('Volume' in ind or 'OBV' in ind for ind in indicators)
+    needs_patterns = any('Red' in ind or 'Green' in ind or 'Engulfing' in ind for ind in indicators)
+    
+    if needs_sma:
+        calculations.append("""
+        for period in [5, 10, 20, 50, 100, 200]:
+            df[f'SMA_{period}'] = calculate_sma(df, period)""")
+    
+    if needs_ema:
+        calculations.append("""
+        for period in [5, 10, 20, 50]:
+            df[f'EMA_{period}'] = calculate_ema(df, period)""")
+    
+    if needs_rsi:
+        calculations.append("""
+        df['RSI'] = calculate_rsi(df, 14)
+        df['RSI_5'] = calculate_rsi(df, 5)
+        df['RSI_21'] = calculate_rsi(df, 21)""")
+    
+    if needs_bb:
+        calculations.append("""
+        upper_bb, middle_bb, lower_bb = calculate_bollinger_bands(df)
+        df['BB_Upper'] = upper_bb
+        df['BB_Middle'] = middle_bb
+        df['BB_Lower'] = lower_bb""")
+    
+    if needs_atr:
+        calculations.append("""
+        df['ATR'] = calculate_atr(df, 14)
+        df['High_Low_Range'] = (df['High'] - df['Low']).shift(1)""")
+    
+    if needs_macd:
+        calculations.append("""
+        macd_line, signal_line = calculate_macd(df)
+        df['MACD'] = macd_line
+        df['MACD_Signal'] = signal_line""")
+    
+    if needs_stoch:
+        calculations.append("""
+        k_percent, d_percent = calculate_stochastic(df)
+        df['Stoch_K'] = k_percent
+        df['Stoch_D'] = d_percent""")
+    
+    if needs_volume:
+        calculations.append("""
+        df['Volume_SMA'] = df['Volume'].rolling(window=20).mean().shift(1)
+        df['Volume_Ratio'] = (df['Volume'] / df['Volume_SMA']).shift(1)
+        df['OBV'] = calculate_obv(df)""")
+    
+    if needs_patterns:
+        calculations.append("""
+        df['PrevDayRed'] = (df['Close'] < df['Open']).shift(1).fillna(False)
+        df['Prev2DaysRed'] = (df['PrevDayRed'] & df['PrevDayRed'].shift(1)).fillna(False)
+        df['Prev3DaysRed'] = (df['Prev2DaysRed'] & df['PrevDayRed'].shift(2)).fillna(False)""")
+    
+    if any(day in ind for day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'] for ind in indicators):
+        calculations.append("""
+        df['DayOfWeek'] = pd.to_datetime(df['Date']).dt.dayofweek""")
+    
+    return '\\n'.join(calculations) if calculations else "# No additional calculations needed"
+
+def get_condition_code(indicator):
+    """Get the condition code for a specific indicator"""
+    conditions_map = {
+        "MA5_Above": "df['Close'].shift(1) > df['SMA_5']",
+        "MA10_Above": "df['Close'].shift(1) > df['SMA_10']",
+        "MA20_Above": "df['Close'].shift(1) > df['SMA_20']",
+        "MA50_Above": "df['Close'].shift(1) > df['SMA_50']",
+        "MA100_Above": "df['Close'].shift(1) > df['SMA_100']",
+        "MA200_Above": "df['Close'].shift(1) > df['SMA_200']",
+        "MA_5_10_Cross": "df['SMA_5'] > df['SMA_10']",
+        "MA_10_20_Cross": "df['SMA_10'] > df['SMA_20']",
+        "MA_20_50_Cross": "df['SMA_20'] > df['SMA_50']",
+        "MA_50_200_Cross": "df['SMA_50'] > df['SMA_200']",
+        "EMA5_Above": "df['Close'].shift(1) > df['EMA_5']",
+        "EMA10_Above": "df['Close'].shift(1) > df['EMA_10']",
+        "EMA20_Above": "df['Close'].shift(1) > df['EMA_20']",
+        "EMA50_Above": "df['Close'].shift(1) > df['EMA_50']",
+        "RSI_Oversold_30": "df['RSI'] < 30",
+        "RSI_Oversold_35": "df['RSI'] < 35",
+        "RSI_Overbought_70": "df['RSI'] > 70",
+        "RSI_Overbought_65": "df['RSI'] > 65",
+        "Price_Below_BB_Lower": "df['Close'].shift(1) < df['BB_Lower']",
+        "Price_Above_BB_Upper": "df['Close'].shift(1) > df['BB_Upper']",
+        "High_Volume": "df['Volume_Ratio'] > 1.5",
+        "Volume_Spike": "df['Volume_Ratio'] > 2.0",
+        "Monday": "df['DayOfWeek'] == 0",
+        "Tuesday": "df['DayOfWeek'] == 1",
+        "Wednesday": "df['DayOfWeek'] == 2",
+        "Thursday": "df['DayOfWeek'] == 3",
+        "Friday": "df['DayOfWeek'] == 4",
+        "After_Red_Day": "df['PrevDayRed']",
+        "After_2_Red_Days": "df['Prev2DaysRed']",
+        "After_3_Red_Days": "df['Prev3DaysRed']",
+        "MACD_Cross_Down": "(df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))",
+        "Stoch_Oversold": "df['Stoch_K'] < 20",
+        "Stoch_Overbought": "df['Stoch_K'] > 80",
+    }
+    
+    return conditions_map.get(indicator, "pd.Series([True]*len(df))")
+
+def create_top_high_frequency_strategies():
+    """Create individual files for top high-frequency strategies"""
+    print("Creating individual strategy files for top high-frequency performers...")
+    
+    csv_locations = [
+        'high_frequency_all_results.csv',
+        '/mnt/c/Windows/System32/high_frequency_all_results.csv',
+        '../high_frequency_all_results.csv'
+    ]
+    
+    all_results = None
+    for location in csv_locations:
+        try:
+            all_results = pd.read_csv(location)
+            print(f"Found high-frequency results file at: {location}")
+            break
+        except:
+            continue
+    
+    if all_results is None:
+        print("Error: Could not find high_frequency_all_results.csv")
+        print("Please run high_frequency_strategy_generator.py first!")
+        return
+    
+    top_success = all_results.nlargest(10, 'Success Rate')
+    print(f"\\nCreating files for top 10 high-frequency strategies by success rate...")
+    
+    for i, row in enumerate(top_success.iterrows(), 1):
+        _, data = row
+        filename = create_strategy_file(
+            i, data['Strategy'], data['Indicator1'], data['Indicator2'],
+            data['Success Rate'], data['Total Trades'], data['Total Profit'],
+            data['ROI'], 'hf_success'
+        )
+        print(f"Created: {filename}")
+    
+    top_profit = all_results.nlargest(10, 'Total Profit')
+    print(f"\\nCreating files for top 10 high-frequency strategies by total profit...")
+    
+    for i, row in enumerate(top_profit.iterrows(), 1):
+        _, data = row
+        filename = create_strategy_file(
+            i, data['Strategy'], data['Indicator1'], data['Indicator2'],
+            data['Success Rate'], data['Total Trades'], data['Total Profit'],
+            data['ROI'], 'hf_profit'
+        )
+        print(f"Created: {filename}")
+    
+    print("\\nAll high-frequency strategy files created successfully!")
+
+if __name__ == "__main__":
+    create_top_high_frequency_strategies()

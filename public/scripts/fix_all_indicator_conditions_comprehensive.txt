@@ -1,0 +1,187 @@
+"""Comprehensively fix all indicator conditions in all strategy files"""
+
+import os
+import re
+
+def get_comprehensive_fixes():
+    """Return a dictionary of fixes needed for each file"""
+    return {
+        "hf_profit_01_ma_5_10_cross_and_vix_low.py": {
+            "condition1": "df['SMA_5'] > df['SMA_10']",
+            "condition2": "df.get('OPEN_VIX', pd.Series([20]*len(df))) < 20",
+            "indicator1": "MA_5_10_Cross",
+            "indicator2": "VIX_Low"
+        },
+        "hf_profit_02_ma_5_10_cross_and_vix_medium.py": {
+            "condition1": "df['SMA_5'] > df['SMA_10']",
+            "condition2": "(df.get('OPEN_VIX', pd.Series([20]*len(df))) >= 20) & (df.get('OPEN_VIX', pd.Series([20]*len(df))) < 30)",
+            "indicator1": "MA_5_10_Cross",
+            "indicator2": "VIX_Medium"
+        },
+        "hf_profit_03_ma_5_10_cross_and_vix_high.py": {
+            "condition1": "df['SMA_5'] > df['SMA_10']",
+            "condition2": "df.get('OPEN_VIX', pd.Series([30]*len(df))) >= 30",
+            "indicator1": "MA_5_10_Cross",
+            "indicator2": "VIX_High"
+        },
+        "hf_profit_04_ma_5_10_cross_and_vix_rising.py": {
+            "condition1": "df['SMA_5'] > df['SMA_10']",
+            "condition2": "df.get('OPEN_VIX', pd.Series([20]*len(df))) > df.get('OPEN_VIX', pd.Series([20]*len(df))).shift(1)",
+            "indicator1": "MA_5_10_Cross",
+            "indicator2": "VIX_Rising"
+        },
+        "hf_profit_05_ma_5_10_cross_and_vix_falling.py": {
+            "condition1": "df['SMA_5'] > df['SMA_10']",
+            "condition2": "df.get('OPEN_VIX', pd.Series([20]*len(df))) < df.get('OPEN_VIX', pd.Series([20]*len(df))).shift(1)",
+            "indicator1": "MA_5_10_Cross",
+            "indicator2": "VIX_Falling"
+        },
+        "hf_profit_06_ma_5_10_cross_and_vix_spike.py": {
+            "condition1": "df['SMA_5'] > df['SMA_10']",
+            "condition2": "df.get('OPEN_VIX', pd.Series([20]*len(df))) > df.get('OPEN_VIX', pd.Series([20]*len(df))).rolling(20).mean() * 1.2",
+            "indicator1": "MA_5_10_Cross",
+            "indicator2": "VIX_Spike"
+        },
+        "hf_profit_07_ma_5_10_cross_and_vix_drop.py": {
+            "condition1": "df['SMA_5'] > df['SMA_10']",
+            "condition2": "df.get('OPEN_VIX', pd.Series([20]*len(df))) < df.get('OPEN_VIX', pd.Series([20]*len(df))).rolling(20).mean() * 0.8",
+            "indicator1": "MA_5_10_Cross",
+            "indicator2": "VIX_Drop"
+        },
+        "hf_profit_08_ma_5_10_cross_and_vix_contango.py": {
+            "condition1": "df['SMA_5'] > df['SMA_10']",
+            "condition2": "df.get('CLOSE_VIX', pd.Series([20]*len(df))) > df.get('OPEN_VIX', pd.Series([20]*len(df)))",
+            "indicator1": "MA_5_10_Cross",
+            "indicator2": "VIX_Contango"
+        },
+        "hf_profit_09_ma_5_10_cross_and_vix_below_avg.py": {
+            "condition1": "df['SMA_5'] > df['SMA_10']",
+            "condition2": "df.get('OPEN_VIX', pd.Series([20]*len(df))) < df.get('OPEN_VIX', pd.Series([20]*len(df))).rolling(50).mean()",
+            "indicator1": "MA_5_10_Cross",
+            "indicator2": "VIX_Below_Avg"
+        },
+        "hf_profit_10_ma_5_10_cross_and_vix_above_avg.py": {
+            "condition1": "df['SMA_5'] > df['SMA_10']",
+            "condition2": "df.get('OPEN_VIX', pd.Series([20]*len(df))) > df.get('OPEN_VIX', pd.Series([20]*len(df))).rolling(50).mean()",
+            "indicator1": "MA_5_10_Cross",
+            "indicator2": "VIX_Above_Avg"
+        },
+        "hf_success_01_rsi_overbought_70_and_stoch_k_above_d.py": {
+            "condition1": "df['RSI'] > 70",
+            "condition2": "df['Stoch_K'] > df['Stoch_D']",
+            "indicator1": "RSI_Overbought_70",
+            "indicator2": "Stoch_K_Above_D"
+        },
+        "hf_success_02_tuesday_and_stoch_k_above_d.py": {
+            "condition1": "df['DayOfWeek'] == 1",
+            "condition2": "df['Stoch_K'] > df['Stoch_D']",
+            "indicator1": "Tuesday",
+            "indicator2": "Stoch_K_Above_D"
+        },
+        "hf_success_03_volume_price_confirmation_and_mean_reversion.py": {
+            "condition1": "((df['Close'].shift(1) > df['Close'].shift(2)) & (df['Volume'].shift(1) > df['Volume'].shift(2)))",
+            "condition2": "(df['Close'].shift(1) < df['SMA_20'] * 0.98)",
+            "indicator1": "Volume_Price_Confirmation",
+            "indicator2": "Mean_Reversion"
+        },
+        "hf_success_04_rsi_overbought_65_and_early_week.py": {
+            "condition1": "df['RSI'] > 65",
+            "condition2": "df['DayOfWeek'].isin([0, 1])",
+            "indicator1": "RSI_Overbought_65",
+            "indicator2": "Early_Week"
+        },
+        "hf_success_05_rsi_overbought_70_and_rsi_rising.py": {
+            "condition1": "df['RSI'] > 70",
+            "condition2": "df['RSI'] > df['RSI'].shift(1)",
+            "indicator1": "RSI_Overbought_70",
+            "indicator2": "RSI_Rising"
+        },
+        "hf_success_06_tuesday_and_after_gap_up.py": {
+            "condition1": "df['DayOfWeek'] == 1",
+            "condition2": "df['GapUp']",
+            "indicator1": "Tuesday",
+            "indicator2": "After_Gap_Up"
+        },
+        "hf_success_07_rsi_overbought_70_and_rising_volume.py": {
+            "condition1": "df['RSI'] > 70",
+            "condition2": "df['Volume'].shift(1) > df['Volume'].shift(2)",
+            "indicator1": "RSI_Overbought_70",
+            "indicator2": "Rising_Volume"
+        },
+        "hf_success_08_rising_volume_and_mean_reversion.py": {
+            "condition1": "df['Volume'].shift(1) > df['Volume'].shift(2)",
+            "condition2": "(df['Close'].shift(1) < df['SMA_20'] * 0.98)",
+            "indicator1": "Rising_Volume",
+            "indicator2": "Mean_Reversion"
+        },
+        "hf_success_09_obv_falling_and_after_2_red_days.py": {
+            "condition1": "df['OBV'] < df['OBV'].shift(5)",
+            "condition2": "df['Prev2DaysRed']",
+            "indicator1": "OBV_Falling",
+            "indicator2": "After_2_Red_Days"
+        },
+        "hf_success_10_ema_ribbon_bullish_and_mean_reversion.py": {
+            "condition1": "(df['EMA_5'] > df['EMA_10']) & (df['EMA_10'] > df['EMA_20']) & (df['EMA_20'] > df['EMA_50'])",
+            "condition2": "(df['Close'].shift(1) < df['SMA_20'] * 0.98)",
+            "indicator1": "EMA_Ribbon_Bullish",
+            "indicator2": "Mean_Reversion"
+        }
+    }
+
+
+def fix_file(filepath, file_info):
+    """Fix a single file with the correct conditions"""
+    
+    with open(filepath, 'r') as f:
+        content = f.read()
+    
+    pattern = r"(def get_filter_conditions\(self, df\):.*?# Condition 1:.*?\n\s*condition1 = .*?\n\s*# Condition 2:.*?\n\s*condition2 = .*?\n\s*# Combine conditions.*?\n\s*return condition1 & condition2)"
+    
+    replacement = f'''def get_filter_conditions(self, df):
+        """Get the two indicator conditions"""
+        condition1 = {file_info['condition1']}
+        
+        condition2 = {file_info['condition2']}
+        
+        return condition1 & condition2'''
+    
+    content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+    
+    if 'GapUp' in content and 'df[\'GapUp\']' not in content:
+        calc_pattern = r"(def calculate_indicators\(self, df\):.*?)(return df)"
+        calc_replacement = r'''\1
+        df['PrevGap'] = (df['Open'] - df['Close'].shift(1)).shift(1)
+        df['GapUp'] = (df['PrevGap'] > 0).fillna(False)
+        df['GapDown'] = (df['PrevGap'] < 0).fillna(False)
+        
+        \2'''
+        content = re.sub(calc_pattern, calc_replacement, content, flags=re.DOTALL)
+    
+    with open(filepath, 'w') as f:
+        f.write(content)
+    
+    return True
+
+
+def main():
+    """Fix all strategy files"""
+    fixes = get_comprehensive_fixes()
+    
+    fixed_count = 0
+    for filename, file_info in fixes.items():
+        filepath = os.path.join("/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/GAP_CLOSE_OPTIMIZATIONS/HIGH_FREQUENCY_TWO_INDICATORS", filename)
+        
+        if os.path.exists(filepath):
+            print(f"Fixing {filename}...")
+            if fix_file(filepath, file_info):
+                fixed_count += 1
+            else:
+                print(f"  Failed to fix {filename}")
+        else:
+            print(f"  File not found: {filename}")
+    
+    print(f"\nFixed {fixed_count}/{len(fixes)} files")
+
+
+if __name__ == "__main__":
+    main()

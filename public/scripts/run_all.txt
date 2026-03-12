@@ -1,0 +1,189 @@
+"""
+Run All Trading Strategies
+--------------------------
+This script runs all trading strategies in the strategies folder
+and generates a comprehensive comparison report.
+"""
+
+import os
+import sys
+import pandas as pd
+import importlib.util
+from datetime import datetime
+import traceback
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from utils import BaseStrategy, LongShortStrategy
+
+
+def find_strategy_files(strategies_dir):
+    """Find all Python files containing strategies."""
+    strategy_files = []
+    
+    for root, dirs, files in os.walk(strategies_dir):
+        for file in files:
+            if file.endswith('.py') and not file.startswith('__'):
+                full_path = os.path.join(root, file)
+                strategy_files.append(full_path)
+    
+    return strategy_files
+
+
+def load_strategy_from_file(file_path):
+    """Dynamically load a strategy from a Python file."""
+    module_name = os.path.splitext(os.path.basename(file_path))[0]
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module = importlib.util.module_from_spec(spec)
+    
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        print(f"Error loading {file_path}: {e}")
+        return None
+    
+    strategies = []
+    for name in dir(module):
+        obj = getattr(module, name)
+        if (isinstance(obj, type) and 
+            issubclass(obj, (BaseStrategy, LongShortStrategy)) and
+            obj not in [BaseStrategy, LongShortStrategy]):
+            strategies.append(obj)
+    
+    return strategies
+
+
+def run_all_strategies(data_file, output_dir='results'):
+    """Run all strategies and collect results."""
+    strategies_dir = os.path.join(os.path.dirname(__file__), 'strategies')
+    strategy_files = find_strategy_files(strategies_dir)
+    
+    print(f"Found {len(strategy_files)} strategy files")
+    print("="*70)
+    
+    all_results = []
+    successful_runs = 0
+    failed_runs = 0
+    
+    for i, file_path in enumerate(strategy_files, 1):
+        relative_path = os.path.relpath(file_path, strategies_dir)
+        print(f"\n[{i}/{len(strategy_files)}] Running strategies from: {relative_path}")
+        print("-"*50)
+        
+        strategy_classes = load_strategy_from_file(file_path)
+        
+        if not strategy_classes:
+            print(f"No strategies found in {relative_path}")
+            failed_runs += 1
+            continue
+        
+        for strategy_class in strategy_classes:
+            try:
+                strategy = strategy_class()
+                print(f"Running: {strategy.name}")
+                
+                trades_df, statistics = strategy.run_backtest(data_file)
+                
+                if statistics and statistics['total_trades'] > 0:
+                    result = {
+                        'Strategy': strategy.name,
+                        'File': relative_path,
+                        'Total Trades': statistics['total_trades'],
+                        'Win Rate (%)': statistics['win_rate'],
+                        'Total Profit ($)': statistics['total_profit'],
+                        'ROI (%)': statistics['roi'],
+                        'Sharpe Ratio': statistics['sharpe_ratio'],
+                        'Max Drawdown (%)': statistics['max_drawdown'],
+                        'Win/Loss Ratio': statistics['win_loss_ratio'],
+                        'Profit Factor': statistics['profit_factor']
+                    }
+                    all_results.append(result)
+                    successful_runs += 1
+                    
+                    print(f"✓ Success: {statistics['total_trades']} trades, "
+                          f"{statistics['win_rate']:.1f}% win rate, "
+                          f"${statistics['total_profit']:,.2f} profit")
+                else:
+                    print(f"✗ No trades generated")
+                    failed_runs += 1
+                    
+            except Exception as e:
+                print(f"✗ Error running {strategy_class.__name__}: {e}")
+                traceback.print_exc()
+                failed_runs += 1
+    
+    results_df = pd.DataFrame(all_results)
+    
+    print("\n" + "="*70)
+    print("SUMMARY REPORT")
+    print("="*70)
+    print(f"Total strategies tested: {successful_runs + failed_runs}")
+    print(f"Successful runs: {successful_runs}")
+    print(f"Failed runs: {failed_runs}")
+    
+    if len(results_df) > 0:
+        print("\n" + "="*70)
+        print("TOP 10 STRATEGIES BY WIN RATE")
+        print("="*70)
+        top_by_winrate = results_df.nlargest(10, 'Win Rate (%)')
+        print(top_by_winrate[['Strategy', 'Total Trades', 'Win Rate (%)', 
+                              'Total Profit ($)', 'ROI (%)']].to_string(index=False))
+        
+        print("\n" + "="*70)
+        print("TOP 10 STRATEGIES BY TOTAL PROFIT")
+        print("="*70)
+        top_by_profit = results_df.nlargest(10, 'Total Profit ($)')
+        print(top_by_profit[['Strategy', 'Total Trades', 'Win Rate (%)', 
+                             'Total Profit ($)', 'ROI (%)']].to_string(index=False))
+        
+        print("\n" + "="*70)
+        print("TOP 10 STRATEGIES BY SHARPE RATIO")
+        print("="*70)
+        top_by_sharpe = results_df.nlargest(10, 'Sharpe Ratio')
+        print(top_by_sharpe[['Strategy', 'Total Trades', 'Sharpe Ratio', 
+                             'Total Profit ($)', 'Max Drawdown (%)']].to_string(index=False))
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_file = os.path.join(output_dir, f'all_strategies_summary_{timestamp}.csv')
+        os.makedirs(output_dir, exist_ok=True)
+        results_df.to_csv(output_file, index=False)
+        print(f"\n✓ Full results saved to: {output_file}")
+        
+        print("\n" + "="*70)
+        print("OVERALL STATISTICS")
+        print("="*70)
+        print(f"Average Win Rate: {results_df['Win Rate (%)'].mean():.2f}%")
+        print(f"Average ROI: {results_df['ROI (%)'].mean():.2f}%")
+        print(f"Total Combined Profit: ${results_df['Total Profit ($)'].sum():,.2f}")
+        print(f"Average Sharpe Ratio: {results_df['Sharpe Ratio'].mean():.3f}")
+        print(f"Strategies with >50% Win Rate: {len(results_df[results_df['Win Rate (%)'] > 50])}")
+        print(f"Strategies with Positive Profit: {len(results_df[results_df['Total Profit ($)'] > 0])}")
+    
+    return results_df
+
+
+def main():
+    """Main function to run all strategies."""
+    print("="*70)
+    print("RUNNING ALL TRADING STRATEGIES")
+    print("="*70)
+    
+    data_file = os.path.join(os.path.dirname(__file__), 'data', '7J0OK1VR.csv')
+    
+    if not os.path.exists(data_file):
+        print(f"Error: Data file not found at {data_file}")
+        print("Please ensure the data file is in the 'data' directory")
+        return
+    
+    print(f"Using data file: {data_file}")
+    
+    results_df = run_all_strategies(data_file)
+    
+    print("\n" + "="*70)
+    print("ANALYSIS COMPLETE")
+    print("="*70)
+    
+    return results_df
+
+
+if __name__ == "__main__":
+    main()

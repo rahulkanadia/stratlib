@@ -1,0 +1,275 @@
+"""
+Gap & Go Trading Utilities
+Professional implementation without look-ahead bias
+Gap & Go: Trade in the direction of the gap, expecting continuation
+"""
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, time
+
+def load_data(file_path):
+    """Load SPY data from CSV file"""
+    df = pd.read_csv(file_path)
+    df['Date'] = pd.to_datetime(df['Date'])
+    df = df.sort_values('Date').reset_index(drop=True)
+    return df
+
+def load_vix_data(file_path):
+    """Load VIX data from CSV file"""
+    vix_df = pd.read_csv(file_path)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'])
+    vix_df = vix_df.sort_values('Date').reset_index(drop=True)
+    return vix_df
+
+def calculate_gap(prev_close, curr_open):
+    """Calculate gap percentage"""
+    return ((curr_open - prev_close) / prev_close) * 100
+
+def is_gap_valid(gap, min_gap_percent=0.3):
+    """Check if gap is significant enough for Gap & Go"""
+    return abs(gap) >= min_gap_percent
+
+def determine_gap_and_go_direction(gap):
+    """
+    Determine trade direction for Gap & Go
+    Gap & Go trades WITH the gap direction
+    """
+    if gap > 0:
+        return 'long'  # Gap up = Go long
+    else:
+        return 'short'  # Gap down = Go short
+
+def calculate_gap_and_go_exit(trade_direction, curr_day, entry_price, 
+                             profit_target_percent=1.0, stop_loss_percent=0.5):
+    """
+    Calculate exit for Gap & Go trade
+    Uses profit target and stop loss without look-ahead bias
+    """
+    if trade_direction == 'long':
+        profit_target = entry_price * (1 + profit_target_percent / 100)
+        stop_loss = entry_price * (1 - stop_loss_percent / 100)
+        
+        for i in range(len(curr_day)):
+            if i == 0:  # Skip open price (entry)
+                continue
+                
+            if 'High' in curr_day and 'Low' in curr_day:
+                high = curr_day['High']
+                low = curr_day['Low']
+                close = curr_day['Close']
+                
+                if low <= stop_loss:
+                    return stop_loss, False, 'stop_loss'
+                elif high >= profit_target:
+                    return profit_target, True, 'profit_target'
+                else:
+                    return close, close > entry_price, 'close'
+            else:
+                price = curr_day.iloc[i]['Close']
+                
+                if price <= stop_loss:
+                    return stop_loss, False, 'stop_loss'
+                elif price >= profit_target:
+                    return profit_target, True, 'profit_target'
+        
+        return curr_day['Close'] if 'Close' in curr_day else curr_day.iloc[-1]['Close'], \
+               curr_day['Close'] > entry_price if 'Close' in curr_day else curr_day.iloc[-1]['Close'] > entry_price, \
+               'close'
+    
+    else:  # short
+        profit_target = entry_price * (1 - profit_target_percent / 100)
+        stop_loss = entry_price * (1 + stop_loss_percent / 100)
+        
+        for i in range(len(curr_day)):
+            if i == 0:  # Skip open price (entry)
+                continue
+                
+            if 'High' in curr_day and 'Low' in curr_day:
+                high = curr_day['High']
+                low = curr_day['Low']
+                close = curr_day['Close']
+                
+                if high >= stop_loss:
+                    return stop_loss, False, 'stop_loss'
+                elif low <= profit_target:
+                    return profit_target, True, 'profit_target'
+                else:
+                    return close, close < entry_price, 'close'
+            else:
+                price = curr_day.iloc[i]['Close']
+                
+                if price >= stop_loss:
+                    return stop_loss, False, 'stop_loss'
+                elif price <= profit_target:
+                    return profit_target, True, 'profit_target'
+        
+        return curr_day['Close'] if 'Close' in curr_day else curr_day.iloc[-1]['Close'], \
+               curr_day['Close'] < entry_price if 'Close' in curr_day else curr_day.iloc[-1]['Close'] < entry_price, \
+               'close'
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """Calculate profit/loss for a trade"""
+    if trade_direction == 'long':
+        return (exit_price - entry_price) * (position_size / entry_price)
+    else:  # short
+        return (entry_price - exit_price) * (position_size / entry_price)
+
+def calculate_statistics(trades_df, strategy_name, initial_investment):
+    """Calculate strategy statistics"""
+    if len(trades_df) == 0:
+        return {
+            'Strategy': strategy_name,
+            'Total Trades': 0,
+            'Winning Trades': 0,
+            'Losing Trades': 0,
+            'Success Rate': 0,
+            'Total Profit': 0,
+            'Average Profit': 0,
+            'Max Profit': 0,
+            'Max Loss': 0,
+            'Final Equity': initial_investment,
+            'ROI': 0,
+            'Profit Factor': 0,
+            'Sharpe Ratio': 0
+        }
+    
+    winning_trades = len(trades_df[trades_df['Profit/Loss'] > 0])
+    losing_trades = len(trades_df[trades_df['Profit/Loss'] < 0])
+    
+    total_profit = trades_df['Profit/Loss'].sum()
+    gross_profit = trades_df[trades_df['Profit/Loss'] > 0]['Profit/Loss'].sum()
+    gross_loss = abs(trades_df[trades_df['Profit/Loss'] < 0]['Profit/Loss'].sum())
+    
+    returns = trades_df['Profit/Loss'] / initial_investment
+    sharpe_ratio = np.sqrt(252) * returns.mean() / returns.std() if returns.std() > 0 else 0
+    
+    return {
+        'Strategy': strategy_name,
+        'Total Trades': len(trades_df),
+        'Winning Trades': winning_trades,
+        'Losing Trades': losing_trades,
+        'Success Rate': (winning_trades / len(trades_df) * 100) if len(trades_df) > 0 else 0,
+        'Total Profit': total_profit,
+        'Average Profit': total_profit / len(trades_df) if len(trades_df) > 0 else 0,
+        'Max Profit': trades_df['Profit/Loss'].max(),
+        'Max Loss': trades_df['Profit/Loss'].min(),
+        'Final Equity': initial_investment + total_profit,
+        'ROI': (total_profit / initial_investment * 100),
+        'Profit Factor': gross_profit / gross_loss if gross_loss > 0 else float('inf'),
+        'Sharpe Ratio': sharpe_ratio
+    }
+
+
+def calculate_sma(df, period):
+    """Simple Moving Average"""
+    return df['Close'].rolling(window=period).mean().shift(1)
+
+def calculate_ema(df, period):
+    """Exponential Moving Average"""
+    return df['Close'].ewm(span=period, adjust=False).mean().shift(1)
+
+def calculate_rsi(df, period=14):
+    """Relative Strength Index"""
+    close_delta = df['Close'].diff()
+    gain = (close_delta.where(close_delta > 0, 0)).rolling(window=period).mean()
+    loss = (-close_delta.where(close_delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.shift(1)
+
+def calculate_atr(df, period=14):
+    """Average True Range"""
+    high_low = df['High'] - df['Low']
+    high_close = abs(df['High'] - df['Close'].shift(1))
+    low_close = abs(df['Low'] - df['Close'].shift(1))
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.rolling(window=period).mean().shift(1)
+
+def calculate_bollinger_bands(df, period=20, std_dev=2):
+    """Bollinger Bands"""
+    sma = df['Close'].rolling(window=period).mean()
+    std = df['Close'].rolling(window=period).std()
+    upper_band = sma + (std * std_dev)
+    lower_band = sma - (std * std_dev)
+    return upper_band.shift(1), sma.shift(1), lower_band.shift(1)
+
+def calculate_macd(df, fast=12, slow=26, signal=9):
+    """MACD"""
+    ema_fast = df['Close'].ewm(span=fast, adjust=False).mean()
+    ema_slow = df['Close'].ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    return macd_line.shift(1), signal_line.shift(1)
+
+def calculate_stochastic(df, period=14, smooth_k=3, smooth_d=3):
+    """Stochastic Oscillator"""
+    low_min = df['Low'].rolling(window=period).min()
+    high_max = df['High'].rolling(window=period).max()
+    k_percent = 100 * ((df['Close'] - low_min) / (high_max - low_min))
+    k_percent = k_percent.rolling(window=smooth_k).mean()
+    d_percent = k_percent.rolling(window=smooth_d).mean()
+    return k_percent.shift(1), d_percent.shift(1)
+
+def calculate_obv(df):
+    """On Balance Volume"""
+    obv = (df['Volume'] * ((df['Close'] > df['Close'].shift(1)) * 2 - 1)).cumsum()
+    return obv.shift(1)
+
+def calculate_vwap(df):
+    """Volume Weighted Average Price (daily reset)"""
+    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+    vwap = (typical_price * df['Volume']).cumsum() / df['Volume'].cumsum()
+    return vwap.shift(1)
+
+def calculate_adx(df, period=14):
+    """Average Directional Index"""
+    high_diff = df['High'].diff()
+    low_diff = -df['Low'].diff()
+    
+    plus_dm = pd.Series(np.where((high_diff > low_diff) & (high_diff > 0), high_diff, 0), index=df.index)
+    minus_dm = pd.Series(np.where((low_diff > high_diff) & (low_diff > 0), low_diff, 0), index=df.index)
+    
+    tr = calculate_atr(df, 1) * period  # True Range
+    
+    plus_di = 100 * (plus_dm.rolling(window=period).sum() / tr.rolling(window=period).sum())
+    minus_di = 100 * (minus_dm.rolling(window=period).sum() / tr.rolling(window=period).sum())
+    
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    adx = dx.rolling(window=period).mean()
+    
+    return adx.shift(1)
+
+def calculate_cci(df, period=20):
+    """Commodity Channel Index"""
+    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+    sma = typical_price.rolling(window=period).mean()
+    mean_deviation = typical_price.rolling(window=period).apply(lambda x: abs(x - x.mean()).mean())
+    cci = (typical_price - sma) / (0.015 * mean_deviation)
+    return cci.shift(1)
+
+def calculate_williams_r(df, period=14):
+    """Williams %R"""
+    high_max = df['High'].rolling(window=period).max()
+    low_min = df['Low'].rolling(window=period).min()
+    williams_r = -100 * ((high_max - df['Close']) / (high_max - low_min))
+    return williams_r.shift(1)
+
+def calculate_mfi(df, period=14):
+    """Money Flow Index"""
+    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+    money_flow = typical_price * df['Volume']
+    
+    positive_flow = pd.Series(np.where(typical_price > typical_price.shift(1), money_flow, 0), index=df.index)
+    negative_flow = pd.Series(np.where(typical_price < typical_price.shift(1), money_flow, 0), index=df.index)
+    
+    positive_sum = positive_flow.rolling(window=period).sum()
+    negative_sum = negative_flow.rolling(window=period).sum()
+    
+    mfi = 100 - (100 / (1 + positive_sum / negative_sum))
+    return mfi.shift(1)
+
+def calculate_roc(df, period=10):
+    """Rate of Change"""
+    roc = ((df['Close'] - df['Close'].shift(period)) / df['Close'].shift(period)) * 100
+    return roc.shift(1)

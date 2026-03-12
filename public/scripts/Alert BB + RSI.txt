@@ -1,0 +1,117 @@
+
+
+
+strategy("Alert BB + RSI [Alorse]", shorttitle="Alert BB + RSI [Alorse]", overlay=true, pyramiding=20, currency=currency.USD, default_qty_type=strategy.percent_of_equity, initial_capital=1000, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.01) 
+
+txtVer = "0.0.1"
+version = input(title="Version", type=input.string, defval=txtVer, options=[txtVer], tooltip="This is informational only, nothing will change.\n\nEntry conditions:\nThe MACD line crosses over the signal line.\nRSI less than 50.\nPrice below the BB baseline.\n\nExit conditions:\nRSI greater than 70.\nClosing price higher than upper BB.")
+src = input(title="Source", type=input.source, defval=close)
+
+
+bbGroup = "Bollindger Bands"
+length = input(20, title="Length", group=bbGroup)
+mult = input(2.0, title="StdDev", minval=0.001, maxval=5, group=bbGroup)
+
+
+rsiGroup = "RSI"
+lenRSI = input(14, title="Length", minval=1, group=rsiGroup)
+
+
+
+screenerFunc(_ticker) => 
+    [rsi, basis, cl, dev] = security(_ticker, timeframe.period, [rsi(src, lenRSI), sma(src, length), close, mult * stdev(src, length)])
+    [upper, lower] = security(_ticker, timeframe.period, [basis + dev, basis - dev])
+    
+    cleanTicker = str.replace_all(_ticker, "BINANCE:", "")
+
+    strategy.entry(cleanTicker, true, when=rsi < 30 and cl < basis, alert_message='612e425361de9e0072e37083|RSIBB_|buy|' + cleanTicker + '|long')
+    strategy.close(cleanTicker, when=rsi > 70 and cl > upper, alert_message='612e425361de9e0072e37083|RSIBB_|sell|' + cleanTicker + '|flat')
+    
+    [rsi, cl]
+
+
+
+s01 = input('ADAUSDT',   title="Symbol 1",  type=input.symbol)
+s02 = input('ALPHAUSDT', title="Symbol 2",  type=input.symbol)
+s03 = input('ALICEUSDT', title="Symbol 3",  type=input.symbol)
+s04 = input('ANKRUSDT',  title="Symbol 4",  type=input.symbol)
+s05 = input('ARPAUSDT',  title="Symbol 5",  type=input.symbol)
+s06 = input('AVAXUSDT',  title="Symbol 6",  type=input.symbol)
+s07 = input('AXSUSDT',   title="Symbol 7",  type=input.symbol)
+s08 = input('BAKEUSDT',  title="Symbol 8",  type=input.symbol)
+s09 = input('BELUSDT',   title="Symbol 9",  type=input.symbol)
+s10 = input('BLZUSDT',   title="Symbol 10", type=input.symbol)
+s11 = input('BTCUSDT',   title="Symbol 11", type=input.symbol)
+s12 = input('CHZUSDT',   title="Symbol 12", type=input.symbol)
+s13 = input('CTKUSDT',   title="Symbol 13", type=input.symbol)
+s14 = input('CTSIUSDT',  title="Symbol 14", type=input.symbol)
+s15 = input('CVCUSDT',   title="Symbol 15", type=input.symbol)
+s16 = input('EGLDUSDT',  title="Symbol 16", type=input.symbol)
+s17 = input('ENJUSDT',   title="Symbol 17", type=input.symbol)
+s18 = input('ETCUSDT',   title="Symbol 18", type=input.symbol)
+s19 = input('FILUSDT',   title="Symbol 19", type=input.symbol)
+s20 = input('GRTUSDT',   title="Symbol 20", type=input.symbol)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[v01, c01] = screenerFunc(s01)
+[v02, c02] = screenerFunc(s02)
+[v03, c03] = screenerFunc(s03)
+[v04, c04] = screenerFunc(s04)
+[v05, c05] = screenerFunc(s05)
+[v06, c06] = screenerFunc(s06)
+[v07, c07] = screenerFunc(s07)
+[v08, c08] = screenerFunc(s08)
+[v09, c09] = screenerFunc(s09)
+[v10, c10] = screenerFunc(s10)
+[v11, c11] = screenerFunc(s11)
+[v12, c12] = screenerFunc(s12)
+[v13, c13] = screenerFunc(s13)
+[v14, c14] = screenerFunc(s14)
+[v15, c15] = screenerFunc(s15)
+[v16, c16] = screenerFunc(s16)
+[v17, c17] = screenerFunc(s17)
+[v18, c18] = screenerFunc(s18)
+[v19, c19] = screenerFunc(s19)
+[v20, c20] = screenerFunc(s20)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

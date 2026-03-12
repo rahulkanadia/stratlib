@@ -1,0 +1,61 @@
+
+> 策略名称
+
+简单多品种商品期货均线策略
+
+> 策略作者
+
+扫地僧
+
+> 策略描述
+
+商品期货类库实现了$.CTA函数的策略框架，借助该策略框架, 可以短短几十行实现一个并发稳定可实盘的多品种策略
+
+ https:
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|Symbols|rb000,MA000|操作品种|
+|FastPeriod|5|快线周期|
+|SlowPeriod|20|慢线周期|
+|ConfirmPeriod|2|确认周期|
+|Lots|true|开仓手数|
+
+
+> 源码 (javascript)
+
+``` javascript
+
+function main() {
+    
+    $.CTA(Symbols, function(st) {
+        var r = st.records
+        var mp = st.position.amount
+        var symbol = st.symbol
+        
+        if (r.length < SlowPeriod) {
+            return
+        }
+        var cross = _Cross(TA.EMA(r, FastPeriod), TA.EMA(r, SlowPeriod));
+        if (mp <= 0 && cross > ConfirmPeriod) {
+            Log(symbol, "金叉周期", cross, "当前持仓", mp);
+            return Lots * (mp < 0 ? 2 : 1)
+        } else if (mp >= 0 && cross < -ConfirmPeriod) {
+            Log(symbol, "死叉周期", cross, "当前持仓", mp);
+            return -Lots * (mp > 0 ? 2 : 1)
+        }
+    });
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2019-10-06 18:01:54

@@ -1,0 +1,62 @@
+
+> 策略名称
+
+pine语言学习脚本
+
+> 策略作者
+
+Zer3192
+
+
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|v_input_1|10|Fast Length|
+|v_input_2|20|Slow Length|
+
+
+> 源码 (PineScript)
+
+``` javascript
+
+study("SMA Trend Strategy")
+
+
+fastLength = input(title="Fast Length", type=input.integer, defval=10)
+slowLength = input(title="Slow Length", type=input.integer, defval=20)
+
+
+fastSMA = sma(close, fastLength)
+slowSMA = sma(close, slowLength)
+
+
+longStop = strategy.position_avg_price * (1 - 0.01)
+shortStop = strategy.position_avg_price * (1 + 0.01)
+longlimit = strategy.position_avg_price * (1 + 0.01)
+shortlimit = strategy.position_avg_price * (1 - 0.01)
+
+
+longCondition = crossover(fastSMA, slowSMA)
+shortCondition = crossunder(fastSMA, slowSMA)
+
+
+strategy.entry("Long", strategy.long, when=longCondition)
+strategy.entry("Short", strategy.short, when=shortCondition)
+
+
+strategy.exit("Long Stop", "Long", stop=longStop,limit=longlimit)
+strategy.exit("Short Stop", "Short", stop=shortStop,limit=shortlimit)
+
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2023-01-28 14:58:19

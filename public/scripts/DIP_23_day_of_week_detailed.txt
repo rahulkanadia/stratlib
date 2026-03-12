@@ -1,0 +1,312 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_rolling_average_drop(df, window=21):
+    """Calculate rolling average of drops on red days."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=window).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def analyze_day_of_week_strategy(df, initial_investment=16000, target_day=0):
+    """
+    Implement DIP strategy for specific day of week.
+    0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday
+    """
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    df['DayOfWeek'] = df['Date'].dt.dayofweek
+    df['DayName'] = df['Date'].dt.day_name()
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:  # Need history for calculations
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        day_of_week = current_day['DayOfWeek']
+        
+        if avg_drop <= 0 or day_of_week != target_day:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        high_price = current_day['High']
+        volume = current_day['Volume']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            intraday_return = (exit_price - entry_price) / entry_price * 100
+            day_range = high_price - low_price
+            entry_to_high = high_price - entry_price
+            max_potential = (high_price - entry_price) / entry_price * 100
+            
+            trades.append({
+                'Date': current_day['Date'],
+                'DayName': current_day['DayName'],
+                'Entry': entry_price,
+                'Exit': exit_price,
+                'Profit/Loss': profit_loss,
+                'IntradayReturn%': intraday_return,
+                'DayRange': day_range,
+                'EntryToHigh': entry_to_high,
+                'MaxPotential%': max_potential,
+                'Volume': volume,
+                'Open': open_price,
+                'High': high_price,
+                'Low': low_price,
+                'Close': close_price,
+                'AvgDrop': avg_drop
+            })
+    
+    return trades
+
+def analyze_all_days(df, initial_investment=16000):
+    """Analyze performance for each day of the week."""
+    day_results = {}
+    day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+    
+    for day_num, day_name in enumerate(day_names):
+        trades = analyze_day_of_week_strategy(df, initial_investment, day_num)
+        
+        if trades:
+            df_trades = pd.DataFrame(trades)
+            total_profit = df_trades['Profit/Loss'].sum()
+            num_trades = len(trades)
+            success_rate = (df_trades['Profit/Loss'] > 0).sum() / num_trades * 100
+            avg_profit = df_trades['Profit/Loss'].mean()
+            
+            day_results[day_name] = {
+                'trades': trades,
+                'total_profit': total_profit,
+                'num_trades': num_trades,
+                'success_rate': success_rate,
+                'avg_profit': avg_profit
+            }
+        else:
+            day_results[day_name] = {
+                'trades': [],
+                'total_profit': 0,
+                'num_trades': 0,
+                'success_rate': 0,
+                'avg_profit': 0
+            }
+    
+    return day_results
+
+def calculate_detailed_statistics(trades):
+    """Calculate comprehensive statistics for the trades."""
+    if not trades:
+        return None
+    
+    df_trades = pd.DataFrame(trades)
+    
+    total_trades = len(trades)
+    profitable_trades = df_trades[df_trades['Profit/Loss'] > 0]
+    losing_trades = df_trades[df_trades['Profit/Loss'] < 0]
+    
+    num_winners = len(profitable_trades)
+    num_losers = len(losing_trades)
+    success_rate = num_winners / total_trades * 100
+    
+    total_profit = df_trades['Profit/Loss'].sum()
+    avg_profit_all = df_trades['Profit/Loss'].mean()
+    
+    avg_winner = profitable_trades['Profit/Loss'].mean() if num_winners > 0 else 0
+    avg_loser = losing_trades['Profit/Loss'].mean() if num_losers > 0 else 0
+    
+    largest_winner = profitable_trades['Profit/Loss'].max() if num_winners > 0 else 0
+    largest_loser = losing_trades['Profit/Loss'].min() if num_losers > 0 else 0
+    
+    profit_factor = abs(profitable_trades['Profit/Loss'].sum() / losing_trades['Profit/Loss'].sum()) if num_losers > 0 else float('inf')
+    win_loss_ratio = abs(avg_winner / avg_loser) if avg_loser != 0 else float('inf')
+    
+    df_trades['Month'] = pd.to_datetime(df_trades['Date']).dt.to_period('M')
+    df_trades['Year'] = pd.to_datetime(df_trades['Date']).dt.year
+    df_trades['Quarter'] = pd.to_datetime(df_trades['Date']).dt.quarter
+    
+    avg_intraday_return = df_trades['IntradayReturn%'].mean()
+    avg_max_potential = df_trades['MaxPotential%'].mean()
+    
+    avg_volume = df_trades['Volume'].mean()
+    high_volume_trades = df_trades[df_trades['Volume'] > avg_volume]
+    high_volume_success = (high_volume_trades['Profit/Loss'] > 0).sum() / len(high_volume_trades) * 100 if len(high_volume_trades) > 0 else 0
+    
+    return {
+        'total_trades': total_trades,
+        'num_winners': num_winners,
+        'num_losers': num_losers,
+        'success_rate': success_rate,
+        'total_profit': total_profit,
+        'avg_profit_all': avg_profit_all,
+        'avg_winner': avg_winner,
+        'avg_loser': avg_loser,
+        'largest_winner': largest_winner,
+        'largest_loser': largest_loser,
+        'profit_factor': profit_factor,
+        'win_loss_ratio': win_loss_ratio,
+        'avg_intraday_return': avg_intraday_return,
+        'avg_max_potential': avg_max_potential,
+        'avg_volume': avg_volume,
+        'high_volume_success': high_volume_success
+    }
+
+def main():
+    """Main function to run the day of week analysis."""
+    print("="*80)
+    print("DAY OF WEEK DIP STRATEGY - DETAILED ANALYSIS")
+    print("="*80)
+    print(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Initial Investment: $16,000")
+    print("="*80)
+    
+    df = load_data('../7J0OK1VR.csv')
+    
+    day_results = analyze_all_days(df)
+    
+    print("\n1. DAY OF WEEK PERFORMANCE COMPARISON")
+    print("-"*70)
+    print(f"{'Day':<12} {'Trades':<8} {'Success Rate':<15} {'Total Profit':<15} {'Avg Profit':<12}")
+    print("-"*70)
+    
+    day_summary = []
+    for day_name in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']:
+        result = day_results[day_name]
+        print(f"{day_name:<12} {result['num_trades']:<8} {result['success_rate']:<15.2f}% ${result['total_profit']:<14,.2f} ${result['avg_profit']:<11.2f}")
+        day_summary.append({
+            'Day': day_name,
+            'Trades': result['num_trades'],
+            'Success Rate': result['success_rate'],
+            'Total Profit': result['total_profit']
+        })
+    
+    best_day = max(day_results.items(), key=lambda x: x[1]['success_rate'])
+    print(f"\nBest Day: {best_day[0]} with {best_day[1]['success_rate']:.2f}% success rate")
+    
+    print("\n2. DETAILED ANALYSIS FOR", best_day[0].upper())
+    print("="*80)
+    
+    best_trades = best_day[1]['trades']
+    stats = calculate_detailed_statistics(best_trades)
+    
+    print("\nOVERALL PERFORMANCE")
+    print("-"*50)
+    print(f"Total Trades: {stats['total_trades']}")
+    print(f"Winning Trades: {stats['num_winners']}")
+    print(f"Losing Trades: {stats['num_losers']}")
+    print(f"Success Rate: {stats['success_rate']:.2f}%")
+    print(f"Total Profit: ${stats['total_profit']:,.2f}")
+    print(f"Average Profit per Trade: ${stats['avg_profit_all']:.2f}")
+    
+    print("\nRISK/REWARD METRICS")
+    print("-"*50)
+    print(f"Average Winner: ${stats['avg_winner']:.2f}")
+    print(f"Average Loser: ${stats['avg_loser']:.2f}")
+    print(f"Win/Loss Ratio: {stats['win_loss_ratio']:.2f}")
+    print(f"Profit Factor: {stats['profit_factor']:.2f}")
+    print(f"Largest Winner: ${stats['largest_winner']:.2f}")
+    print(f"Largest Loser: ${stats['largest_loser']:.2f}")
+    
+    print("\nINTRADAY PERFORMANCE")
+    print("-"*50)
+    print(f"Average Intraday Return: {stats['avg_intraday_return']:.2f}%")
+    print(f"Average Max Potential: {stats['avg_max_potential']:.2f}%")
+    print(f"High Volume Trade Success: {stats['high_volume_success']:.2f}%")
+    
+    df_best = pd.DataFrame(best_trades)
+    df_best['Month'] = pd.to_datetime(df_best['Date']).dt.to_period('M')
+    monthly_stats = df_best.groupby('Month').agg({
+        'Profit/Loss': ['sum', 'count', lambda x: (x > 0).sum() / len(x) * 100]
+    }).round(2)
+    monthly_stats.columns = ['Total Profit', 'Trades', 'Win Rate']
+    
+    print("\n3. MONTHLY PERFORMANCE FOR", best_day[0].upper())
+    print("-"*50)
+    print(monthly_stats.tail(12).to_string())  # Last 12 months
+    
+    df_best['Year'] = pd.to_datetime(df_best['Date']).dt.year
+    yearly_stats = df_best.groupby('Year').agg({
+        'Profit/Loss': ['sum', 'count', lambda x: (x > 0).sum() / len(x) * 100]
+    }).round(2)
+    yearly_stats.columns = ['Total Profit', 'Trades', 'Win Rate']
+    
+    print("\n4. YEARLY PERFORMANCE FOR", best_day[0].upper())
+    print("-"*50)
+    print(yearly_stats.to_string())
+    
+    print("\n5. TOP 10 WINNING TRADES ON", best_day[0].upper())
+    print("-"*70)
+    top_winners = df_best.nlargest(10, 'Profit/Loss')[['Date', 'Entry', 'Exit', 'Profit/Loss', 'IntradayReturn%']]
+    print(top_winners.to_string(index=False))
+    
+    print("\n6. TOP 10 LOSING TRADES ON", best_day[0].upper())
+    print("-"*70)
+    top_losers = df_best.nsmallest(10, 'Profit/Loss')[['Date', 'Entry', 'Exit', 'Profit/Loss', 'IntradayReturn%']]
+    print(top_losers.to_string(index=False))
+    
+    df_best['Quarter'] = pd.to_datetime(df_best['Date']).dt.quarter
+    quarterly_stats = df_best.groupby('Quarter').agg({
+        'Profit/Loss': ['sum', 'count', 'mean', lambda x: (x > 0).sum() / len(x) * 100]
+    }).round(2)
+    quarterly_stats.columns = ['Total Profit', 'Trades', 'Avg Profit', 'Win Rate']
+    
+    print("\n7. SEASONAL PERFORMANCE (BY QUARTER)")
+    print("-"*50)
+    print(quarterly_stats.to_string())
+    
+    df_best = df_best.sort_values('Date')
+    df_best['Cumulative'] = df_best['Profit/Loss'].cumsum() + 16000
+    df_best['DrawdownPct'] = (df_best['Cumulative'] / df_best['Cumulative'].cummax() - 1) * 100
+    max_drawdown = df_best['DrawdownPct'].min()
+    
+    print("\n8. EQUITY CURVE ANALYSIS")
+    print("-"*50)
+    print(f"Starting Capital: $16,000")
+    print(f"Final Equity: ${df_best['Cumulative'].iloc[-1]:,.2f}")
+    print(f"Total Return: {(df_best['Cumulative'].iloc[-1] - 16000) / 16000 * 100:.2f}%")
+    print(f"Maximum Drawdown: {max_drawdown:.2f}%")
+    print(f"Average Trade Duration: 1 day (day trade)")
+    
+    print("\n9. VOLUME ANALYSIS")
+    print("-"*50)
+    volume_quintiles = pd.qcut(df_best['Volume'], q=5, labels=['Very Low', 'Low', 'Medium', 'High', 'Very High'])
+    volume_analysis = df_best.groupby(volume_quintiles).agg({
+        'Profit/Loss': ['mean', 'count', lambda x: (x > 0).sum() / len(x) * 100]
+    }).round(2)
+    volume_analysis.columns = ['Avg Profit', 'Trades', 'Win Rate']
+    print(volume_analysis.to_string())
+    
+    output_file = f'day_of_week_{best_day[0].lower()}_detailed_results.csv'
+    df_best.to_csv(output_file, index=False)
+    print(f"\nDetailed trade log saved to: {output_file}")
+    
+    comparison_df = pd.DataFrame(day_summary)
+    comparison_df.to_csv('day_of_week_comparison.csv', index=False)
+    print(f"Day comparison saved to: day_of_week_comparison.csv")
+
+if __name__ == "__main__":
+    main()

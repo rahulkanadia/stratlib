@@ -1,0 +1,137 @@
+
+> 策略名称
+
+js-R-Breaker
+
+> 策略作者
+
+太极
+
+> 策略描述
+
+R-Breaker
+
+
+
+> 源码 (javascript)
+
+``` javascript
+NPeriod=2 
+f1=0.47   
+f2=0.07   
+f3=0.25   
+
+
+
+var chart = { 
+  __isStock: true,                                    
+  tooltip: {xDateFormat: '%Y-%m-%d %H:%M:%S, %A'},    
+  title : { text : '行情分析图'},                       
+  rangeSelector: {                                    
+      buttons:  [{type: 'hour',count: 1, text: '1h'}, {type: 'hour',count: 3, text: '3h'}, {type: 'hour', count: 8, text: '8h'}, {type: 'all',text: 'All'}],
+      selected: 0,
+      inputEnabled: false
+  },
+  xAxis: { type: 'datetime'},                         
+  yAxis : {                                           
+      title:{text: '行情演算'},                        
+      opposite:false,                                
+  },
+  series : [                                          
+      {name:"0X",id:"0",color:'#FF83FA',data:[]},
+      {name:"1X",id:"1",color:'#FF3E96',dashStyle:'shortdash',data:[]},
+      {name:"2X",id:"2",color:'#FF0000',data:[]},
+
+      {name:"3X",id:"3",color:'#7D26CD',dashStyle:'shortdash',data:[]}, 
+
+      {name:"4X",id:"4",color:'#2B2B2B',data:[]},
+      {name:"5X",id:"5",color:'#707070',dashStyle:'shortdash',data:[]},
+      {name:"6X",id:"6",color:'#778899',data:[]},
+
+      {name:"7X",id:"7",color:'#0000CD',data:[]},
+
+      
+  ]
+};
+
+
+
+
+chart["series"][0]["name"]="Bbreak_A1:";
+chart["series"][1]["name"]="Ssetup_A2:";
+chart["series"][2]["name"]="Senter_A3:";
+
+chart["series"][4]["name"]="Benter_B1:";
+chart["series"][5]["name"]="Sbreak_B2:";
+chart["series"][6]["name"]="Bsetup_B3:";
+chart["series"][7]["name"]="当前价格:";
+
+
+
+var ObjChart = Chart(chart);  
+ObjChart.reset();           
+function onTick(e){
+        var records = _C(e.GetRecords);  
+        var ticker = _C(e.GetTicker);    
+        var account = _C(e.GetAccount);  
+
+        var High = TA.Highest(records, NPeriod, 'High'); 
+        var Close = TA.Lowest(records, NPeriod, 'Close');       
+        var Low = TA.Lowest(records, NPeriod, 'Low');   
+
+        
+
+
+        
+        
+        
+        var Ssetup = High + f1 * (Close - Low);  
+        var Bsetup = Low - f1 * (High - Close);  
+
+        var Bbreak = Ssetup + f3 * (Ssetup - Bsetup);  
+        var Senter = ((1 + f2) / 2) * (High + Close) - f2 * Low;  
+
+        var Benter = ((1 + f2) / 2) * (Low + Close) - f2 * High;  
+        var Sbreak = Bsetup - f3 * (Ssetup - Bsetup);  
+        
+        var nowTime = new Date().getTime(); 
+        ObjChart.add([0, [nowTime,_N(Bbreak,3)]]); 
+        ObjChart.add([1, [nowTime,_N(Ssetup,3)]]); 
+        ObjChart.add([2, [nowTime,_N(Senter,3)]]); 
+
+        
+
+        ObjChart.add([4, [nowTime,_N(Benter,3)]]);  
+        ObjChart.add([5, [nowTime,_N(Sbreak,3)]]);  
+        ObjChart.add([6, [nowTime,_N(Bsetup,3)]]);  
+
+        ObjChart.add([7, [nowTime,_N(ticker.Last,3)]]); 
+
+        ObjChart.update(chart);  
+        
+
+        Log('A上',_N(Bbreak,3),'A中',_N(Ssetup,3),'A下',_N(Senter,3),'B上',_N(Benter,3),'B中',_N(Bsetup,3),'B下',_N(Sbreak,3));
+}
+
+
+
+function main() {
+    Log("策略启动");
+    while(true){
+        onTick(exchanges[0]);
+        Sleep(1000);
+    }
+}
+
+
+
+
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2017-02-20 15:33:43

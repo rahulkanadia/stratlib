@@ -1,0 +1,294 @@
+
+> 策略名称
+
+测试-关于马丁长期效果
+
+> 策略作者
+
+xxs1xxs1
+
+> 策略描述
+
+这个我也不知道算不算马丁。本身是想做多。随便找一个价位开仓。然后补仓。
+比如一开始的小补仓是预备了10%的跌幅。
+大补仓可以慢慢设置10% 20% 50% 如果可以在某种程度上感觉跌的可能性大。就拉大补仓位形成抄底。
+所以预补仓就很重要了。。。
+发挥各位的才智吧，希望能有多一些建议一起做好机械交易
+最重要的是计算好承受点。不要开爆了。目前这个应该最多会开到8倍
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|MarginLevel|20|MarginLevel|
+|amountScale|3|量精度|
+|priceScale|5|价格精度|
+|bet|100|订单保证金|
+
+
+
+
+|按钮|默认值|描述|
+|----|----|----|
+|已经清算的数据|__button__|已经清算的数据|
+|清除持久数据数据|__button__|清除持久数据数据|
+
+
+> 源码 (javascript)
+
+``` javascript
+
+
+
+exchange.SetContractType("swap") 
+
+
+
+
+
+var account = _C(exchange.GetAccount) 
+var log_profit = 0
+var log_profit_intervel = 1000 * 60 * 5
+var symbol_list = [] 
+var symbol_list1 = [] 
+var symbol_list2 = [] 
+var order_list = []
+var num = 0 
+if (_G("symbol")) {
+    symbol_list = _G("symbol")
+    order_list = _G("orderlist")
+    Log("上一次数据", symbol_list)
+    Log("上一次数据完成数据", order_list)
+}
+
+
+function CancelPendingOrders() {
+    Sleep(1000); 
+    var ret = false;
+    while (true) {
+        var orders = null;
+        
+        while (!(orders = exchange.GetOrders())) {
+            Sleep(1000); 
+        }
+        if (orders.length == 0) { 
+            return ret; 
+        }
+        for (var j = 0; j < orders.length; j++) { 
+            exchange.CancelOrder(orders[j].Id); 
+            ret = true;
+            if (j < (orders.length - 1)) {
+                Sleep(1000); 
+            }
+        }
+    }
+}
+
+function symbols() {
+
+
+    log_profit_intervel = 1000 * 60 * 5
+
+
+    if (Date.now() - log_profit > log_profit_intervel && !IsVirtual()) { 
+        log_profit = Date.now()
+        var symbol = JSON.parse(HttpQuery("https:
+        let symbol_all = []
+        symbol.symbols.forEach(function(v, k, arr) {
+            if (v.quoteAsset == "USDT" && v.contractType == "PERPETUAL") {
+                let str = v.symbol.split("USDT", 1)
+                str = str + "_USDT"
+                symbol_all.push([str, v.pricePrecision, v.quantityPrecision])
+            }
+        })
+
+        
+        
+
+
+        for (let i = 0; i < symbol_all.length; i++) {
+
+            if (symbol_list.length > 0) {
+
+                let flag = false
+                symbol_list.forEach(function(v, k, arr) {
+                    
+                    if (v[0] == symbol_all[i][0]) {
+                        flag = true;
+                    }
+                })
+                if (flag) {
+                    continue;
+                }
+            }
+
+
+
+            exchange.SetCurrency(symbol_all[i][0])
+            
+            exchange.SetPrecision(symbol_all[i][1], symbol_all[i][2])
+            let records = exchange.GetRecords(60 * 60 * 1)
+            let kdj = TA.KDJ(records, 9, 3, 3)
+            let ma7 = TA.EMA(records, 7)
+            let ma25 = TA.EMA(records, 25)
+
+            
+            
+
+            let len = records.length - 1
+            let rs = records[len]
+            
+            
+            
+
+            if (rs.Close > rs.Open && rs.Volume > rs1.Volume * 1.5 && _Cross(kdj[0], kdj[1]) > 0 && _Cross(kdj[0], kdj[1]) < 5 && _Cross(ma7, ma25) > 0) {
+
+                symbol_list.push([symbol_all[i][0], symbol_all[i][1], symbol_all[i][2]]) 
+
+            }
+            if ((rs.Close > rs.Open && rs.Volume > rs1.Volume * 2 && rs.Close / rs.Open > 1.04) || (rs.Close > rs.Open && rs.Volume > rs1.Volume * 4)) {
+                symbol_list1.push([symbol_all[i][0], symbol_all[i][1], symbol_all[i][2]]) 
+            }
+            if (records[len - 3].Close > records[len - 3].Open && records[len - 1].Close > records[len - 1].Open && records[len - 2].Close > records[len - 2].Open) {
+                symbol_list2.push([symbol_all[i][0], symbol_all[i][1], symbol_all[i][2]]) 
+            }
+
+            Sleep(100)
+        }
+        Log("没数据", symbol_list)
+        Log("没数据", symbol_list1)
+        Log("三连涨", symbol_list2)
+
+    }
+}
+
+
+
+
+
+
+
+function main() {
+
+    let loss = 2
+    let loss_m = 0
+
+    while (1) {
+        
+
+
+
+        exchange.SetPrecision(priceScale, amountScale) 
+
+        exchange.SetMarginLevel(MarginLevel) 
+
+        let records = exchange.GetRecords(60 * 60 * 4)
+        let kdj = TA.KDJ(records, 9, 3, 3)
+        let account = exchange.GetAccount()
+        let position = _C(exchange.GetPosition) 
+        let Amount = position[0] ? position[0].Amount : 0
+        let ticker = _C(exchange.GetTicker); 
+        let ma7 = TA.EMA(records, 7)
+        let ma25 = TA.EMA(records, 25)
+        let money = bet * MarginLevel 
+
+        if (_N(money / ticker.Sell, amountScale) == 0) {
+            continue;
+        }
+        let len = records.length - 1
+        if (!position[0] && _Cross(kdj[0], kdj[1]) > 0 && kdj[2][len] > kdj[1][len] + 2) {
+            exchange.SetDirection("buy")
+            exchange.Buy(-1, money / ticker.Sell, ticker.Last,"开仓价:", ticker.Sell)
+
+
+        } else if (position[0] && position[0].Profit > position[0].Margin * 0.2) { 
+
+            
+            exchange.SetDirection("closebuy")
+            exchange.Sell(-1, position[0].Amount,ticker.Last, "盈利", position[0].Profit, ticker.Last, "#ff0000")
+            loss = 0.6
+            num = 0 
+            CancelPendingOrders() 
+
+        } else if (position[0] &&  _Cross(kdj[0], kdj[1]) < 0 && position[0].Profit > position[0].Margin * 0.1) { 
+
+            
+            exchange.SetDirection("closebuy")
+            exchange.Sell(-1, position[0].Amount,ticker.Last, "死叉平仓", position[0].Profit, ticker.Last, "#00009c")
+            loss = 0.6
+            num = 0 
+            CancelPendingOrders() 
+
+        }else if (position[0] && position[0].Margin / bet < 2.5 && position[0].Profit * -1 > position[0].Margin * 0.4) { 
+
+            let nn = 0.2 
+            if (position[0].Profit * -1 / position[0].Margin > 0.4) {
+                nn = position[0].Profit * -1 / position[0].Margin
+                Log(nn, "---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+
+            }
+
+            exchange.SetDirection("buy")
+            exchange.Buy(-1, position[0].Amount * nn, ticker.Last,"小补仓", ticker.Last, "持仓数量:", position[0].Amount, "| 浮动亏盈:", position[0].Profit, "| Margin:", position[0].Margin, "| 现有资金:", account.Balance, "| 持仓均价:", position[0].Price, "-------|最大单次浮亏", loss_m, "#0000ff")
+
+            
+        } else if (position[0] && position[0].Margin / bet >= 2.5 && position[0].Margin / bet < 6 && position[0].Profit * -1 > position[0].Margin * 2) { 
+
+
+            exchange.SetDirection("buy")
+            exchange.Buy(-1, position[0].Amount * 2, ticker.Last,"大补仓", ticker.Last, "持仓数量:", position[0].Amount, "| 浮动亏盈:", position[0].Profit, "| Margin:", position[0].Margin, "| 现有资金:", account.Balance, "| 持仓均价:", position[0].Price, "-------|最大单次浮亏", loss_m, "#ccff00")
+
+            
+        }
+
+        Sleep(1000)
+
+        
+        
+        _G("orderlist", order_list)
+        _G("symbol", symbol_list)
+        Sleep(1000 * 2)
+
+        if (position[0]) loss_m = position[0].Profit < loss_m ? position[0].Profit : loss_m
+
+        let cmd = GetCommand()
+        if (cmd) {
+            Log(cmd)
+            let arr = cmd.split(":")
+            if (arr[0] == "要做空") {
+                dan = 100
+            } else if (arr[0] == "检查symbol_list") {
+                Log("没数据就是没有符合条件的", symbol_list)
+            } else if (arr[0] == "已经清算的数据") {
+
+                Log("已经清算的数据", order_list)
+
+            } else if (arr[0] == "清除持久数据数据") {
+
+                Log("已经清算的数据")
+                _G(null)
+
+            }
+
+
+
+        }
+    }
+Log( _C(exchange.GetPosition))
+
+
+
+
+
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2021-09-19 12:42:30

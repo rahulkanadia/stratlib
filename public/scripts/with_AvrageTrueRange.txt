@@ -1,0 +1,207 @@
+import pandas as pd
+import numpy as np
+
+def load_data(file_name):
+    """
+    Loads and preprocesses the CSV file into a DataFrame.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_true_range(df):
+    """
+    Calculates the True Range (TR) for each day.
+    """
+    df['Previous Close'] = df['Close'].shift(1)
+    df['High-Low'] = df['High'] - df['Low']
+    df['High-PrevClose'] = abs(df['High'] - df['Previous Close'])
+    df['Low-PrevClose'] = abs(df['Low'] - df['Previous Close'])
+    df['TR'] = df[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+    return df
+
+def calculate_atr(df, n):
+    """
+    Calculates the Average True Range (ATR) over 'n' consecutive days.
+    """
+    df = calculate_true_range(df)
+    df['ATR'] = df['TR'].rolling(window=n).mean()
+    return df
+
+def calculate_day_range(day):
+    """
+    Calculates the trading range of a day (High - Low).
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    Calculates the gap between the previous day's close and the current day's open.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    """
+    Checks if the gap meets the specified conditions:
+    - At least $0.20
+    - Between 15% and 85% of the previous day's range
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    """
+    Determines the trade direction based on the gap:
+    - Gap up: Short position
+    - Gap down: Long position
+    """
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """
+    Checks if the gap is closed during the trading day and returns the exit price.
+    """
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            return prev_close, True
+        else:
+            return curr_day['Close'], False
+    else:
+        if curr_day['High'] >= prev_close:
+            return prev_close, True
+        else:
+            return curr_day['Close'], False
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    Calculates the profit or loss of a trade.
+    """
+    shares = position_size / entry_price
+    if trade_direction == 'Long':
+        return shares * (exit_price - entry_price)
+    else:
+        return shares * (entry_price - exit_price)
+
+def analyze_trades(df, atr_period, atr_threshold):
+    """
+    Analyzes trades, incorporating the ATR condition.
+    """
+    trades = []
+    df = calculate_atr(df, atr_period)
+    total_days = len(df)
+
+    for i in range(atr_period, total_days):
+        prev_day = df.iloc[i - 1]
+        curr_day = df.iloc[i]
+
+        atr_value = df['ATR'].iloc[i - 1]
+        if atr_value > atr_threshold:
+            continue  # Skip trade due to high volatility
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue  # Avoid division by zero
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue  # Gap doesn't meet criteria
+
+        trade_direction = determine_trade_direction(gap)
+        entry_price = curr_day['Open']
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+
+        trades.append({
+            'Date': curr_day['Date'],
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed,
+            'ATR': atr_value
+        })
+
+    return pd.DataFrame(trades)
+
+def calculate_statistics(trades_df):
+    """
+    Calculates and prints trade statistics.
+    """
+    if trades_df.empty:
+        print("No trades met the criteria.")
+        return
+
+    gains = trades_df[trades_df['Profit/Loss'] > 0]
+    losses = trades_df[trades_df['Profit/Loss'] < 0]
+
+    avg_gain = gains['Profit/Loss'].mean() if not gains.empty else 0
+    avg_loss = losses['Profit/Loss'].mean() if not losses.empty else 0
+    max_gain = gains['Profit/Loss'].max() if not gains.empty else 0
+    max_loss = losses['Profit/Loss'].min() if not losses.empty else 0
+
+    max_gain_date = gains['Date'].loc[gains['Profit/Loss'].idxmax()].date() if not gains.empty else None
+    max_loss_date = losses['Date'].loc[losses['Profit/Loss'].idxmin()].date() if not losses.empty else None
+
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Average Gain per Trade: ${avg_gain:,.2f}")
+    print(f"Average Loss per Trade: ${avg_loss:,.2f}")
+    if max_gain_date:
+        print(f"Maximum Gain per Trade: ${max_gain:,.2f} on {max_gain_date}")
+    else:
+        print("No gains to report.")
+    if max_loss_date:
+        print(f"Maximum Loss per Trade: ${max_loss:,.2f} on {max_loss_date}")
+    else:
+        print("No losses to report.")
+
+def simulate_trading(trades_df, initial_investment):
+    """
+    Simulates the trading strategy over all trades.
+    """
+    if trades_df.empty:
+        print("No trades to simulate.")
+        return initial_investment
+
+    position_size = initial_investment
+    trades_df['Profit/Loss'] = trades_df.apply(
+        lambda row: calculate_profit_loss(
+            row['Trade Direction'], row['Entry Price'], row['Exit Price'], position_size
+        ), axis=1
+    )
+
+    total_profit_loss = trades_df['Profit/Loss'].sum()
+    final_amount = initial_investment + total_profit_loss
+
+    print(f"Initial Investment: ${initial_investment:,.2f}")
+    print(f"Total Profit/Loss from All Trades: ${total_profit_loss:,.2f}")
+    print(f"Final Amount after All Trades: ${final_amount:,.2f}")
+
+    return final_amount
+
+def analyze_spy_gaps(file_name, initial_investment, atr_period, atr_threshold):
+    """
+    Main function to analyze gaps and simulate trades with ATR condition.
+    """
+    df = load_data(file_name)
+    trades_df = analyze_trades(df, atr_period, atr_threshold)
+
+    if trades_df.empty:
+        print("No trades met the criteria after applying ATR threshold.")
+        return trades_df, initial_investment
+
+    final_amount = simulate_trading(trades_df, initial_investment)
+    calculate_statistics(trades_df)
+
+    return trades_df, final_amount
+
+if __name__ == "__main__":
+    initial_investment = 16000  # $16,000 initial investment
+    atr_period = 5              # ATR calculated over 5 days
+    atr_threshold = 12          # ATR threshold value
+
+    trades_df, final_amount = analyze_spy_gaps('D6CK32X6.csv', initial_investment, atr_period, atr_threshold)
+
+    print("\nTrade Details:")
+    print(trades_df)

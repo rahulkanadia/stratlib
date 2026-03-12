@@ -1,0 +1,124 @@
+import pandas as pd
+
+pd.options.display.show_dimensions = False
+
+def data_frame_file_to_lists(file_name):
+    df = pd.read_csv(file_name, usecols=['Close'])
+    df2 = pd.read_csv(file_name, usecols=['Open'])
+    df3 = pd.read_csv(file_name, usecols=['Date'])
+    df4 = pd.read_csv(file_name, usecols=['High'])
+    df5 = pd.read_csv(file_name, usecols=['Low'])
+    close_list = df.values.tolist()
+    open_list = df2.values.tolist()
+    date_list = df3.values.tolist()
+    high_list = df4.values.tolist()  # Corrected to use df4 for 'High'
+    low_list = df5.values.tolist()
+    return close_list, open_list, date_list, high_list, low_list
+
+
+def data_frame_to_doubles(file_name):
+    stock = pd.read_csv(file_name)
+    list_of_dataframes = [stock.loc[i:i + 1].reset_index(drop=True) for i in range(len(stock), 0, -1)]
+    return list_of_dataframes[2:]
+
+
+def calc_gap(high, low):
+    gap = high - low
+    return gap > 0.2
+
+
+def chek_two_days_abs(double_df):
+    day1, day2 = double_df.loc[0], double_df.loc[1]
+    spread1 = abs(day1.loc['High'] - day1.loc['Low'])
+    spread2 = abs(day1.loc['Close'] - day2.loc['Open'])
+    if (spread2 < 0.2) or (spread1 * 0.85 < spread2) or (spread1 * 0.15 > spread2):
+        return False
+    return True
+
+
+def chek_two_days(double_df):
+    day1, day2 = double_df.loc[0], double_df.loc[1]
+
+    spread1 = abs(day1.loc['High'] - day1.loc['Low'])
+    spread2 = abs(day1.loc['Close'] - day2.loc['Open'])
+    if (spread2 < 0.2) or (spread1 * 0.85 < spread2) or (spread1 * 0.15 > spread2):
+        return (0, 0)
+    return spread2, day2.loc['Open']
+
+
+def price_calc(buying_price, double_df):
+    if not chek_two_days_abs(double_df):
+        return 2, 2, 2, 2  # Represents tuple is irrelevant
+    day1, day2 = double_df.loc[0], double_df.loc[1]
+    day1_open, day1_close = day1.loc['Open'], day1.loc['Close']
+    day2_open, day2_close = day2.loc['Open'], day2.loc['Close']
+    day2_high, day2_low = day2.loc['High'], day2.loc['Low']
+    spread1 = day1_open - day1_close
+    if day2_open >= day1_close:  # Gap up?
+        if day2_low <= day1_close:  # Gap closed?
+            return abs(day2_open - day1_close), 1, 0, day2_open  # Short because gap was up
+        if day2_close < day2_open:  # Red day?
+            return abs(day2_close - day1_close), 1, 0, day2_open
+        return abs(day2_close - day1_close), 0, 0, day2_open
+    if day2_open <= day1_close:  # Gap down?
+        if day2_high >= day1_close:  # Gap closed?
+            return abs(day1_close - day2_open), 1, 1, day2_open
+        if day2_close > day2_open:  # Green day?
+            return abs(day2_close - day1_close), 1, 1, day2_open
+        return abs(day2_close - day1_close), 0, 1, day2_open
+    return 999999999999999999999999999
+
+
+def num_of_getting_in(list_double_df):
+    cnt = 0
+    for i in range(len(list_double_df)):
+        if chek_two_days_abs(list_double_df[i]):
+            cnt += 1
+    return cnt
+
+
+def calc_percent_change(price_tuple):
+    if price_tuple[1] == 0:
+        if price_tuple[2] == 1:
+            return price_tuple[0]
+    return 0  # Placeholder
+
+
+def num_of_events(days_to_check, file_name):
+    tpls_lst = []
+    list_of_doubles = data_frame_to_doubles(file_name)
+    tmp = list_of_doubles[:days_to_check]
+    tmp = tmp[::-1]
+    for i in range(days_to_check):
+        price = price_calc(0, tmp[i])
+        if price[0] != 2:
+            tpls_lst.append(price)
+    return tpls_lst
+
+
+def turn_tuple_to_percentage(tpl):
+    perc = 0
+    if tpl[1] == 1:  # Gain
+        if tpl[2] == 1:  # Long
+            perc = (tpl[3] + tpl[0]) / tpl[3]
+        if tpl[2] == 0:  # Short
+            perc = (tpl[3] / (tpl[0] - tpl[3]))
+    if tpl[1] == 0:  # Loss
+        if tpl[2] == 1:
+            perc = (tpl[3] - tpl[0]) / tpl[3]
+        if tpl[2] == 0:  # Short
+            perc = (tpl[3] / (tpl[0] + tpl[3]))
+    return perc
+
+g = num_of_events(755, 'Spy Meir.csv')
+pers = 1
+gv = 1
+for i in range(len(g)):
+    pers = pers * turn_tuple_to_percentage(g[i])
+    if g[i][1] == 1:
+        gv += 1
+
+print("Number of trades that met the conditions:", len(g))
+
+print("Percentage of profitable trades:", gv / len(g))
+print("Cumulative Percentage Change:", pers)

@@ -1,0 +1,96 @@
+"""
+Fix All Strategy Files
+----------------------
+This script fixes the import issues in all strategy files.
+"""
+
+import os
+import re
+from pathlib import Path
+
+def fix_base_strategy_import(file_path):
+    """Fix the BaseStrategy import in a strategy file."""
+    
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    if 'from utils.base_strategy import BaseStrategy' not in content:
+        return False
+    
+    original_import = 'from utils.base_strategy import BaseStrategy'
+    fixed_import = 'from utils.base_strategy_fixed import BaseStrategy'
+    
+    path_setup_pattern = r'sys\.path\.append\(str\(Path\(__file__\)\.parent\.parent\.parent\)\)'
+    
+    better_path_setup = '''# Add parent directories to path to import utils
+current_file = Path(os.path.abspath(__file__))
+project_root = current_file.parent.parent.parent
+sys.path.insert(0, str(project_root))'''
+    
+    content = content.replace(original_import, fixed_import)
+    
+    if 'sys.path.append' in content:
+        import_section_end = content.find('from utils.base_strategy')
+        if import_section_end > 0:
+            before_import = content[:import_section_end]
+            after_import = content[import_section_end:]
+            
+            lines = before_import.split('\n')
+            new_lines = []
+            skip_next = False
+            
+            for i, line in enumerate(lines):
+                if skip_next:
+                    skip_next = False
+                    continue
+                    
+                if 'sys.path.append' in line and 'Path(__file__)' in line:
+                    new_lines.extend(better_path_setup.split('\n'))
+                    skip_next = False
+                elif line.strip() == '# Add parent directory to path to import utils':
+                    continue
+                else:
+                    new_lines.append(line)
+            
+            content = '\n'.join(new_lines) + '\n' + after_import
+    
+    if 'import os' not in content:
+        content = content.replace('import sys\n', 'import sys\nimport os\n')
+    
+    with open(file_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+    
+    return True
+
+def fix_all_strategies():
+    """Fix all strategy files in the project."""
+    
+    script_dir = Path(os.path.abspath(__file__)).parent
+    strategies_dir = script_dir / 'strategies'
+    
+    fixed_count = 0
+    error_count = 0
+    
+    for root, dirs, files in os.walk(strategies_dir):
+        for file in files:
+            if file.endswith('.py') and not file.startswith('__'):
+                file_path = Path(root) / file
+                
+                try:
+                    if fix_base_strategy_import(file_path):
+                        print(f"✓ Fixed: {file_path.relative_to(script_dir)}")
+                        fixed_count += 1
+                except Exception as e:
+                    print(f"✗ Error fixing {file_path.relative_to(script_dir)}: {e}")
+                    error_count += 1
+    
+    print(f"\n{'='*60}")
+    print(f"Fixed {fixed_count} files")
+    if error_count > 0:
+        print(f"Errors: {error_count}")
+    print(f"{'='*60}")
+
+if __name__ == "__main__":
+    print("Fixing all strategy files...")
+    print("="*60)
+    fix_all_strategies()

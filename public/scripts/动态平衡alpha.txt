@@ -1,0 +1,105 @@
+
+> 策略名称
+
+动态平衡alpha
+
+> 策略作者
+
+中本大料
+
+
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|threshold|0.05|阈值|
+|LoopInterval|60|循环时间|
+|Minstock|0.001|最小交易量|
+|XPrecision|4|量精度|
+|YPrecision|8|价精度|
+
+
+> 源码 (javascript)
+
+``` javascript
+var threshold = 0.05
+var LoopInterval = 60
+var Minstock = 0.001
+var XPrecision = 4
+var ZPrecision = 8
+
+
+function CancelPendingOrders() {
+    Sleep(1000);
+    var ret = false;
+    while (true) {
+        var orders = null;
+        while (!(orders = exchange.GetOrders())) {
+            Sleep(1000);
+        }
+        if(orders.length == 0){
+            return ret;
+        }
+        for (var j = 0; j< orders.length; j++){
+            exchange.CancelOrder(orders[j].Id);
+            ret = true;
+            if(j<(orders.length-1)){
+                Sleep(1000);
+            }
+        }
+    }
+}
+
+
+function onTick() {
+    var acc = _C(exchange.GetAccount); 
+    var ticker = _C(exchange.GetTicker); 
+    var spread = ticker.Sell - ticker.Buy; 
+    var diffAsset = (acc.Balance - (acc.Stocks * ticker.Sell)) / 2;
+    var ratio = diffAsset / acc.Balance;
+    LogStatus('ratio:'.ratio, _D()); 
+    if (Math.abs(ratio) < threshold) { 
+        print("spread")
+        return false; 
+    }
+    if (ratio > 0) { 
+        var buyPrice = _N(ticker.Sell + spread, ZPrecision);
+        var buyAmount = _N(diffAsset / buyPrice, XPrecision);
+        if (buyAmount < Minstock) { 
+            return false;
+        }
+        exchange.Buy(buyPrice, buyAmount, diffAsset, ratio);
+    }else{
+        var sellPrice = _N(ticker.Buy - spread, ZPrecision);
+        var sellAmount = _N(-diffAsset / sellPrice, XPrecision);
+        if(sellAmount < Minstock){
+            return false;
+        }
+        exchange.Sell(sellPrice, sellAmount, diffAsset, ratio); 
+    }
+    return true;
+}
+
+
+function main() {
+    
+    while (true) {
+        if (onTick()) {
+            CancelPendingOrders();
+            Log(_C(exchange.GetAccount));
+        }
+        Sleep(LoopInterval * 1000);
+    }
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2018-09-06 09:50:43

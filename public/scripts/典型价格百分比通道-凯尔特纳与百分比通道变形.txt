@@ -1,0 +1,48 @@
+
+> 策略名称
+
+典型价格百分比通道-凯尔特纳与百分比通道变形
+
+> 策略作者
+
+cyberking
+
+> 策略描述
+
+典型价格百分比通道-凯尔特纳与百分比通道变形
+DX^^EMA((H+L+C)/3,N);  
+KRTHR^^EMA(DX,N)*1.05; 
+KRTXR^^EMA(DX,N)/1.05; 
+
+
+
+> 源码 (麦语言)
+
+``` pascal
+(*backtest
+start: 2019-02-09 00:00:00
+end: 2020-03-04 00:00:00
+period: 1d
+exchanges: [{"eid":"Huobi","currency":"BTC_USDT"}]
+*)
+
+
+N:=21;
+DX^^EMA((H+L+C)/3,N);  
+KRTHR^^EMA(DX,N)*1.05; 
+KRTXR^^EMA(DX,N)/1.05; 
+
+C>DX AND (DX<KRTHR),BPK; 
+
+C<DX AND (DX>KRTXR),SPK; 
+
+AUTOFILTER;
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2020-03-05 21:36:49

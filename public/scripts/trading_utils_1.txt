@@ -1,0 +1,392 @@
+"""
+Trading Utilities Module
+------------------------
+Common functions and utilities used across all trading strategies.
+Provides data loading, technical indicators, statistics calculations, and more.
+"""
+
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import os
+import sys
+
+
+def load_data(file_path, date_column='Date'):
+    """
+    Load trading data from CSV file with proper date parsing and sorting.
+    
+    Parameters:
+    -----------
+    file_path : str
+        Path to the CSV file containing trading data
+    date_column : str
+        Name of the date column (default: 'Date')
+        
+    Returns:
+    --------
+    pd.DataFrame
+        Sorted DataFrame with parsed dates
+    """
+    try:
+        df = pd.read_csv(file_path, parse_dates=[date_column])
+        df.sort_values(date_column, inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        return df
+    except FileNotFoundError:
+        print(f"Error: File {file_path} not found.")
+        return None
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        return None
+
+
+def calculate_returns(prices):
+    """Calculate simple returns from price series."""
+    return prices.pct_change().fillna(0)
+
+
+def calculate_log_returns(prices):
+    """Calculate logarithmic returns from price series."""
+    return np.log(prices / prices.shift(1)).fillna(0)
+
+
+def calculate_sma(data, window):
+    """Calculate Simple Moving Average."""
+    return data.rolling(window=window).mean()
+
+
+def calculate_ema(data, span):
+    """Calculate Exponential Moving Average."""
+    return data.ewm(span=span, adjust=False).mean()
+
+
+def calculate_rsi(prices, period=14):
+    """
+    Calculate Relative Strength Index (RSI).
+    
+    Parameters:
+    -----------
+    prices : pd.Series
+        Price series
+    period : int
+        RSI period (default: 14)
+        
+    Returns:
+    --------
+    pd.Series
+        RSI values
+    """
+    delta = prices.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+
+def calculate_atr(high, low, close, period=14):
+    """
+    Calculate Average True Range (ATR).
+    
+    Parameters:
+    -----------
+    high : pd.Series
+        High prices
+    low : pd.Series
+        Low prices
+    close : pd.Series
+        Close prices
+    period : int
+        ATR period (default: 14)
+        
+    Returns:
+    --------
+    pd.Series
+        ATR values
+    """
+    tr1 = high - low
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=period).mean()
+    return atr
+
+
+def calculate_bollinger_bands(data, window=20, num_std=2):
+    """
+    Calculate Bollinger Bands.
+    
+    Parameters:
+    -----------
+    data : pd.Series
+        Price series
+    window : int
+        Moving average window (default: 20)
+    num_std : float
+        Number of standard deviations (default: 2)
+        
+    Returns:
+    --------
+    tuple
+        (middle_band, upper_band, lower_band, band_width)
+    """
+    middle = data.rolling(window=window).mean()
+    std = data.rolling(window=window).std()
+    upper = middle + (std * num_std)
+    lower = middle - (std * num_std)
+    width = upper - lower
+    return middle, upper, lower, width
+
+
+def calculate_macd(prices, fast=12, slow=26, signal=9):
+    """
+    Calculate MACD indicators.
+    
+    Returns:
+    --------
+    tuple
+        (macd_line, signal_line, histogram)
+    """
+    ema_fast = prices.ewm(span=fast, adjust=False).mean()
+    ema_slow = prices.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+
+def calculate_gap(open_price, prev_close):
+    """Calculate gap percentage between open and previous close."""
+    return ((open_price - prev_close) / prev_close * 100)
+
+
+def calculate_sharpe_ratio(returns, risk_free_rate=0.02, periods_per_year=252):
+    """
+    Calculate Sharpe Ratio.
+    
+    Parameters:
+    -----------
+    returns : pd.Series
+        Daily returns
+    risk_free_rate : float
+        Annual risk-free rate (default: 2%)
+    periods_per_year : int
+        Number of trading periods per year (default: 252)
+        
+    Returns:
+    --------
+    float
+        Sharpe ratio
+    """
+    if len(returns) < 2:
+        return 0
+    
+    excess_returns = returns - risk_free_rate / periods_per_year
+    if excess_returns.std() == 0:
+        return 0
+    
+    return np.sqrt(periods_per_year) * excess_returns.mean() / excess_returns.std()
+
+
+def calculate_max_drawdown(equity_curve):
+    """
+    Calculate maximum drawdown from equity curve.
+    
+    Parameters:
+    -----------
+    equity_curve : pd.Series
+        Cumulative equity values
+        
+    Returns:
+    --------
+    float
+        Maximum drawdown as a percentage
+    """
+    rolling_max = equity_curve.expanding().max()
+    drawdown = (equity_curve - rolling_max) / rolling_max
+    return drawdown.min() * 100
+
+
+def calculate_win_rate(trades_df):
+    """Calculate win rate from trades DataFrame."""
+    if len(trades_df) == 0:
+        return 0
+    return (trades_df['Profit'] > 0).sum() / len(trades_df) * 100
+
+
+def calculate_profit_factor(trades_df):
+    """Calculate profit factor (gross profit / gross loss)."""
+    winners = trades_df[trades_df['Profit'] > 0]['Profit'].sum()
+    losers = abs(trades_df[trades_df['Profit'] < 0]['Profit'].sum())
+    
+    if losers == 0:
+        return float('inf') if winners > 0 else 0
+    return winners / losers
+
+
+def calculate_statistics(trades_df, initial_investment=16000):
+    """
+    Calculate comprehensive trading statistics.
+    
+    Parameters:
+    -----------
+    trades_df : pd.DataFrame
+        DataFrame with trade results
+    initial_investment : float
+        Initial investment amount
+        
+    Returns:
+    --------
+    dict
+        Dictionary with all statistics
+    """
+    if len(trades_df) == 0:
+        return {
+            'total_trades': 0,
+            'win_rate': 0,
+            'total_profit': 0,
+            'roi': 0,
+            'sharpe_ratio': 0,
+            'max_drawdown': 0,
+            'profit_factor': 0,
+            'avg_profit': 0,
+            'avg_win': 0,
+            'avg_loss': 0,
+            'win_loss_ratio': 0
+        }
+    
+    total_trades = len(trades_df)
+    total_profit = trades_df['Profit'].sum()
+    roi = (total_profit / initial_investment) * 100
+    win_rate = calculate_win_rate(trades_df)
+    
+    winners = trades_df[trades_df['Profit'] > 0]
+    losers = trades_df[trades_df['Profit'] < 0]
+    
+    avg_win = winners['Profit'].mean() if len(winners) > 0 else 0
+    avg_loss = losers['Profit'].mean() if len(losers) > 0 else 0
+    win_loss_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else float('inf')
+    
+    equity_curve = initial_investment + trades_df['Profit'].cumsum()
+    returns = equity_curve.pct_change().fillna(0)
+    sharpe_ratio = calculate_sharpe_ratio(returns)
+    
+    max_drawdown = calculate_max_drawdown(equity_curve)
+    
+    profit_factor = calculate_profit_factor(trades_df)
+    
+    return {
+        'total_trades': total_trades,
+        'win_rate': round(win_rate, 2),
+        'total_profit': round(total_profit, 2),
+        'roi': round(roi, 2),
+        'sharpe_ratio': round(sharpe_ratio, 3),
+        'max_drawdown': round(max_drawdown, 2),
+        'profit_factor': round(profit_factor, 2),
+        'avg_profit': round(trades_df['Profit'].mean(), 2),
+        'avg_win': round(avg_win, 2),
+        'avg_loss': round(avg_loss, 2),
+        'win_loss_ratio': round(win_loss_ratio, 2)
+    }
+
+
+def print_statistics(stats, strategy_name="Strategy"):
+    """
+    Print statistics in a clean, formatted way.
+    
+    Parameters:
+    -----------
+    stats : dict
+        Statistics dictionary
+    strategy_name : str
+        Name of the strategy
+    """
+    print(f"\n{'='*50}")
+    print(f"{strategy_name} - Performance Summary")
+    print(f"{'='*50}")
+    print(f"Total Trades:    {stats['total_trades']}")
+    print(f"Win Rate:        {stats['win_rate']}%")
+    print(f"Total Profit:    ${stats['total_profit']:,.2f}")
+    print(f"ROI:             {stats['roi']}%")
+    print(f"Sharpe Ratio:    {stats['sharpe_ratio']}")
+    print(f"Max Drawdown:    {stats['max_drawdown']}%")
+    print(f"Profit Factor:   {stats['profit_factor']}")
+    print(f"Win/Loss Ratio:  {stats['win_loss_ratio']}")
+    print(f"{'='*50}\n")
+
+
+def save_results(trades_df, stats, strategy_name, output_dir):
+    """
+    Save trading results to CSV and statistics to text file.
+    
+    Parameters:
+    -----------
+    trades_df : pd.DataFrame
+        DataFrame with trade results
+    stats : dict
+        Statistics dictionary
+    strategy_name : str
+        Name of the strategy
+    output_dir : str
+        Directory to save results
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    trades_file = os.path.join(output_dir, f"{strategy_name}_trades.csv")
+    trades_df.to_csv(trades_file, index=False)
+    
+    stats_file = os.path.join(output_dir, f"{strategy_name}_stats.txt")
+    with open(stats_file, 'w') as f:
+        f.write(f"{strategy_name} - Performance Summary\n")
+        f.write("="*50 + "\n")
+        for key, value in stats.items():
+            f.write(f"{key.replace('_', ' ').title()}: {value}\n")
+
+
+def validate_data(df, required_columns):
+    """
+    Validate that DataFrame has required columns.
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame to validate
+    required_columns : list
+        List of required column names
+        
+    Returns:
+    --------
+    bool
+        True if valid, False otherwise
+    """
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        print(f"Error: Missing required columns: {missing_columns}")
+        return False
+    return True
+
+
+def get_data_path(filename):
+    """
+    Get the full path to a data file.
+    
+    Parameters:
+    -----------
+    filename : str
+        Name of the data file
+        
+    Returns:
+    --------
+    str
+        Full path to the data file
+    """
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_dir, 'data', filename)
+
+
+def format_number(value, decimals=2):
+    """Format number with thousands separator."""
+    if isinstance(value, (int, float)):
+        return f"{value:,.{decimals}f}"
+    return value

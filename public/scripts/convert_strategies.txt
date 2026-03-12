@@ -1,0 +1,312 @@
+"""
+Strategy Conversion Helper
+--------------------------
+This script helps convert old strategy files to the new standardized format.
+It provides templates and utilities for batch conversion.
+"""
+
+import os
+import re
+import shutil
+from datetime import datetime
+
+
+def create_strategy_template(strategy_name, strategy_type="basic"):
+    """Generate a strategy template based on type."""
+    
+    template = f'''"""
+{strategy_name}
+{'-' * len(strategy_name)}
+[DESCRIPTION TO BE FILLED]
+
+Entry Conditions:
+- [TO BE FILLED]
+
+Exit Conditions:
+- [TO BE FILLED]
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utils import BaseStrategy
+
+
+class {strategy_name.replace(' ', '')}Strategy(BaseStrategy):
+    """{strategy_name} implementation."""
+    
+    def __init__(self, initial_investment=16000):
+        super().__init__("{strategy_name}", initial_investment)
+        
+    def calculate_indicators(self, df):
+        """Calculate required indicators."""
+        return df
+        
+    def get_entry_conditions(self, df):
+        """Define entry conditions for the strategy."""
+        entry_signals = pd.Series(False, index=df.index)
+        return entry_signals
+        
+    def get_exit_conditions(self, df, entry_index):
+        """Define exit conditions (optional - defaults to market close)."""
+        return super().get_exit_conditions(df, entry_index)
+
+
+def main():
+    """Run the {strategy_name} strategy."""
+    strategy = {strategy_name.replace(' ', '')}Strategy(initial_investment=16000)
+    
+    data_file = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        'data', '7J0OK1VR.csv'
+    )
+    
+    trades_df, statistics = strategy.run(data_file, save_results=True, 
+                                       output_dir='../../results')
+    
+    return trades_df, statistics
+
+
+if __name__ == "__main__":
+    main()
+'''
+    
+    return template
+
+
+def identify_strategy_pattern(file_content):
+    """Identify the pattern/type of strategy from file content."""
+    patterns = {
+        'dip': ['rolling.*drop', 'dip', 'avg.*drop', 'rolling.*average.*drop'],
+        'gap_and_go': ['gap.*go', 'gap.*direction', 'profit.*target', 'stop.*loss'],
+        'gap_fade': ['gap.*fade', 'opposite.*gap', 'fade.*gap'],
+        'vix': ['vix', 'volatility.*index'],
+        'ml': ['sklearn', 'train_test_split', 'classifier', 'random.*forest', 'gradient.*boost'],
+        'atr': ['atr', 'average.*true.*range'],
+        'ma': ['moving.*average', 'sma', 'ema', 'crossover']
+    }
+    
+    content_lower = file_content.lower()
+    
+    for strategy_type, keywords in patterns.items():
+        for keyword in keywords:
+            if re.search(keyword, content_lower):
+                return strategy_type
+    
+    return 'other'
+
+
+def extract_strategy_info(file_path):
+    """Extract key information from existing strategy file."""
+    info = {
+        'file_name': os.path.basename(file_path),
+        'strategy_type': 'unknown',
+        'has_multiple_strategies': False,
+        'uses_vix': False,
+        'uses_ml': False,
+        'main_indicators': [],
+        'entry_logic': '',
+        'exit_logic': ''
+    }
+    
+    try:
+        with open(file_path, 'r') as f:
+            content = f.read()
+        
+        info['strategy_type'] = identify_strategy_pattern(content)
+        
+        info['uses_vix'] = 'vix' in content.lower()
+        
+        info['uses_ml'] = 'sklearn' in content or 'train_test_split' in content
+        
+        class_count = len(re.findall(r'class\s+\w+.*:', content))
+        info['has_multiple_strategies'] = class_count > 1
+        
+        indicator_patterns = [
+            'rsi', 'macd', 'bollinger', 'atr', 'ema', 'sma', 
+            'volume', 'stochastic', 'momentum', 'adx'
+        ]
+        for indicator in indicator_patterns:
+            if indicator in content.lower():
+                info['main_indicators'].append(indicator.upper())
+        
+    except Exception as e:
+        print(f"Error reading {file_path}: {e}")
+    
+    return info
+
+
+def create_conversion_report(source_dir):
+    """Create a report of all strategies that need conversion."""
+    report = []
+    
+    for root, dirs, files in os.walk(source_dir):
+        if 'clean_strategies' in root:
+            continue
+            
+        for file in files:
+            if file.endswith('.py') and not file.startswith('__'):
+                file_path = os.path.join(root, file)
+                info = extract_strategy_info(file_path)
+                info['full_path'] = file_path
+                info['relative_path'] = os.path.relpath(file_path, source_dir)
+                report.append(info)
+    
+    summary = {
+        'total_files': len(report),
+        'by_type': {},
+        'multiple_strategies': [],
+        'uses_vix': [],
+        'uses_ml': []
+    }
+    
+    for item in report:
+        strategy_type = item['strategy_type']
+        summary['by_type'][strategy_type] = summary['by_type'].get(strategy_type, 0) + 1
+        
+        if item['has_multiple_strategies']:
+            summary['multiple_strategies'].append(item['relative_path'])
+        if item['uses_vix']:
+            summary['uses_vix'].append(item['relative_path'])
+        if item['uses_ml']:
+            summary['uses_ml'].append(item['relative_path'])
+    
+    return report, summary
+
+
+def generate_conversion_script(report, output_dir):
+    """Generate a script to help with batch conversion."""
+    
+    script_content = '''#!/usr/bin/env python3
+"""
+Batch Strategy Conversion Script
+Generated: {timestamp}
+"""
+
+import os
+import shutil
+
+conversions = {{
+'''.format(timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    
+    by_type = {}
+    for item in report:
+        strategy_type = item['strategy_type']
+        if strategy_type not in by_type:
+            by_type[strategy_type] = []
+        by_type[strategy_type].append(item)
+    
+    for strategy_type, items in by_type.items():
+        script_content += f'    # {strategy_type.upper()} strategies\n'
+        for item in items:
+            script_content += f'    "{item["relative_path"]}": "{strategy_type}",\n'
+        script_content += '\n'
+    
+    script_content += '''}}
+
+multi_strategy_files = {multi_files}
+
+vix_files = {vix_files}
+
+ml_files = {ml_files}
+
+def convert_file(source_path, strategy_type):
+    """Convert a single strategy file."""
+    print(f"Converting {{source_path}} ({{strategy_type}})...")
+    pass
+
+def main():
+    """Run batch conversion."""
+    print("Starting batch conversion...")
+    
+    for file_path, strategy_type in conversions.items():
+        if os.path.exists(file_path):
+            convert_file(file_path, strategy_type)
+    
+    print("Conversion complete!")
+
+if __name__ == "__main__":
+    main()
+'''.format(
+        multi_files=summary['multiple_strategies'],
+        vix_files=summary['uses_vix'],
+        ml_files=summary['uses_ml']
+    )
+    
+    script_path = os.path.join(output_dir, 'batch_convert.py')
+    with open(script_path, 'w') as f:
+        f.write(script_content)
+    
+    print(f"Conversion script saved to: {script_path}")
+
+
+def main():
+    """Main function to analyze existing strategies."""
+    print("="*70)
+    print("STRATEGY CONVERSION ANALYSIS")
+    print("="*70)
+    
+    source_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    print("Analyzing existing strategies...")
+    report, summary = create_conversion_report(source_dir)
+    
+    print(f"\nTotal strategy files found: {summary['total_files']}")
+    print("\nBreakdown by type:")
+    for strategy_type, count in summary['by_type'].items():
+        print(f"  {strategy_type}: {count} files")
+    
+    print(f"\nFiles with multiple strategies: {len(summary['multiple_strategies'])}")
+    for file in summary['multiple_strategies'][:5]:  # Show first 5
+        print(f"  - {file}")
+    if len(summary['multiple_strategies']) > 5:
+        print(f"  ... and {len(summary['multiple_strategies']) - 5} more")
+    
+    print(f"\nFiles using VIX data: {len(summary['uses_vix'])}")
+    print(f"Files using ML: {len(summary['uses_ml'])}")
+    
+    report_path = os.path.join(os.path.dirname(__file__), 'conversion_report.txt')
+    with open(report_path, 'w') as f:
+        f.write("STRATEGY CONVERSION REPORT\n")
+        f.write("="*70 + "\n\n")
+        
+        for item in report:
+            f.write(f"File: {item['relative_path']}\n")
+            f.write(f"Type: {item['strategy_type']}\n")
+            f.write(f"Multiple Strategies: {item['has_multiple_strategies']}\n")
+            f.write(f"Uses VIX: {item['uses_vix']}\n")
+            f.write(f"Uses ML: {item['uses_ml']}\n")
+            f.write(f"Indicators: {', '.join(item['main_indicators'])}\n")
+            f.write("-"*50 + "\n\n")
+    
+    print(f"\nDetailed report saved to: {report_path}")
+    
+    
+    print("\nCreating example templates...")
+    templates_dir = os.path.join(os.path.dirname(__file__), 'templates')
+    os.makedirs(templates_dir, exist_ok=True)
+    
+    template_types = ['DIP Strategy', 'Gap and Go Strategy', 'MA Crossover Strategy']
+    for template_name in template_types:
+        template_content = create_strategy_template(template_name)
+        template_file = os.path.join(templates_dir, f"{template_name.lower().replace(' ', '_')}_template.py")
+        with open(template_file, 'w') as f:
+            f.write(template_content)
+    
+    print(f"Templates created in: {templates_dir}")
+    
+    print("\n" + "="*70)
+    print("NEXT STEPS:")
+    print("="*70)
+    print("1. Review the conversion_report.txt for all strategies")
+    print("2. Use templates in 'templates/' folder as starting points")
+    print("3. Convert strategies one by one or in batches")
+    print("4. Test each converted strategy with run_all.py")
+    print("5. Compare results with original implementations")
+
+
+if __name__ == "__main__":
+    main()

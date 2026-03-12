@@ -1,0 +1,595 @@
+
+> 策略名称
+
+JS多图表模板v10_20200429
+
+> 策略作者
+
+中本姜
+
+
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|LogLevel|3|Log等级|
+|IsAsync|false|异步调用API获取数据|
+|LoopInterval|3|轮训时间(秒)|
+|MinDiff|0.8|最小价差|
+
+
+> 源码 (javascript)
+
+``` javascript
+
+$.PlotFlag = function(time, text, title, shape, color) {
+    var obj = {
+        x: time,
+        color: color,
+        shape: shape,
+        title: title,
+        text: text
+    }
+    if (preFlagTime != time) {
+        preFlagTime = time
+        chart.add(seriesIdx, obj)
+    } else {
+        chart.add(seriesIdx, obj, -1)
+    }
+    return chart
+}
+
+
+function EasyReadTime(millseconds) {
+    if (typeof millseconds == 'undefined' ||
+        !millseconds) {
+        millseconds = new Date().getTime();
+    }
+    var newDate = new Date();
+    newDate.setTime(millseconds);
+    return newDate.toLocaleString();
+}
+
+var RedColor = "#ff0000"; 
+var GreenColor = "#006600"; 
+var YellowColor = "#FFA500"; 
+
+$.DuoColor = GreenColor
+$.KongColor = RedColor
+$.PingColor = YellowColor
+
+$.RedColor = RedColor;
+$.GreenColor = GreenColor;
+$.YellowColor = YellowColor;
+
+
+LOG_CRT = 0;
+LOG_ERR = 1;
+LOG_WARN = 2;
+LOG_INFO = 3;
+LOG_DA_DBG = 4;
+LOG_WK_DBG = 5;
+
+var LogLevelStr = ["LOG_CRT ", "LOG_ERR ", "LOG_WARN", "LOG_INFO ", "LOG_DA_DBG ", "LOG_WK_DBG "];
+var LogColorStr = [RedColor, RedColor, YellowColor, GreenColor, "", ""];
+
+function LogPush()
+{
+    var args = [].slice.call(arguments);
+    var _LogLevel = args[0];
+
+    if (_LogLevel <= LogLevel) {
+        args[0] = LogLevelStr[_LogLevel];
+        args.push(LogColorStr[_LogLevel]);
+        if (_LogLevel == LOG_CRT) {
+            throw args;
+        } else {
+            Log.apply(this, args);
+        }
+    }
+}
+
+
+var G_Chart = null;
+
+var G_ChartObjList = [];
+
+
+function _SeriesObj(name, type, color, yAxis, is_primary) {
+	this._Name = name;
+	this._Type = type;
+	this._Color = color;
+	this._Index = null;
+	this._LastTime = null;
+    this._yAxis = yAxis;
+    this._is_primary = is_primary
+    this._ColumnIndex = [];
+    this._Rec = {'Time': null, 'High': null, 'Low': null, 'Close': null, 'Open': null}
+    if (this._Type == 'column') {
+        this._xAxis = 1;
+    } else {
+        this._xAxis = 0;
+    }
+
+	this.GetCfg = function() {
+		var cfg;
+        var xAxis_value;
+		if (!color || this._Color == '') {
+			cfg = {
+				type: this._Type,
+				name: this._Name,
+				data: [],
+                xAxis: this._xAxis,
+                yAxis: this._yAxis};
+		} else {
+			cfg = {
+				type: this._Type,
+				name: this._Name,
+				color: this._Color,
+				data: [],
+                xAxis: this._xAxis,
+                yAxis: this._yAxis};
+		}
+        if (this._Type == 'candlestick') {
+            cfg.color = '#DD2200';
+            cfg.upColor = '#33AA11';
+            cfg.lineColor = '#DD2200'; 
+            cfg.upLineColor = '#33AA11';
+        }
+        if (this._Type == 'flags') {
+			cfg = {
+				type: this._Type,
+				name: this._Name,
+				data: []}
+            cfg.onSeries = 'primary';
+        }
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        if (typeof(this._is_primary) != 'undefined' && this._is_primary != null &&
+            this._is_primary) {
+            cfg.id = "primary";
+        }
+		return cfg;
+	}; 
+    
+    this.AddFData = function(time, title, text, color, shape) {
+        if (this._Type != 'flags') {
+			LogPush(LOG_CRT, this._Name, this._Type, "不是标签图不能添加标签数据");
+        }
+        var obj = {
+            x: time,
+            color: color,
+            shape: shape,
+            title: title,
+            text: text
+        }
+        if (this._LastTime != time) {
+            this._LastTime = time
+            G_Chart.add(this._Index, obj)
+        } else {
+            
+            G_Chart.add(this._Index, obj)
+            
+        }
+    };
+    
+    this.AddKData = function(time, close, high, low, open) {
+        if (this._Type != 'candlestick') {
+			LogPush(LOG_CRT, this._Name, this._Type, "不是蜡烛图不能添加K线数据");
+        }
+        
+        var _RECS = function(k_change, rec, data) {
+            if (k_change) {
+                rec.High = data.High;
+                rec.Low = data.Low;
+                rec.Open = data.Open;
+                rec.Time = data.Time;
+            }
+            rec.Close = data.Close;
+            rec.Low = Math.min(rec.Low, data.Low);
+            rec.High = Math.max(rec.High, data.High);
+            return [rec];
+        };
+        
+        if (typeof(high) == 'undefined') {
+            high = close;
+        }
+        if (typeof(low) == 'undefined') {
+            low = close;
+        }
+        if (typeof(open) == 'undefined') {
+            open = close;
+        }
+        var k_change = false;
+        if (!this._LastTime || this._LastTime != time) {
+            k_change = true;
+        }
+        var new_data = _RECS(k_change, this._Rec,
+                             {'High': high, 'Low': low, 'Open': open, 'Close': close, 'Time': time});
+        this.AddData(new_data, time);
+    };
+
+	
+	this.AddData = function(data, time, is_time_data) {
+		if (!G_Chart) {
+			LogPush(LOG_CRT, "不能画图因为全局图表未定义!");
+		}
+
+        if (this._Type == 'column') {
+            var column_name = data[0];
+            var value = data[1];
+            if (this._ColumnIndex[column_name] == null) {
+		        G_Chart.add([this._Index, [column_name, value]]);
+                for (var i in this._ColumnIndex) {
+                    this._ColumnIndex[i] += -1;
+                }
+                this._ColumnIndex[column_name] = -1;
+                
+            } else {
+                
+                G_Chart.add([this._Index, [column_name, value, this._ColumnIndex[column_name]]]);
+            }
+            return;
+        }
+        
+		if (typeof(is_time_data) == 'undefined' || !is_time_data) {
+			is_time_data = true;
+		}
+        
+        var now_time;
+        if (typeof(time) == 'undefined' || !time) {
+		    now_time = new Date().getTime();
+        } else {
+            now_time = time;
+        }
+		if (is_time_data || this._Type == 'candlestick') {
+			if (this._Type == 'candlestick') {
+				var now_record = data[data.length-1];
+				var now_data = [now_record.Time, now_record.Open, now_record.High,
+                                now_record.Low, now_record.Close];
+				var last_data = null;
+				if (data.length > 1) {
+					var last_record = data[data.length-2];
+					last_data = [last_record.Time, last_record.Open, last_record.High,
+                	             last_record.Low, last_record.Close];
+				}
+				now_time = now_data[0];
+				if (!this._LastTime) {
+					this._LastTime = now_time;
+				}
+				if (now_time == this._LastTime) {
+					G_Chart.add([this._Index, now_data, -1]);
+				} else {
+					if (last_data) {
+						G_Chart.add([this._Index, last_data, -1]);
+					}
+					G_Chart.add([this._Index, now_data]);
+				}
+			} else if (Array.isArray(data)) {
+				now_time = data[0];
+                if (now_time == this._LastTime) {
+				    G_Chart.add([this._Index, data, -1]);
+                } else {
+				    G_Chart.add([this._Index, data]);
+                }
+			} else {
+				time_data = [now_time, data];
+                if (now_time == this._LastTime) {
+				    G_Chart.add([this._Index, time_data, -1]);
+                } else {
+				    G_Chart.add([this._Index, time_data]);
+                }
+			}
+		} else {
+			G_Chart.add([this._Index, data]);
+		}
+
+		this._LastTime = now_time;
+	};
+
+	this.GetName = function() {
+		return this._Name;
+	};
+}
+
+
+function _ChartObj(title, is_stock) {
+	this._Title = title;
+	if (typeof(is_stock) == 'undefined') {
+		is_stock = true;
+	}
+	this._IsStock = is_stock;
+	
+	this._Series = [];
+	
+	this._SeriesCfg = [];
+    this._yAxis = 0;
+	
+    
+	this.CreateSeries = function(series_name, series_type, series_color, is_right, is_primary) {
+		for (var name in this._Series) {
+			if (name == series_name) {
+				
+				
+                LogPush(LOG_INFO, name, "已经存在将直接返回");
+                return this._Series[name]
+			}
+		}
+        var yAxis = 0;
+        if (typeof(is_right) != 'undefined') {
+            yAxis = is_right ? 1: 0;
+        } else {
+            yAxis = this._yAxis;
+        }
+		var series = new _SeriesObj(series_name, series_type, series_color, yAxis, is_primary);
+		this._Series[series_name] = series;
+		var series_cfg = series.GetCfg();
+		this._SeriesCfg.push(series_cfg);
+		_UpdateSeriesIndex();
+		return series;
+	};
+
+	this.AddData = function(series_name, data, is_time_data) {
+		var series = this._Series[series_name];
+		if (!series) {
+			LogPush(LOG_ERROR, "不能再图表 ", this._Title, " 中找到图 ", series_name);
+		}
+		series.AddData(data, is_time_data);
+		$.ChartUpdate();
+	};
+
+	this.GetCfg = function() {
+		var cfg = {
+			__isStock: this._IsStock,
+			legend: {enabled: true},
+    		tooltip: {xDateFormat: '%Y-%m-%d %H:%M:%S, %A'},
+			chart: {zoomType: 'x',
+                    panning: true},
+			title: {text: this._Title},
+			
+    		rangeSelector: {
+    	        buttons:  [
+					{type: 'hour',count: 1, text: '1h'},
+					{type: 'hour',count: 3, text: '3h'},
+					{type: 'hour', count: 8, text: '8h'},
+					{type: 'all',text: 'All'}],
+    	        selected: 0,
+    	        inputEnabled: false
+    	    },
+    		xAxis: [{type: 'datetime'},
+                    {categories: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]}],
+    		yAxis: [{
+    		        title: {text: '价格线'},
+    		        style: {color: '#4572A7'},
+    		        opposite: false  
+    		        },
+    		        {
+    		        title: {text: '价格振幅线'},
+    		        opposite: true  
+    		        }
+    		],
+			series: this._SeriesCfg,
+		};
+		return cfg;
+	};
+
+	this.GetName = function() {
+		return this._Title;
+	};
+}
+
+function _UpdateSeriesIndex() {
+	var index = 0;
+	$.ChartUpdate();
+	for (var i = 0; i < G_ChartObjList.length; i++) {
+		var chart = G_ChartObjList[i];
+		for (var series_name in chart._Series) {
+			var series = chart._Series[series_name];
+			series._Index = index;
+			LogPush(LOG_WK_DBG, "图表 ", chart.GetName(), " 中图 ",
+                    series.GetName(), ", 索引号为:", series._Index);
+			index += 1;
+		}
+	}
+}
+
+$.G_Chart = function() {
+    return G_Chart;
+}
+
+$.ChartUpdate = function() {
+	cfg_list = [];
+	for (var i = 0; i < G_ChartObjList.length; i++) {
+		var chart = G_ChartObjList[i];
+		var cfg = chart.GetCfg();
+		cfg_list.push(cfg);
+	}
+	if (!G_Chart) {
+		G_Chart = Chart(cfg_list);
+		
+	} else {
+		G_Chart.update(cfg_list);
+	}
+};
+
+
+$.ChartObj = function(title, is_stock) {
+	var chart = new _ChartObj(title, is_stock);
+	G_ChartObjList.push(chart); 
+	return chart;
+};
+
+$.GetTickersAsync = function(exchanges) {
+	tickers = [];
+	var exchange_handlers = [];
+	for (var i in exchanges) {
+		if (IsAsync) {
+			exchange_handlers[i] = exchanges[i].Go("GetTicker");
+		} else {
+			exchange_handlers[i] = exchanges[i].GetTicker();
+		}
+	}
+	for (var i in exchange_handlers) {
+		if (IsAsync) {
+			tickers[i] = exchange_handlers[i].wait(500);
+		} else {
+			tickers[i] = exchange_handlers[i];
+		}
+	}
+	return tickers;
+};
+
+var CoinNameMapping = {
+	'BTC_CNY': 'BTC',
+	'LTC_CNY': 'LTC',
+	'ETH_CNY': 'ETH',
+	'BTS_CNY': 'BTS',
+};
+
+function GetCoinType(currency) {
+	coin_type = CoinNameMapping[currency];
+	if (!coin_type) {
+		coin_type = currency;
+	}
+	return coin_type;
+}
+
+function main() {
+	var ticker_chart_list = [];
+	
+	var diff_chart_list = [];
+	var exchange_dict = [];
+	var coin_type;
+
+	for (var i = 0; i < exchanges.length; i++) {
+		var platform_name = exchanges[i].GetName();
+		coin_type = GetCoinType(exchanges[i].GetCurrency());
+		if (!exchange_dict[coin_type]) {
+			exchange_dict[coin_type] = [];
+		}
+		if (!exchange_dict[coin_type][platform_name]) {
+			exchange_dict[coin_type][platform_name] = exchanges[i];
+		}
+	}
+
+	for (coin_type in exchange_dict) {
+		var title_name = coin_type + "各个交易平台价格图表";
+		var chart = $.ChartObj(title_name);
+		LogPush(LOG_INFO, "添加图表:", title_name);
+		ticker_chart_list[coin_type] = chart;
+
+		coin_exchanges = exchange_dict[coin_type];
+		for (var name in coin_exchanges) {
+			var series_name = name + "现在价格";
+			var series = chart.CreateSeries(series_name, 'spline', '');
+			ticker_chart_list[coin_type][name] = series;
+		}
+	}
+
+    var column_chart = $.ChartObj("柱形图", false);
+    var column_series = column_chart.CreateSeries("柱形图", 'column');
+	for (coin_type in exchange_dict) {
+		var title_name = coin_type + "各个交易平台价差图表";
+		var chart = $.ChartObj(title_name);
+		LogPush(LOG_INFO, "添加图表:", title_name);
+		diff_chart_list[coin_type] = chart;
+
+		coin_exchanges = exchange_dict[coin_type];
+		for (var left_name in coin_exchanges) {
+			var find = false;
+			for (var right_name in coin_exchanges) {
+				if (right_name == left_name) {
+					find = true;
+					continue;
+				}
+				if (find) {
+					var series_name = left_name + "_" + right_name + "价差";
+					var series = chart.CreateSeries(series_name, 'spline', '');
+					if (!diff_chart_list[coin_type][left_name]) {
+						diff_chart_list[coin_type][left_name] = [];
+					}
+					var ele = [];
+					ele['left_name'] = left_name;
+					ele['right_name'] = right_name;
+					ele['series'] = series;
+					diff_chart_list[coin_type][left_name].push(ele);
+					LogPush(LOG_INFO, "在图表:", title_name, "中添加图:", series_name);
+				}
+			}
+		}
+	}
+
+    var n = 0;
+	while (true) {
+		for (var coin_type in exchange_dict) {
+			var tickers = $.GetTickersAsync(exchange_dict[coin_type]);
+			var time = new Date().getTime();
+			for (var pname in exchange_dict[coin_type]) {
+				
+				var series = ticker_chart_list[coin_type][pname];
+				var records = exchange.GetRecords();
+				var ticker = tickers[pname];
+				if (!ticker || !ticker.Last || ticker.Sell < ticker.Buy) {
+					continue;
+				}
+				series.AddData([time, ticker.Last]);
+
+				var diff_series_list = diff_chart_list[coin_type][pname];
+				if (diff_series_list) {
+					for (var i in diff_series_list) {
+						diff_series_dict = diff_series_list[i];
+						var left_name = diff_series_dict['left_name'];
+						var right_name = diff_series_dict['right_name'];
+						var diff_series = diff_series_dict['series'];
+						var left_ticker = ticker;
+						var right_ticker = tickers[right_name];
+                        LogPush(LOG_WK_DBG, "left_ticker: ", left_ticker, "right_ticker:", right_ticker);
+						if (!right_ticker || !right_ticker.Last || right_ticker.Sell < right_ticker.Buy) {
+							continue;
+						}
+						var sell_diff = left_ticker.Buy - right_ticker.Sell;
+						var buy_diff = left_ticker.Sell - right_ticker.Buy;
+						if (sell_diff >= 0 && buy_diff >= 0) {
+                            if (Math.abs(sell_diff) >= MinDiff) {
+							    diff_series.AddData([time, sell_diff]);
+                            }
+						}
+						else if (sell_diff <= 0 && buy_diff <= 0) {
+                            if (Math.abs(buy_diff) >= MinDiff) {
+							    diff_series.AddData([time, buy_diff]);
+                            }
+						} 
+                        
+						
+						
+					}
+				}
+			}
+		}
+        if (n < 15) {
+            column_series.AddData([n%5, n]);
+        }
+        n++;
+        n++;
+		Sleep(LoopInterval * 1000);
+	}
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2020-04-29 16:35:59

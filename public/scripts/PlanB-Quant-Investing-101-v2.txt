@@ -1,0 +1,92 @@
+
+> 策略名称
+
+PlanB-Quant-Investing-101-v2
+
+> 策略作者
+
+Zer3192
+
+
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|v_input_1|90|selllevel|
+|v_input_2|65|drop|
+|v_input_3|50|buylevel|
+
+
+> 源码 (PineScript)
+
+``` javascript
+
+
+
+
+
+
+strategy("PlanB Quant Investing 101", shorttitle="PlanB RSI Strategy", overlay=true,calc_on_every_tick=false,pyramiding=0, default_qty_type=strategy.cash,default_qty_value=1000, currency=currency.USD, initial_capital=1000,commission_type=strategy.commission.percent, commission_value=0.0)
+
+
+r=rsi(close,14)
+
+
+
+
+
+
+selllevel = input(90)
+maxrsi = highest(rsi(close,14),6)[1]
+
+rsisell = maxrsi > selllevel 
+
+
+
+drop = input(65)
+
+rsidrop= r < drop
+
+
+sellsignal = rsisell and rsidrop 
+
+
+
+
+
+
+
+buylevel = input(50)
+minrsi = lowest(rsi(close,14),6)[1]
+
+rsibuy = minrsi < buylevel 
+
+
+
+
+rsibounce= r > (minrsi + 2)
+
+
+
+
+
+buysignal = rsibuy and rsibounce 
+
+
+
+strategy.entry("Buy Signal",strategy.long, when = buysignal)
+strategy.entry("Sell Signal",strategy.short, when = sellsignal)
+
+
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2022-08-24 02:56:16

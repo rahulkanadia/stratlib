@@ -1,0 +1,153 @@
+"""
+SIMPLE WORKING STRATEGY - Guaranteed to run!
+
+This is a complete, self-contained trading strategy that doesn't require any imports
+or external files. Use this as a template for understanding how strategies work.
+"""
+
+def run_simple_gap_strategy():
+    """
+    Simple Gap Trading Strategy
+    
+    Rules:
+    - If SPY gaps up > 0.5%, go SHORT (expect pullback)
+    - If SPY gaps down > 0.5%, go LONG (expect bounce)
+    - Exit at end of day
+    """
+    
+    sample_data = [
+        ("2024-01-02", 472.50, 474.25, 471.50, 473.85),
+        ("2024-01-03", 473.00, 473.50, 470.25, 471.20),
+        ("2024-01-04", 470.50, 472.00, 469.80, 471.50),
+        ("2024-01-05", 472.80, 473.50, 471.00, 472.25),
+        ("2024-01-08", 473.50, 475.25, 473.00, 474.90),
+        ("2024-01-09", 474.00, 474.50, 472.25, 473.80),
+        ("2024-01-10", 474.50, 476.00, 474.00, 475.50),
+        ("2024-01-11", 476.20, 477.00, 475.50, 476.80),
+        ("2024-01-12", 476.00, 476.50, 474.80, 475.90),
+        ("2024-01-16", 474.50, 475.00, 473.00, 474.20),
+    ]
+    
+    trades = []
+    initial_capital = 10000
+    current_capital = initial_capital
+    
+    print("=" * 60)
+    print("SIMPLE GAP TRADING STRATEGY")
+    print("=" * 60)
+    print(f"Initial Capital: ${initial_capital:,.2f}")
+    print(f"Strategy: Fade gaps > 0.5%")
+    print("=" * 60)
+    
+    for i in range(1, len(sample_data)):
+        prev_day = sample_data[i-1]
+        curr_day = sample_data[i]
+        
+        prev_close = prev_day[4]
+        curr_open = curr_day[1]
+        curr_high = curr_day[2]
+        curr_low = curr_day[3]
+        curr_close = curr_day[4]
+        
+        gap = curr_open - prev_close
+        gap_percent = (gap / prev_close) * 100
+        
+        if abs(gap_percent) > 0.5:
+            if gap_percent > 0:
+                direction = "SHORT"
+                entry_price = curr_open
+                
+                if curr_low <= prev_close:
+                    exit_price = prev_close
+                else:
+                    exit_price = curr_close
+                
+                shares = current_capital / entry_price
+                profit_loss = shares * (entry_price - exit_price)
+                
+            else:
+                direction = "LONG"
+                entry_price = curr_open
+                
+                if curr_high >= prev_close:
+                    exit_price = prev_close
+                else:
+                    exit_price = curr_close
+                
+                shares = current_capital / entry_price
+                profit_loss = shares * (exit_price - entry_price)
+            
+            current_capital += profit_loss
+            
+            trade = {
+                'date': curr_day[0],
+                'direction': direction,
+                'entry': entry_price,
+                'exit': exit_price,
+                'gap_percent': gap_percent,
+                'profit_loss': profit_loss,
+                'capital': current_capital
+            }
+            trades.append(trade)
+            
+            print(f"\nTrade {len(trades)}:")
+            print(f"  Date: {curr_day[0]}")
+            print(f"  Gap: {gap_percent:.2f}% - {direction}")
+            print(f"  Entry: ${entry_price:.2f}, Exit: ${exit_price:.2f}")
+            print(f"  P&L: ${profit_loss:,.2f}")
+            print(f"  Capital: ${current_capital:,.2f}")
+    
+    if trades:
+        total_trades = len(trades)
+        winning_trades = sum(1 for t in trades if t['profit_loss'] > 0)
+        losing_trades = sum(1 for t in trades if t['profit_loss'] < 0)
+        
+        win_rate = (winning_trades / total_trades) * 100 if total_trades > 0 else 0
+        total_profit = current_capital - initial_capital
+        roi = (total_profit / initial_capital) * 100
+        
+        wins = [t['profit_loss'] for t in trades if t['profit_loss'] > 0]
+        losses = [t['profit_loss'] for t in trades if t['profit_loss'] < 0]
+        
+        avg_win = sum(wins) / len(wins) if wins else 0
+        avg_loss = sum(losses) / len(losses) if losses else 0
+        win_loss_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else 0
+        
+        peak = initial_capital
+        max_dd = 0
+        for trade in trades:
+            if trade['capital'] > peak:
+                peak = trade['capital']
+            dd = ((peak - trade['capital']) / peak) * 100
+            if dd > max_dd:
+                max_dd = dd
+        
+        print("\n" + "=" * 60)
+        print("STRATEGY PERFORMANCE SUMMARY")
+        print("=" * 60)
+        print(f"Total Trades:    {total_trades}")
+        print(f"Win Rate:        {win_rate:.1f}%")
+        print(f"Total Profit:    ${total_profit:,.2f}")
+        print(f"ROI:             {roi:.1f}%")
+        print(f"Max Drawdown:    {max_dd:.1f}%")
+        print(f"Win/Loss Ratio:  {win_loss_ratio:.2f}")
+        print("=" * 60)
+        
+    else:
+        print("\nNo trades executed - no gaps > 0.5% found")
+
+def main():
+    """Run the strategy"""
+    print("\nThis is a simple, self-contained strategy that requires no external files!")
+    print("It demonstrates gap trading on SPY with sample data.\n")
+    
+    run_simple_gap_strategy()
+    
+    print("\n💡 TIP: This strategy can be modified by changing:")
+    print("  - Gap threshold (currently 0.5%)")
+    print("  - Exit rules (currently end of day)")
+    print("  - Position sizing (currently uses all capital)")
+    print("\nUse this as a template to understand how strategies work!")
+
+if __name__ == "__main__":
+    main()

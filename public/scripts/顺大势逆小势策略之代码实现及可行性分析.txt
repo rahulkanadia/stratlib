@@ -1,0 +1,96 @@
+
+> 策略名称
+
+顺大势逆小势策略之代码实现及可行性分析
+
+> 策略作者
+
+深蓝
+
+
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|maLen|100|maLen|
+|kd1|50|kd1|
+|kd2|15|kd2|
+
+
+> 源码 (javascript)
+
+``` javascript
+
+function main() {
+    
+    
+    $.CTA("RM000", function(st) {
+        
+        
+        var j = st.records;
+        
+        
+        if (j.length < 100) {
+            return;
+        }
+        
+        
+        var c = j[j.length - 2].Close;
+        
+        
+        var kds = TA.KDJ(j, kd1, kd2, kd2);
+        
+        
+        var ks = kds[0];
+        
+        
+        var ds = kds[1];
+        
+        
+        var k = ks[ks.length - 2].toFixed(2);
+        
+        
+        var d = ds[ds.length - 2].toFixed(2);
+        
+        
+        var mas = TA.MA(j, 100);
+        
+        
+        var ma = mas[mas.length - 2];
+        
+        
+        var mp = st.position.amount;
+        
+        
+        if (mp > 0 && k < d) {
+            return -1; 
+        }
+
+        
+        if (mp < 0 && k > d) {
+            return 1; 
+        }
+
+        
+        if (mp === 0 && c > ma && k > d) {
+            return 1; 
+        }
+    
+        
+        if (mp === 0 && c < ma && k < d) {
+            return -1; 
+        }
+    });
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2018-05-08 17:00:54

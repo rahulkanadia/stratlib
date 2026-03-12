@@ -1,0 +1,180 @@
+"""
+SPY Dip Buy Strategy
+
+This strategy buys SPY when it dips based on average red day drops:
+- Calculates average drop size from recent red days (when Close < Open)
+- Enters LONG when price drops by this average amount from open
+- Exits at market close
+
+Perfect for beginners to understand mean reversion trading!
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+import os
+
+current_file = Path(os.path.abspath(__file__))
+project_root = current_file.parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from utils.base_strategy_fixed import BaseStrategy
+
+class SPYDipBuyStrategy(BaseStrategy):
+    """
+    SPY Dip Buy Strategy - Buys dips based on historical patterns
+    
+    How it works:
+    1. Tracks average drop size on red days (Close < Open)
+    2. When price drops by this average amount, we buy
+    3. Hold until market close
+    """
+    
+    def __init__(self, data_path=None, lookback_days=21):
+        super().__init__(
+            name="SPY Dip Buy",
+            description="Buys SPY dips based on average red day drops",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close']
+        )
+        
+        self.lookback_days = lookback_days  # Days to calculate average drop
+        
+        if data_path:
+            self.load_data(data_path)
+    
+    def calculate_average_drops(self):
+        """Calculate rolling average of red day drops"""
+        df = self.data.copy()
+        
+        df['is_red_day'] = df['Close'] < df['Open']
+        
+        df['daily_drop'] = np.where(
+            df['is_red_day'], 
+            df['Open'] - df['Close'],  # Drop amount in dollars
+            0.0
+        )
+        
+        df['avg_drop'] = df['daily_drop'].rolling(
+            window=self.lookback_days
+        ).mean().shift(1)
+        
+        df['avg_drop'].fillna(0.0, inplace=True)
+        
+        return df
+    
+    def calculate_signals(self):
+        """Find dip buy opportunities"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.calculate_average_drops()
+        signals = []
+        
+        for i in range(self.lookback_days, len(df)):
+            curr_day = df.iloc[i]
+            
+            avg_drop = curr_day['avg_drop']
+            if avg_drop <= 0:
+                continue
+            
+            open_price = curr_day['Open']
+            target_entry = open_price - avg_drop
+            
+            if curr_day['Low'] <= target_entry:
+                entry_price = target_entry
+                exit_price = curr_day['Close']
+                
+                signal = {
+                    'date': curr_day['Date'],
+                    'direction': 'LONG',  # Always buying dips
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'open_price': open_price,
+                    'avg_drop': avg_drop,
+                    'actual_drop': open_price - curr_day['Low'],
+                    'signal_strength': 1.0
+                }
+                signals.append(signal)
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+    
+    def run_backtest(self, initial_capital=10000, position_size=1.0):
+        """Run backtest with clear trade tracking"""
+        return super().run_backtest(initial_capital, position_size)
+    
+    def get_summary_metrics(self):
+        """Get performance summary with dip-specific metrics"""
+        if self.performance_metrics is None:
+            return None
+        
+        metrics = self.performance_metrics.copy()
+        
+        if self.signals is not None and len(self.signals) > 0:
+            avg_drop_size = self.signals['avg_drop'].mean()
+            metrics['avg_drop_target'] = avg_drop_size
+            
+            perfect_entries = 0
+            for _, signal in self.signals.iterrows():
+                if abs(signal['entry_price'] - signal['actual_drop']) < 0.10:
+                    perfect_entries += 1
+            
+            metrics['perfect_entry_rate'] = (perfect_entries / len(self.signals) * 100) if len(self.signals) > 0 else 0
+        
+        return metrics
+
+def main():
+    """Example usage - simple and clear for beginners"""
+    print("=" * 60)
+    print("SPY DIP BUY STRATEGY")
+    print("=" * 60)
+    print("\nThis strategy buys SPY when it dips by the average")
+    print("amount of recent red days, expecting a bounce.")
+    print("=" * 60)
+    
+    data_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    
+    strategy = SPYDipBuyStrategy(data_path, lookback_days=21)
+    
+    print("\nAnalyzing price patterns and finding dip opportunities...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} dip buy opportunities")
+    
+    print("\nRunning backtest with $10,000 initial capital...")
+    strategy.run_backtest(initial_capital=10000, position_size=1.0)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\n" + "=" * 60)
+    print("STRATEGY RESULTS")
+    print("=" * 60)
+    print(f"Total Trades: {metrics['total_trades']}")
+    print(f"Win Rate: {metrics['win_rate']:.1f}%")
+    print(f"Total Profit/Loss: ${metrics['total_profit']:.2f}")
+    
+    if 'sharpe_ratio' in metrics and metrics['sharpe_ratio'] is not None:
+        print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
+    
+    print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+    
+    if 'avg_drop_target' in metrics:
+        print(f"\nAverage Drop Target: ${metrics['avg_drop_target']:.2f}")
+    
+    if len(strategy.trades) > 0:
+        print("\n" + "=" * 60)
+        print("EXAMPLE TRADES (First 5)")
+        print("=" * 60)
+        
+        for i, trade in enumerate(strategy.trades[:5]):
+            signal = signals.iloc[i]
+            print(f"\nTrade {i+1}:")
+            print(f"  Date: {trade['entry_date'].strftime('%Y-%m-%d')}")
+            print(f"  Open Price: ${signal['open_price']:.2f}")
+            print(f"  Target Drop: ${signal['avg_drop']:.2f}")
+            print(f"  Entry: ${trade['entry_price']:.2f}")
+            print(f"  Exit: ${trade['exit_price']:.2f}")
+            print(f"  Profit/Loss: ${trade['profit_loss']:.2f}")
+
+if __name__ == "__main__":
+    main()

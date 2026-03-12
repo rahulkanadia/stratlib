@@ -1,0 +1,201 @@
+"""
+DIP (Dip Into Profit) Basic Strategy
+------------------------------------
+This strategy buys dips based on the rolling average of drops on red days.
+
+Entry Conditions:
+- Calculate rolling average of drops on red days
+- Enter long when price dips to (Open - Average Drop)
+
+Exit Conditions:
+- Exit at market close
+
+Parameters:
+- window: Rolling window size for calculating average drop (default: 21)
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utils import BaseStrategy
+
+
+class DIPBasicStrategy(BaseStrategy):
+    """Basic DIP Strategy implementation."""
+    
+    def __init__(self, window=21, initial_investment=16000):
+        super().__init__(f"DIP Basic (Window={window})", initial_investment)
+        self.window = window
+        
+    def calculate_indicators(self, df):
+        """Calculate rolling average drop indicator."""
+        df['IsRedDay'] = df['Close'] < df['Open']
+        
+        df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+        
+        df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=self.window).mean().shift(1)
+        df['RollingAvgDrop'].fillna(0.0, inplace=True)
+        
+        df['DesiredEntry'] = df['Open'] - df['RollingAvgDrop']
+        
+        return df
+    
+    def get_entry_conditions(self, df):
+        """Define entry conditions for the strategy."""
+        entry_signals = (
+            (df['RollingAvgDrop'] > 0) &
+            (df['Low'] <= df['DesiredEntry'])
+        )
+        
+        return entry_signals
+    
+    def get_exit_conditions(self, df, entry_index):
+        """Exit at market close."""
+        entry_row = df.iloc[entry_index]
+        return entry_index, entry_row['Close'], 'Market Close'
+    
+    def run_backtest(self, data_file):
+        """Custom backtest for DIP strategy."""
+        self.df = pd.read_csv(data_file, parse_dates=['Date'])
+        self.df.sort_values('Date', inplace=True)
+        self.df.reset_index(drop=True, inplace=True)
+        
+        self.df = self.calculate_indicators(self.df)
+        
+        entry_signals = self.get_entry_conditions(self.df)
+        
+        trades = []
+        capital = self.initial_investment
+        
+        for i in range(1, len(self.df)):  # Start from 1 to have rolling average
+            if entry_signals.iloc[i]:
+                entry_row = self.df.iloc[i]
+                entry_price = entry_row['DesiredEntry']  # Enter at desired price
+                exit_price = entry_row['Close']  # Exit at close
+                
+                position = self.calculate_position_size(capital, entry_price)
+                
+                profit = (exit_price - entry_price) * position
+                capital += profit
+                
+                trades.append({
+                    'Entry Date': entry_row['Date'],
+                    'Entry Price': entry_price,
+                    'Exit Date': entry_row['Date'],  # Same day exit
+                    'Exit Price': exit_price,
+                    'Type': 'Long',
+                    'Avg Drop': entry_row['RollingAvgDrop'],
+                    'Shares': position,
+                    'Profit': profit,
+                    'Exit Reason': 'Market Close',
+                    'Capital After': capital
+                })
+        
+        trades_df = pd.DataFrame(trades)
+        
+        if len(trades_df) > 0:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(trades_df, self.initial_investment)
+            
+            statistics['avg_drop_size'] = trades_df['Avg Drop'].mean()
+        else:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(pd.DataFrame(), self.initial_investment)
+            statistics['avg_drop_size'] = 0
+        
+        return trades_df, statistics
+    
+    def print_results(self, trades_df=None, statistics=None):
+        """Print strategy results with DIP-specific information."""
+        if statistics is not None:
+            print(f"\n{'='*50}")
+            print(f"{self.name} - Performance Summary")
+            print(f"{'='*50}")
+            print(f"Total Trades:    {statistics['total_trades']}")
+            print(f"Win Rate:        {statistics['win_rate']}%")
+            print(f"Total Profit:    ${statistics['total_profit']:,.2f}")
+            print(f"ROI:             {statistics['roi']}%")
+            print(f"Sharpe Ratio:    {statistics['sharpe_ratio']}")
+            print(f"Max Drawdown:    {statistics['max_drawdown']}%")
+            print(f"Win/Loss Ratio:  {statistics['win_loss_ratio']}")
+            print(f"Avg Drop Size:   ${statistics['avg_drop_size']:.2f}")
+            print(f"{'='*50}\n")
+
+
+def optimize_window_size(data_file, initial_investment=16000):
+    """Optimize the rolling window size for best performance."""
+    results = []
+    
+    print("Optimizing DIP window size...")
+    print("-" * 50)
+    
+    for window in range(5, 51):
+        strategy = DIPBasicStrategy(window=window, initial_investment=initial_investment)
+        trades_df, statistics = strategy.run_backtest(data_file)
+        
+        if statistics['total_trades'] >= 100:  # Only consider if we have enough trades
+            results.append({
+                'Window': window,
+                'Total Trades': statistics['total_trades'],
+                'Win Rate': statistics['win_rate'],
+                'Total Profit': statistics['total_profit'],
+                'Sharpe Ratio': statistics['sharpe_ratio'],
+                'ROI': statistics['roi']
+            })
+            
+            if window % 5 == 0:
+                print(f"Window {window}: {statistics['total_trades']} trades, "
+                      f"{statistics['win_rate']:.2f}% win rate, "
+                      f"${statistics['total_profit']:,.2f} profit")
+    
+    results_df = pd.DataFrame(results)
+    results_df = results_df.sort_values('Win Rate', ascending=False)
+    
+    print("\n" + "="*70)
+    print("Top 10 Window Sizes by Win Rate:")
+    print("="*70)
+    print(results_df.head(10).to_string(index=False))
+    
+    best_row = results_df.iloc[0]
+    best_window = int(best_row['Window'])
+    
+    print(f"\nBest Window Size: {best_window} days")
+    print(f"Best Win Rate: {best_row['Win Rate']:.2f}%")
+    print(f"Total Profit: ${best_row['Total Profit']:,.2f}")
+    
+    return best_window, results_df
+
+
+def main():
+    """Run the DIP Basic strategy or optimization."""
+    data_file = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        'data', '7J0OK1VR.csv'
+    )
+    
+    print("Running DIP Basic Strategy with default parameters...")
+    strategy = DIPBasicStrategy(window=21, initial_investment=16000)
+    trades_df, statistics = strategy.run(data_file, save_results=True, 
+                                       output_dir='../../results')
+    
+    print("\n" + "="*70)
+    print("WINDOW SIZE OPTIMIZATION")
+    print("="*70)
+    best_window, optimization_results = optimize_window_size(data_file)
+    
+    print("\n" + "="*70)
+    print("RUNNING WITH OPTIMIZED WINDOW")
+    print("="*70)
+    optimized_strategy = DIPBasicStrategy(window=best_window, initial_investment=16000)
+    optimized_trades, optimized_stats = optimized_strategy.run(
+        data_file, save_results=True, output_dir='../../results'
+    )
+    
+    return trades_df, statistics
+
+
+if __name__ == "__main__":
+    main()

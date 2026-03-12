@@ -1,0 +1,21 @@
+"""
+Strategy Runner - Fixed Version
+-------------------------------
+This script can be run from any directory and will properly find and run strategies.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
+
+sys.path.insert(0, str(SCRIPT_DIR))
+
+os.chdir(SCRIPT_DIR)
+
+from run_all_strategies import main
+
+if __name__ == "__main__":
+    print(f"Running from directory: {os.getcwd()}")
+    main()

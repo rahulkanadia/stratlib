@@ -1,0 +1,35 @@
+import pandas as pd
+
+strategies_files = {
+    'Base Gap Trading': 'results_Base_Gap_Trading.csv',
+    'Not Friday': 'results_Not_Friday.csv',
+    'MA 10/20 Cross': 'results_MA_10_20_Cross.csv',
+    'MA10 Above': 'results_MA10_Above.csv',
+    'MA 5/10 Cross': 'results_MA_5_10_Cross.csv',
+    'After Green Day': 'results_After_Green_Day.csv',
+    'MA20 Above': 'results_MA20_Above.csv',
+    'Mean Reversion': 'results_Mean_Reversion.csv',
+    'RSI Overbought 70': 'results_RSI_Overbought_70.csv'
+}
+
+all_data = {}
+for name, file in strategies_files.items():
+    all_data[name] = pd.read_csv(file)
+
+summary = []
+for name, df in all_data.items():
+    summary.append({
+        'Strategy': name,
+        'Avg Success Rate': df['Success Rate'].mean(),
+        'Avg Sharpe': df['Sharpe Ratio'].mean(),
+        'Total Profit': df['Total Profit'].sum(),
+        'Avg Annual ROI': df['ROI'].mean(),
+        'Total Trades': df['Total Trades'].sum()
+    })
+
+summary_df = pd.DataFrame(summary)
+
+print("QQQ HTML Report Generator")
+print(f"Loaded {len(all_data)} strategies")
+print(f"Combined profit: ${summary_df['Total Profit'].sum():,.2f}")
+print("Ready to generate HTML reports")

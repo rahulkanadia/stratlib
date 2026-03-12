@@ -1,0 +1,67 @@
+
+> 策略名称
+
+统计K线回测是否存在趋势
+
+> 策略作者
+
+小草
+
+> 策略描述
+
+这个策略主要是想从回测数据中考察是否可以根据前面涨跌情况，预测接下来的涨跌。具体如下：如果5根K线中，出现4个或5个上涨，那么下一根是否更趋向于上涨，该策略将统计出上涨的频率。当然也已更改策略的参数统计其它上涨或下跌的情况。在几天的回测时间内，策略运行的还可以，但是回测周期较长时，比如从本月13号到现在，就会出现混乱，不清楚原因。
+
+
+
+> 源码 (javascript)
+
+``` javascript
+function adjustFloat(v) {
+
+    return Math.floor(v*1000)/1000;
+}
+function main(){
+    var arr=[0,0,0,0,0,0];
+    var appear=0;         
+    var fit=0;            
+    var diff=0;           
+    while(true){
+    var records=exchange.GetRecords();
+    i=records.length-1;
+    if(i>1&&(records[i].Close-records[i].Open>0)){
+        arr.push(1);
+        arr.shift();      
+    }
+    if(i>1&&!(records[i].Close-records[i].Open>0)){
+        arr.push(0);
+        arr.shift();
+    }
+    if(i>5){
+        var count=0;
+        for(k=0;k<5;k++){
+            if(arr[k]<1){
+                count++;   
+            }
+        }
+        if(count<2){       
+            appear++;      
+            diff+=(records[i].Close-records[i].Open);
+            if(arr[5]<1){  
+                fit++;     
+                Log("出现模式次数",appear,"符合预计次数",fit,"所占比例",adjustFloat(fit/appear),"差价之和",adjustFloat(diff));
+                LogProfit(adjustFloat(fit/appear));   
+            }
+        }
+    }
+    Sleep(300000);       
+    }
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2014-10-28 19:32:09

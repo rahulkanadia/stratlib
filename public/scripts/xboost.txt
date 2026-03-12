@@ -1,0 +1,203 @@
+import pandas as pd
+import numpy as np
+import warnings
+import os
+
+from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+pd.set_option('display.max_colwidth', None)
+
+def load_data(file_name):
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'], dayfirst=True, errors='coerce')
+    vix_df.dropna(subset=['Date'], inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+def calculate_day_range(row):
+    return row['High'] - row['Low']
+
+def calculate_gap(prev_close, curr_open):
+    return curr_open - prev_close
+
+def calculate_atr(df, n):
+    """
+    Adds an 'ATR' column to the dataframe using a rolling window of size n.
+    """
+    df = df.copy()
+    df['Previous Close'] = df['Close'].shift(1)
+    df['High-Low'] = df['High'] - df['Low']
+    df['High-PrevClose'] = abs(df['High'] - df['Previous Close'])
+    df['Low-PrevClose'] = abs(df['Low'] - df['Previous Close'])
+    df['TR'] = df[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+    df['ATR'] = df['TR'].rolling(window=n).mean()
+    return df
+
+def build_feature_label_data(main_df, vix_df, initial_investment=16000, atr_window=14):
+    """
+    1. Merge main_df with vix_df on date
+    2. Calculate Gap, Range, ATR, etc.
+    3. Define the 'target' as whether the trade was profitable (Profit/Loss > 0).
+    4. Return a single DataFrame with all features + target.
+    """
+
+    main_df = main_df.sort_values('Date').reset_index(drop=True)
+    vix_df = vix_df.sort_values('Date').reset_index(drop=True)
+
+    vix_df.rename(columns={'OPEN': 'VIX_Open'}, inplace=True)
+
+    merged = pd.merge(main_df, vix_df[['Date','VIX_Open']], on='Date', how='left')
+
+    merged['Prev_Close'] = merged['Close'].shift(1)
+    merged['Day_Range'] = merged.apply(calculate_day_range, axis=1)
+    merged['Gap'] = merged.apply(lambda row: calculate_gap(row['Prev_Close'], row['Open']) 
+                                 if not pd.isna(row['Prev_Close']) else np.nan, axis=1)
+
+    merged_atr = calculate_atr(merged, n=atr_window)
+
+
+    def compute_profit(row):
+        if pd.isna(row['Prev_Close']):
+            return np.nan
+        entry_price = row['Open']
+        exit_price = row['Close']
+        position_size = initial_investment
+        shares = position_size / entry_price if entry_price != 0 else 0
+
+        if row['Gap'] > 0:
+            return shares * (entry_price - exit_price)
+        else:
+            return shares * (exit_price - entry_price)
+
+    merged_atr['Profit'] = merged_atr.apply(compute_profit, axis=1)
+
+    merged_atr['Label'] = merged_atr['Profit'].apply(lambda x: 1 if x > 0 else 0 if x <= 0 else np.nan)
+
+    merged_atr.dropna(subset=['Gap','Day_Range','VIX_Open','ATR','Profit','Label'], inplace=True)
+
+    final_df = merged_atr.copy()
+    return final_df
+
+def run_xgboost_analysis(main_file, vix_file, initial_investment=16000):
+    """
+    1. Loads data
+    2. Builds a DataFrame of features + label
+    3. Splits into train/test by time (2020-2021 => train, 2022-2024 => test)
+    4. Trains an XGBClassifier, prints out metrics similar to your 'printouts'
+    5. Shows 'best conditions' from the model's perspective (simple grid check)
+    """
+
+    print("Loading main data...")
+    df_main = load_data(main_file)
+    print("Loading VIX data...")
+    df_vix = load_vix_data(vix_file)
+
+    print("Building feature set + target...")
+    df_features = build_feature_label_data(df_main, df_vix, initial_investment=initial_investment, atr_window=14)
+
+    df_features.sort_values('Date', inplace=True)
+
+    train_start = pd.Timestamp('2020-01-01')
+    train_end   = pd.Timestamp('2022-01-01')  # train on [2020, 2022)
+    test_start  = pd.Timestamp('2022-01-01')
+    test_end    = pd.Timestamp('2025-01-01')  # test on [2022, 2025) or as far as your data goes
+
+    train_df = df_features[(df_features['Date'] >= train_start) & (df_features['Date'] < train_end)].copy()
+    test_df  = df_features[(df_features['Date'] >= test_start) & (df_features['Date'] < test_end)].copy()
+
+    feature_cols = ['Gap', 'Day_Range', 'ATR', 'VIX_Open']
+    X_train = train_df[feature_cols]
+    y_train = train_df['Label']
+    X_test  = test_df[feature_cols]
+    y_test  = test_df['Label']
+
+    print(f"Training set size: {X_train.shape[0]} rows")
+    print(f"Test set size: {X_test.shape[0]} rows")
+
+    print("\nTraining XGBoost model...")
+    model = XGBClassifier(
+        n_estimators=100,
+        max_depth=5,
+        learning_rate=0.1,
+        random_state=42,
+        use_label_encoder=False,
+        eval_metric='logloss'
+    )
+    model.fit(X_train, y_train)
+
+    preds = model.predict(X_test)
+    proba = model.predict_proba(X_test)[:,1]  # Probability of label=1
+
+    acc = accuracy_score(y_test, preds)
+    print("\n=== XGBoost Model Evaluation on Test Set ===")
+    print(f"Accuracy: {acc:.4f}")
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_test, preds))
+    print("\nClassification Report:")
+    print(classification_report(y_test, preds))
+
+    importances = model.feature_importances_
+    importance_df = pd.DataFrame({
+        'Feature': feature_cols,
+        'Importance': importances
+    }).sort_values(by='Importance', ascending=False).reset_index(drop=True)
+
+    print("\nFeature Importances (XGBoost):")
+    print(importance_df)
+
+
+    print("\n=== Approximate 'Best Conditions' Scan ===")
+    vix_range = np.arange(10, 31, 2)   # 10,12,14,...,30
+    atr_range = np.arange(1, 21, 2)    # 1,3,5,...,19
+
+    results = []
+    for vix_val in vix_range:
+        for atr_val in atr_range:
+            mask = (X_test['VIX_Open'] >= vix_val) & (X_test['VIX_Open'] < (vix_val+2)) & \
+                   (X_test['ATR'] >= atr_val) & (X_test['ATR'] < (atr_val+2))
+            subset = X_test[mask]
+            if len(subset) < 1:
+                continue
+            subset_preds = model.predict_proba(subset)[:,1]
+            avg_pred = subset_preds.mean()
+            results.append((vix_val, vix_val+2, atr_val, atr_val+2, len(subset), avg_pred))
+
+    grid_df = pd.DataFrame(results, columns=['VIX_min','VIX_max','ATR_min','ATR_max','Count','AvgPredWinProb'])
+    grid_df.sort_values('AvgPredWinProb', ascending=False, inplace=True, ignore_index=True)
+
+    print("Top 10 grid cells by predicted win probability:")
+    print(grid_df.head(10).to_string(index=False))
+
+    print("\n=== Done! ===")
+    return model, importance_df, grid_df
+
+if __name__ == "__main__":
+    initial_investment = 16000  # $16,000 initial investment
+    main_file = '7J0OK1VR.csv'
+    vix_file = 'VIX_History.csv'
+
+    if not os.path.exists(main_file):
+        print(f"Error: Main data file '{main_file}' not found.")
+    elif not os.path.exists(vix_file):
+        print(f"Error: VIX data file '{vix_file}' not found.")
+    else:
+        run_xgboost_analysis(
+            main_file=main_file,
+            vix_file=vix_file,
+            initial_investment=initial_investment
+        )

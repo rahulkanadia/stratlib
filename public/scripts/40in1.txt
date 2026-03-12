@@ -1,0 +1,55 @@
+# 40 ALERTAS EN 1
+He creado un Indicador en Tradingview que permite agregar hasta **40 ALERTAS EN 1** sola para diferentes pares, nos va a ser muy util.
+
+Este indicador lo puede usar cualquier persona que tenga TradingView, pero recueden que la versión gratuita solo permite 1 alerta y no permite hacer la conexión con nuestro canal de Telegram.
+
+Si alguien lo quiere usar debe seguir estos pasos:
+
+1. **Instalar el Indicador**
+- Ir a `https:
+- Lo marcas como favorito.
+- Vas a tu gráfica de Tradingview y actualizas/recargas la página.
+- Ahora veras el indicador en tus Favoritos.
+- Lo agregas y listo.
+
+2. **Configurar el Indicador**
+- Abres la configuración del Indicador ☸ 
+- Elije los pares a los que les quieres hacer seguimiento.
+- Si son menos de 40, mejor deshabilita los que te sobren.
+- Revisa que los pares no esten ya en nuestra lista así evitamos alertas repetidas.
+
+3. **Crear la alerta** (Ver la imagen adjunta)
+- Crea una nueva alerta.
+- En "Condición" seleccionas el nombre del indicador (Multi Alert MACD Diveregences)
+- Vencimiento: Indefinido (Si no te permite esta opción, selecciona la fecha más lejana, generalmente 2 meses después de hoy)
+- Webhook URL: `https:
+- Presiona el boton "Crear"
+
+4. **Notificar de los nuevos pares**
+- Avisame al privado (@Alorse) para que agregue los pares a la lista.
+
+Espero que estas alertas nos sirvan y le saquemos dinero al mercado.
+
+🟡   🟡   🟡   🟡    🟡   🟡   🟡   🟡
+
+Recuerdas el canal de las divergencias del MACD? https:
+Si estas interesado en recibir alertas como estas o de cualquier otro tipo
+
+- RSI sobrevendido/sobrecomprado
+- Divergencias (MACD, RSI)
+- Bandas de Bollinger
+- Nube Ichumochu
+- Cruce de EMAs
+- Supertrend
+- ADX
+- etc...
+
+Incluso de tu propia estrategia, el costo $$$ dependerá de la dificultad.
+
+- Tendras tu propio canal para que lo compartas con tus amigos.
+- Un único pago si tienes alertas de Tradingview disponibles (Plan PRO en adelante), hasta 40 Monedas/Pares en 1 sola alerta.
+- Si tienes el plan FREE o no cuentas con alertas, podemos rentartelas.
+
+Contactar a @alorse para más información.
+
+🟡   🟡   🟡   🟡    🟡   🟡   🟡   🟡

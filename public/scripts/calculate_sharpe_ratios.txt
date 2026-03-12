@@ -1,0 +1,138 @@
+"""
+Calculate Sharpe Ratios for all Top Gap Trading Strategies
+"""
+import pandas as pd
+import numpy as np
+import glob
+import os
+import sys
+
+def calculate_sharpe_ratio(returns, risk_free_rate=0.0):
+    """
+    Calculate Sharpe Ratio
+
+    Args:
+        returns: Series or array of returns
+        risk_free_rate: Annual risk-free rate (default 0 for simplicity)
+
+    Returns:
+        Sharpe ratio (annualized)
+    """
+    if len(returns) == 0 or returns.std() == 0:
+        return 0.0
+
+    returns = np.array(returns)
+
+    excess_returns = returns - risk_free_rate
+
+    sharpe = excess_returns.mean() / returns.std()
+
+    return sharpe
+
+
+def process_strategy_file(file_path):
+    """Process a single strategy file to calculate Sharpe ratio"""
+    try:
+        file_name = os.path.basename(file_path)
+        strategy_name = file_name.replace('.py', '')
+
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(strategy_name, file_path)
+        module = importlib.util.module_from_spec(spec)
+
+        from io import StringIO
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+
+        try:
+            spec.loader.exec_module(module)
+
+            if hasattr(module, 'results') and module.results is not None:
+                trades = module.results
+
+                returns = trades['profit'].values
+                sharpe = calculate_sharpe_ratio(returns)
+
+                return sharpe
+            else:
+                return None
+
+        finally:
+            sys.stdout = old_stdout
+
+    except Exception as e:
+        print(f"Error processing {file_path}: {str(e)}")
+        return None
+
+
+def calculate_sharpe_from_summary(csv_file):
+    """Calculate approximate Sharpe ratios from summary statistics"""
+    df = pd.read_csv(csv_file)
+
+    sharpe_ratios = []
+
+    for idx, row in df.iterrows():
+
+        total_trades = row['Total Trades']
+        success_rate = row['Success Rate'] / 100
+        avg_win = row['Average Win']
+        avg_loss = row['Average Loss']
+
+        expected_return = (success_rate * avg_win) + ((1 - success_rate) * avg_loss)
+
+        win_variance = success_rate * (avg_win - expected_return) ** 2
+        loss_variance = (1 - success_rate) * (avg_loss - expected_return) ** 2
+        std_dev = np.sqrt(win_variance + loss_variance)
+
+        if std_dev > 0:
+            sharpe = expected_return / std_dev
+        else:
+            sharpe = 0.0
+
+        sharpe_ratios.append(round(sharpe, 3))
+
+    df['Sharpe Ratio'] = sharpe_ratios
+
+    return df
+
+
+if __name__ == "__main__":
+    print("Calculating Sharpe Ratios for all strategies...")
+    print("=" * 80)
+
+    results_file = "top_strategies_comprehensive_results.csv"
+
+    if not os.path.exists(results_file):
+        print(f"Error: {results_file} not found!")
+        sys.exit(1)
+
+    df_with_sharpe = calculate_sharpe_from_summary(results_file)
+
+    output_file = "top_strategies_with_sharpe.csv"
+    df_with_sharpe.to_csv(output_file, index=False)
+
+    print(f"\nResults saved to: {output_file}")
+    print("\n" + "=" * 80)
+    print("STRATEGIES RANKED BY SHARPE RATIO")
+    print("=" * 80)
+
+    df_sorted = df_with_sharpe.sort_values('Sharpe Ratio', ascending=False)
+
+    print("\nTop 10 by Sharpe Ratio:")
+    print("-" * 80)
+    display_cols = ['Strategy', 'Sharpe Ratio', 'Success Rate', 'Total Profit', 'Total Trades']
+    print(df_sorted[display_cols].head(10).to_string(index=False))
+
+    print("\n" + "=" * 80)
+    print("COMPLETE SUMMARY TABLE")
+    print("=" * 80)
+
+    summary_cols = ['Strategy', 'Success Rate', 'Total Trades', 'Total Profit',
+                    'ROI', 'Sharpe Ratio']
+    print("\n" + df_sorted[summary_cols].to_string(index=False))
+
+    print("\n" + "=" * 80)
+    print(f"Average Sharpe Ratio: {df_with_sharpe['Sharpe Ratio'].mean():.3f}")
+    print(f"Median Sharpe Ratio: {df_with_sharpe['Sharpe Ratio'].median():.3f}")
+    print(f"Best Sharpe Ratio: {df_with_sharpe['Sharpe Ratio'].max():.3f}")
+    print("=" * 80)

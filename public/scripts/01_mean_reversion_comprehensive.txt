@@ -1,0 +1,362 @@
+"""
+MEAN REVERSION STRATEGY - COMPREHENSIVE VERSION
+===============================================
+Author: Gap Trading System
+Date: 2024
+Initial Investment: $16,000
+
+STRATEGY OVERVIEW:
+-----------------
+This strategy exploits the mean reversion principle by trading gaps when price has 
+deviated significantly from its 20-day moving average. The idea is that extreme 
+deviations tend to revert back to the mean.
+
+KEY PARAMETERS:
+--------------
+- Moving Average Period: 20 days
+- Deviation Threshold: 2% (0.02)
+- Minimum Gap Size: $0.20
+- Exit: Gap closure or market close
+
+TRADE LOGIC:
+-----------
+1. Calculate 20-day SMA
+2. Calculate % deviation from MA: (Previous Close - SMA) / SMA
+3. Enter trade if deviation > 2% or < -2%
+4. Fade the gap (short if gap up, long if gap down)
+5. Exit when gap closes or at market close
+
+HISTORICAL PERFORMANCE:
+---------------------
+- Success Rate: 72.55%
+- Total Profit: $7,956.87
+- Total Trades: 510
+- Average Trade: $15.60
+"""
+
+import pandas as pd
+import numpy as np
+import sys
+import os
+from datetime import datetime
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+try:
+    from gap_utils import *
+except ImportError:
+    print("Error: Could not import gap_utils. Make sure the file exists in the parent directory.")
+    sys.exit(1)
+
+class MeanReversionComprehensive:
+    def __init__(self):
+        self.name = "Mean Reversion Strategy (Comprehensive)"
+        self.initial_investment = 16000
+        self.ma_period = 20
+        self.deviation_threshold = 0.02  # 2%
+        self.min_gap = 0.20
+        
+        self.trade_log = []
+        self.daily_equity = []
+        self.current_equity = self.initial_investment
+        
+    def calculate_indicators(self, df):
+        """Calculate all required indicators with detailed explanations"""
+        print(f"\n{'='*60}")
+        print("CALCULATING INDICATORS")
+        print(f"{'='*60}")
+        
+        df['SMA_20'] = df['Close'].rolling(window=self.ma_period).mean().shift(1)
+        print(f"✓ Calculated {self.ma_period}-day Simple Moving Average")
+        
+        df['MA_Deviation'] = ((df['Close'].shift(1) - df['SMA_20']) / df['SMA_20']).fillna(0)
+        print(f"✓ Calculated % deviation from MA")
+        
+        df['Setup_Signal'] = (
+            (df['MA_Deviation'] > self.deviation_threshold) | 
+            (df['MA_Deviation'] < -self.deviation_threshold)
+        )
+        setup_days = df['Setup_Signal'].sum()
+        print(f"✓ Found {setup_days} days with deviation > {self.deviation_threshold*100}%")
+        
+        return df
+    
+    def analyze_gap(self, prev_day, curr_day):
+        """Analyze gap characteristics"""
+        gap = curr_day['Open'] - prev_day['Close']
+        gap_percent = (gap / prev_day['Close']) * 100
+        
+        return {
+            'gap': gap,
+            'gap_percent': gap_percent,
+            'is_valid': abs(gap) >= self.min_gap,
+            'direction': 'UP' if gap > 0 else 'DOWN'
+        }
+    
+    def execute_trade(self, prev_day, curr_day, trade_num):
+        """Execute a single trade with detailed logging"""
+        gap_info = self.analyze_gap(prev_day, curr_day)
+        
+        if not gap_info['is_valid']:
+            return None
+            
+        trade_direction = 'SHORT' if gap_info['direction'] == 'UP' else 'LONG'
+        entry_price = curr_day['Open']
+        
+        if trade_direction == 'SHORT':
+            gap_closed = curr_day['Low'] <= prev_day['Close']
+            exit_price = prev_day['Close'] if gap_closed else curr_day['Close']
+        else:  # LONG
+            gap_closed = curr_day['High'] >= prev_day['Close']
+            exit_price = prev_day['Close'] if gap_closed else curr_day['Close']
+        
+        shares = self.current_equity / entry_price
+        
+        if trade_direction == 'LONG':
+            profit_loss = shares * (exit_price - entry_price)
+            profit_percent = ((exit_price - entry_price) / entry_price) * 100
+        else:  # SHORT
+            profit_loss = shares * (entry_price - exit_price)
+            profit_percent = ((entry_price - exit_price) / entry_price) * 100
+        
+        self.current_equity += profit_loss
+        
+        trade_record = {
+            'Trade_Num': trade_num,
+            'Date': curr_day['Date'],
+            'Setup_Deviation': prev_day['MA_Deviation'] * 100,
+            'Gap': gap_info['gap'],
+            'Gap_Percent': gap_info['gap_percent'],
+            'Trade_Direction': trade_direction,
+            'Entry_Price': entry_price,
+            'Exit_Price': exit_price,
+            'Gap_Closed': gap_closed,
+            'Shares': shares,
+            'Profit_Loss': profit_loss,
+            'Profit_Percent': profit_percent,
+            'Cumulative_PL': self.current_equity - self.initial_investment,
+            'Account_Value': self.current_equity
+        }
+        
+        return trade_record
+    
+    def print_trade_details(self, trade):
+        """Print detailed information about a single trade"""
+        print(f"\n{'─'*60}")
+        print(f"TRADE #{trade['Trade_Num']} - {trade['Date'].strftime('%Y-%m-%d')}")
+        print(f"{'─'*60}")
+        
+        print(f"Setup Conditions:")
+        print(f"  • MA Deviation: {trade['Setup_Deviation']:.2f}% (Threshold: {self.deviation_threshold*100}%)")
+        print(f"  • Signal: Price {'above' if trade['Setup_Deviation'] > 0 else 'below'} 20-day MA")
+        
+        print(f"\nGap Analysis:")
+        print(f"  • Gap Size: ${trade['Gap']:.2f} ({trade['Gap_Percent']:.2f}%)")
+        print(f"  • Gap Direction: {'UP' if trade['Gap'] > 0 else 'DOWN'}")
+        print(f"  • Trade Action: {trade['Trade_Direction']} (fade the gap)")
+        
+        print(f"\nExecution:")
+        print(f"  • Entry Price: ${trade['Entry_Price']:.2f}")
+        print(f"  • Exit Price: ${trade['Exit_Price']:.2f}")
+        print(f"  • Gap Closed: {'YES ✓' if trade['Gap_Closed'] else 'NO ✗'}")
+        print(f"  • Shares Traded: {trade['Shares']:.2f}")
+        
+        win_loss = "WIN ✓" if trade['Profit_Loss'] > 0 else "LOSS ✗"
+        print(f"\nResults:")
+        print(f"  • P&L: ${trade['Profit_Loss']:.2f} ({trade['Profit_Percent']:.2f}%) - {win_loss}")
+        print(f"  • Account Value: ${trade['Account_Value']:.2f}")
+        print(f"  • Total P&L: ${trade['Cumulative_PL']:.2f}")
+    
+    def run_backtest(self, data_file):
+        """Run the complete backtest with comprehensive output"""
+        print(f"\n{'='*80}")
+        print("MEAN REVERSION STRATEGY - COMPREHENSIVE BACKTEST")
+        print(f"{'='*80}")
+        print(f"Initial Investment: ${self.initial_investment:,.2f}")
+        print(f"Data File: {data_file}")
+        print(f"Strategy Parameters:")
+        print(f"  • MA Period: {self.ma_period} days")
+        print(f"  • Deviation Threshold: {self.deviation_threshold*100}%")
+        print(f"  • Minimum Gap: ${self.min_gap}")
+        
+        print("\nLoading data...")
+        df = load_data(data_file)
+        print(f"✓ Loaded {len(df)} days of data")
+        print(f"✓ Date range: {df['Date'].min().date()} to {df['Date'].max().date()}")
+        
+        df = self.calculate_indicators(df)
+        
+        print(f"\n{'='*60}")
+        print("EXECUTING TRADES")
+        print(f"{'='*60}")
+        
+        trades = []
+        trade_num = 0
+        
+        for i in range(self.ma_period, len(df)):
+            prev_day = df.iloc[i-1]
+            curr_day = df.iloc[i]
+            
+            if not prev_day['Setup_Signal']:
+                continue
+            
+            gap = curr_day['Open'] - prev_day['Close']
+            if abs(gap) < self.min_gap:
+                continue
+            
+            trade_num += 1
+            trade = self.execute_trade(prev_day, curr_day, trade_num)
+            
+            if trade:
+                trades.append(trade)
+                self.print_trade_details(trade)
+        
+        trades_df = pd.DataFrame(trades)
+        
+        self.print_summary(trades_df)
+        
+        self.save_results(trades_df)
+        
+        return trades_df
+    
+    def print_summary(self, trades_df):
+        """Print comprehensive summary statistics"""
+        if trades_df.empty:
+            print("\nNo trades executed!")
+            return
+        
+        print(f"\n{'='*80}")
+        print("STRATEGY PERFORMANCE SUMMARY")
+        print(f"{'='*80}")
+        
+        total_trades = len(trades_df)
+        winning_trades = len(trades_df[trades_df['Profit_Loss'] > 0])
+        losing_trades = len(trades_df[trades_df['Profit_Loss'] < 0])
+        win_rate = (winning_trades / total_trades) * 100
+        
+        print(f"\nTrade Statistics:")
+        print(f"  • Total Trades: {total_trades}")
+        print(f"  • Winning Trades: {winning_trades}")
+        print(f"  • Losing Trades: {losing_trades}")
+        print(f"  • Win Rate: {win_rate:.2f}%")
+        
+        total_profit = trades_df['Profit_Loss'].sum()
+        avg_profit = trades_df['Profit_Loss'].mean()
+        avg_win = trades_df[trades_df['Profit_Loss'] > 0]['Profit_Loss'].mean() if winning_trades > 0 else 0
+        avg_loss = trades_df[trades_df['Profit_Loss'] < 0]['Profit_Loss'].mean() if losing_trades > 0 else 0
+        
+        print(f"\nProfit Statistics:")
+        print(f"  • Total P&L: ${total_profit:,.2f}")
+        print(f"  • Average Trade: ${avg_profit:.2f}")
+        print(f"  • Average Win: ${avg_win:.2f}")
+        print(f"  • Average Loss: ${avg_loss:.2f}")
+        print(f"  • Profit Factor: {abs(avg_win/avg_loss):.2f}" if avg_loss != 0 else "N/A")
+        
+        roi = (total_profit / self.initial_investment) * 100
+        final_equity = self.initial_investment + total_profit
+        
+        print(f"\nReturn Statistics:")
+        print(f"  • Initial Capital: ${self.initial_investment:,.2f}")
+        print(f"  • Final Capital: ${final_equity:,.2f}")
+        print(f"  • Return on Investment: {roi:.2f}%")
+        
+        max_win = trades_df['Profit_Loss'].max()
+        max_loss = trades_df['Profit_Loss'].min()
+        
+        print(f"\nRisk Statistics:")
+        print(f"  • Largest Win: ${max_win:.2f}")
+        print(f"  • Largest Loss: ${max_loss:.2f}")
+        print(f"  • Max Consecutive Wins: {self.max_consecutive(trades_df, 'wins')}")
+        print(f"  • Max Consecutive Losses: {self.max_consecutive(trades_df, 'losses')}")
+        
+        gaps_closed = trades_df['Gap_Closed'].sum()
+        gap_closure_rate = (gaps_closed / total_trades) * 100
+        
+        print(f"\nGap Statistics:")
+        print(f"  • Gaps Closed: {gaps_closed}/{total_trades} ({gap_closure_rate:.1f}%)")
+        print(f"  • Avg Gap Size: ${trades_df['Gap'].abs().mean():.2f}")
+        
+        print(f"\n{'='*80}")
+        print("MONTHLY PERFORMANCE")
+        print(f"{'='*80}")
+        self.print_monthly_breakdown(trades_df)
+        
+    def max_consecutive(self, trades_df, type='wins'):
+        """Calculate maximum consecutive wins or losses"""
+        if type == 'wins':
+            series = (trades_df['Profit_Loss'] > 0).astype(int)
+        else:
+            series = (trades_df['Profit_Loss'] < 0).astype(int)
+        
+        groups = series.ne(series.shift()).cumsum()
+        return series.groupby(groups).sum().max()
+    
+    def print_monthly_breakdown(self, trades_df):
+        """Print monthly performance breakdown"""
+        trades_df['Month'] = trades_df['Date'].dt.to_period('M')
+        monthly_stats = trades_df.groupby('Month').agg({
+            'Profit_Loss': ['sum', 'count', 'mean'],
+            'Gap_Closed': 'sum'
+        })
+        
+        print(f"{'Month':<10} {'Trades':<8} {'P&L':<12} {'Avg Trade':<12} {'Win Rate':<10}")
+        print("-" * 60)
+        
+        for month, stats in monthly_stats.iterrows():
+            trades = int(stats[('Profit_Loss', 'count')])
+            pl = stats[('Profit_Loss', 'sum')]
+            avg = stats[('Profit_Loss', 'mean')]
+            wins = len(trades_df[(trades_df['Month'] == month) & (trades_df['Profit_Loss'] > 0)])
+            win_rate = (wins / trades * 100) if trades > 0 else 0
+            
+            print(f"{str(month):<10} {trades:<8} ${pl:>10.2f} ${avg:>10.2f} {win_rate:>8.1f}%")
+    
+    def save_results(self, trades_df):
+        """Save detailed results to files"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        trades_file = f"mean_reversion_trades_{timestamp}.csv"
+        trades_df.to_csv(trades_file, index=False)
+        print(f"\n✓ Trade details saved to: {trades_file}")
+        
+        summary_file = f"mean_reversion_summary_{timestamp}.txt"
+        with open(summary_file, 'w') as f:
+            f.write("MEAN REVERSION STRATEGY - BACKTEST RESULTS\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Initial Investment: ${self.initial_investment:,.2f}\n")
+            f.write(f"Final Equity: ${self.current_equity:,.2f}\n")
+            f.write(f"Total Return: {((self.current_equity - self.initial_investment) / self.initial_investment * 100):.2f}%\n")
+            f.write(f"Total Trades: {len(trades_df)}\n")
+            f.write(f"Win Rate: {(len(trades_df[trades_df['Profit_Loss'] > 0]) / len(trades_df) * 100):.2f}%\n")
+        
+        print(f"✓ Summary saved to: {summary_file}")
+
+def main():
+    """Main execution function"""
+    print("\nMEAN REVERSION STRATEGY - COMPREHENSIVE BACKTEST SYSTEM")
+    print("=" * 60)
+    
+    csv_files = [f for f in os.listdir('..') if f.endswith('.csv') and 'strategies' not in f.lower()]
+    
+    if not csv_files:
+        print("Error: No CSV data file found in parent directory.")
+        return
+    
+    data_file = os.path.join('..', csv_files[0])
+    print(f"Found data file: {csv_files[0]}")
+    
+    strategy = MeanReversionComprehensive()
+    
+    try:
+        trades_df = strategy.run_backtest(data_file)
+        print("\n✓ Backtest completed successfully!")
+        
+    except Exception as e:
+        print(f"\nError during backtest: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    main()

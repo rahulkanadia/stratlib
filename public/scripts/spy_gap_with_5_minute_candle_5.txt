@@ -1,0 +1,398 @@
+import pandas as pd
+import numpy as np
+
+def load_daily_data(file_name):
+    """
+    Loads the daily CSV file into a DataFrame, sorts it by date, and resets the index.
+    
+    Parameters:
+    - file_name: Path to the daily data CSV file.
+    
+    Returns:
+    - DataFrame containing daily data sorted by Date.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_5min_data(file_name):
+    """
+    Loads the 5-minute CSV file into a DataFrame, sorts it by Time in ascending order, and resets the index.
+    
+    Parameters:
+    - file_name: Path to the 5-minute data CSV file.
+    
+    Returns:
+    - DataFrame containing 5-minute data sorted by Time.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Time'])
+    df.sort_values('Time', inplace=True)  # Ensure data is sorted from earliest to latest
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_day_range(day):
+    """
+    Calculates the trading range of a day (High - Low).
+    
+    Parameters:
+    - day: Series containing a single day's data.
+    
+    Returns:
+    - Float representing the day's trading range.
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    Calculates the gap between the previous day's close and the current day's open.
+    
+    Parameters:
+    - prev_close: Previous day's close price.
+    - curr_open: Current day's open price.
+    
+    Returns:
+    - Float representing the gap.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    """
+    Checks if the gap meets the specified conditions:
+    - At least $0.20
+    - Between 15% and 85% of the previous day's range
+    
+    Parameters:
+    - gap: Calculated gap.
+    - prev_range: Previous day's trading range.
+    
+    Returns:
+    - Boolean indicating if the gap is valid.
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    """
+    Determines the trade direction based on the gap:
+    - Gap up: Short position
+    - Gap down: Long position
+    
+    Parameters:
+    - gap: Calculated gap.
+    
+    Returns:
+    - String 'Short' or 'Long' indicating the trade direction.
+    """
+    return 'Short' if gap > 0 else 'Long'
+
+def get_first_5min_candle(trade_direction, date, min_df):
+    """
+    Retrieves the first 5-minute candle of the trading day and checks if it moves in the opposite direction of the gap.
+    
+    Parameters:
+    - trade_direction: 'Short' or 'Long'.
+    - date: Timestamp of the current trading day.
+    - min_df: DataFrame containing 5-minute data.
+    
+    Returns:
+    - Boolean indicating whether the first candle meets the condition.
+    """
+    day_data = min_df[min_df['Time'].dt.date == date.date()]
+    if day_data.empty:
+        return False  # No data available for this day
+
+    if len(day_data) < 2:
+        return False  # Not enough data to enter the trade
+
+    first_candle = day_data.iloc[0]
+
+    if trade_direction == 'Short':
+        return first_candle['Last'] < first_candle['Open']
+    else:
+        return first_candle['Last'] > first_candle['Open']
+
+def is_gap_closed_first_five_minutes(trade_direction, date, min_df, prev_close):
+    """
+    Checks if the gap was closed during the first five minutes of trading.
+    
+    Parameters:
+    - trade_direction: 'Short' or 'Long'.
+    - date: Timestamp of the current trading day.
+    - min_df: DataFrame containing 5-minute data.
+    - prev_close: Previous day's close price.
+    
+    Returns:
+    - Boolean indicating whether the gap was closed in the first five minutes.
+    """
+    day_data = min_df[min_df['Time'].dt.date == date.date()]
+    if day_data.empty:
+        return False  # No data available for this day
+
+    if len(day_data) < 1:
+        return False  # Not enough data to check
+
+    first_candle = day_data.iloc[0]
+
+    if trade_direction == 'Short':
+        return first_candle['Low'] <= prev_close
+    else:
+        return first_candle['High'] >= prev_close
+
+def get_second_5min_open(date, min_df):
+    """
+    Retrieves the open price of the second 5-minute candle of the trading day.
+    
+    Parameters:
+    - date: Timestamp of the current trading day.
+    - min_df: DataFrame containing 5-minute data.
+    
+    Returns:
+    - Float representing the open price of the second 5-minute candle, or None if not available.
+    """
+    day_data = min_df[min_df['Time'].dt.date == date.date()]
+    if len(day_data) < 2:
+        return None  # Not enough data to enter the trade
+
+    second_candle = day_data.iloc[1]
+    return second_candle['Open']
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """
+    Checks if the gap is closed during the trading day and returns the exit price.
+    
+    Parameters:
+    - trade_direction: 'Short' or 'Long'.
+    - curr_day: Series containing the current day's data.
+    - prev_close: Previous day's close price.
+    
+    Returns:
+    - exit_price: The price at which to exit the trade.
+    - gap_closed: Boolean indicating if the gap was closed.
+    """
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']  # Use 'Close' from daily data
+            gap_closed = False
+    else:  # Long position
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']  # Use 'Close' from daily data
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    Calculates the profit or loss of a trade.
+    
+    Parameters:
+    - trade_direction: 'Short' or 'Long'.
+    - entry_price: Price at which the trade was entered.
+    - exit_price: Price at which the trade was exited.
+    - position_size: Amount invested in the trade.
+    
+    Returns:
+    - Float representing the profit or loss from the trade.
+    """
+    number_of_shares = position_size / entry_price
+
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:  # Short position
+        profit_loss = number_of_shares * (entry_price - exit_price)
+
+    return profit_loss
+
+def analyze_trades(daily_df, min_df):
+    """
+    Analyzes the DataFrame for valid gap trades and returns a DataFrame of trades.
+    
+    Parameters:
+    - daily_df: DataFrame containing daily data.
+    - min_df: DataFrame containing 5-minute data.
+    
+    Returns:
+    - DataFrame containing details of all valid trades.
+    """
+    trades = []
+    total_days = len(daily_df)
+
+    for i in range(1, total_days):
+        prev_day = daily_df.iloc[i - 1]
+        curr_day = daily_df.iloc[i]
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue  # Avoid division by zero
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+
+        condition_met = get_first_5min_candle(trade_direction, curr_day['Date'], min_df)
+        if not condition_met:
+            continue  # Condition not met, do not enter the trade
+
+        gap_closed_first_five = is_gap_closed_first_five_minutes(trade_direction, curr_day['Date'], min_df, prev_day['Close'])
+        if gap_closed_first_five:
+            continue  # Gap was closed in the first five minutes, do not enter the trade
+
+        entry_price = get_second_5min_open(curr_day['Date'], min_df)
+        if entry_price is None:
+            continue  # Not enough data to enter the trade
+
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+
+        trades.append({
+            'Date': curr_day['Date'],
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed
+        })
+    return pd.DataFrame(trades)
+
+def calculate_statistics(trades_df):
+    """
+    Calculates and prints the required statistics:
+    - Average Gain per Trade
+    - Average Loss per Trade
+    - Maximum Gain per Trade and date
+    - Maximum Loss per Trade and date
+    
+    Parameters:
+    - trades_df: DataFrame containing details of all valid trades.
+    """
+    if trades_df.empty:
+        print("No trades met the criteria.")
+        return
+
+    gains = trades_df[trades_df['Profit/Loss'] > 0]
+    losses = trades_df[trades_df['Profit/Loss'] < 0]
+
+    average_gain = gains['Profit/Loss'].mean() if not gains.empty else 0
+    average_loss = losses['Profit/Loss'].mean() if not losses.empty else 0
+    max_gain = gains['Profit/Loss'].max() if not gains.empty else 0
+    max_loss = losses['Profit/Loss'].min() if not losses.empty else 0  # Losses are negative
+
+    if not gains.empty:
+        max_gain_row = gains.loc[gains['Profit/Loss'].idxmax()]
+        max_gain_date = max_gain_row['Date']
+    else:
+        max_gain_date = None
+
+    if not losses.empty:
+        max_loss_row = losses.loc[losses['Profit/Loss'].idxmin()]
+        max_loss_date = max_loss_row['Date']
+    else:
+        max_loss_date = None
+
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Average Gain per Trade: ${average_gain:,.2f}")
+    print(f"Average Loss per Trade: ${average_loss:,.2f}")
+    if max_gain_date is not None:
+        print(f"Maximum Gain per Trade: ${max_gain:,.2f} on {max_gain_date.date()}")
+    else:
+        print("No gains to report.")
+
+    if max_loss_date is not None:
+        print(f"Maximum Loss per Trade: ${max_loss:,.2f} on {max_loss_date.date()}")
+    else:
+        print("No losses to report.")
+
+def simulate_trading(trades_df, initial_investment):
+    """
+    Simulates trading with a given initial investment and returns the final amount.
+    
+    Parameters:
+    - trades_df: DataFrame containing details of all valid trades.
+    - initial_investment: Starting capital for trading.
+    
+    Returns:
+    - final_amount: Float representing the final capital after all trades.
+    """
+    if trades_df.empty:
+        print("No trades to simulate.")
+        return initial_investment
+
+    current_amount = initial_investment
+    trade_results = []
+
+    for index, row in trades_df.iterrows():
+        trade_direction = row['Trade Direction']
+        entry_price = row['Entry Price']
+        exit_price = row['Exit Price']
+
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, current_amount)
+
+        current_amount += profit_loss
+
+        trade_results.append(profit_loss)
+
+    total_profit_loss = sum(trade_results)
+    final_amount = current_amount
+
+    print(f"Initial Investment: ${initial_investment:,.2f}")
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Total Profit/Loss from All Trades: ${total_profit_loss:,.2f}")
+    print(f"Final Amount after All Trades: ${final_amount:,.2f}")
+
+    return final_amount
+
+def analyze_spy_gaps(daily_file, min_file, initial_investment):
+    """
+    Main function that orchestrates the gap analysis and trading simulation.
+    
+    Parameters:
+    - daily_file: Path to the daily data CSV file.
+    - min_file: Path to the 5-minute data CSV file.
+    - initial_investment: Starting capital for trading.
+    
+    Returns:
+    - trades_df: DataFrame containing details of all valid trades.
+    - final_amount: Float representing the final capital after all trades.
+    """
+    daily_df = load_daily_data(daily_file)
+    min_df = load_5min_data(min_file)
+
+    if not np.issubdtype(min_df['Time'].dtype, np.datetime64):
+        min_df['Time'] = pd.to_datetime(min_df['Time'], errors='coerce')
+
+    min_df.dropna(subset=['Time'], inplace=True)
+
+    trades_df = analyze_trades(daily_df, min_df)
+
+    if trades_df.empty:
+        print("No trades met the criteria after applying the 5-minute condition.")
+        return trades_df, initial_investment
+
+    trades_df['Profit/Loss'] = trades_df.apply(
+        lambda row: calculate_profit_loss(
+            row['Trade Direction'],
+            row['Entry Price'],
+            row['Exit Price'],
+            initial_investment
+        ),
+        axis=1
+    )
+
+    calculate_statistics(trades_df)
+    final_amount = simulate_trading(trades_df, initial_investment)
+    return trades_df, final_amount
+
+initial_investment = 16000  # $16,000 initial investment
+
+trades, final_amount = analyze_spy_gaps('OTSWHDQQ.csv', '5_MINUTES_DATA.csv', initial_investment)
+
+print("\nTrade Details:")
+print(trades.to_string())  # Prints the entire DataFrame without truncation

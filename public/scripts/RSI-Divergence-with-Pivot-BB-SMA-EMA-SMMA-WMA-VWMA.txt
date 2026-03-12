@@ -1,0 +1,220 @@
+
+> 策略名称
+
+RSI-Divergence-with-Pivot-BB-SMA-EMA-SMMA-WMA-VWMA
+
+> 策略作者
+
+张超
+
+> 策略描述
+
+RSI Divergences with Pivots , BB, MA is a basic RSI oscillator with some useful features, it allow the user to display divergences, pivots , and Moving Average directly on the RSI Indicator.
+
+The Moving Average that you can display on the RSI oscillator are :
+SMA
+EMA
+SMMA
+WMA
+VWMA
+Bollinger Bands
+
+ ![IMG](https:
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|v_input_1|false|Hide pivots?|
+|v_input_2|false|Shorter labels?|
+|v_input_3|true|Hide labels and color background|
+|v_input_int_6|90|Div lookback period (bars)?|
+|v_input_int_1|14|(?RSI Settings)RSI Length|
+|v_input_source_1_close|0|Source: close|high|low|open|hl2|hlc3|hlcc4|ohlc4|
+|v_input_int_3|14|RSI Length|
+|v_input_int_4|70|Overbought|
+|v_input_int_5|30|Oversold|
+|v_input_string_1|0|(?MA Settings)MA Type: SMA|Bollinger Bands|EMA|SMMA (RMA)|WMA|VWMA|
+|v_input_int_2|14|MA Length|
+|v_input_float_1|2|BB StdDev|
+
+
+> 源码 (PineScript)
+
+``` javascript
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+indicator(title="RSI Divergences with Pivots, BB, MA [My Crypto Succubus]", shorttitle="RSI Div, Pivot, BB, MA [My Crypto Succubus]", format=format.price, precision=2)
+
+ma(source, length, type) =>
+    switch type
+        "SMA" => ta.sma(source, length)
+        "Bollinger Bands" => ta.sma(source, length)
+        "EMA" => ta.ema(source, length)
+        "SMMA (RMA)" => ta.rma(source, length)
+        "WMA" => ta.wma(source, length)
+        "VWMA" => ta.vwma(source, length)
+
+rsiLengthInput = input.int(14, minval=1, title="RSI Length", group="RSI Settings")
+rsiSourceInput = input.source(close, "Source", group="RSI Settings")
+maTypeInput = input.string("SMA", title="MA Type", options=["SMA", "Bollinger Bands", "EMA", "SMMA (RMA)", "WMA", "VWMA"], group="MA Settings")
+maLengthInput = input.int(14, title="MA Length", group="MA Settings")
+bbMultInput = input.float(2.0, minval=0.001, maxval=50, title="BB StdDev", group="MA Settings")
+
+up = ta.rma(math.max(ta.change(rsiSourceInput), 0), rsiLengthInput)
+down = ta.rma(-math.min(ta.change(rsiSourceInput), 0), rsiLengthInput)
+rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+rsiMA = ma(rsi, maLengthInput, maTypeInput)
+isBB = maTypeInput == "Bollinger Bands"
+
+plot(rsi, "RSI", color=#ffffff, linewidth=1)
+plot(rsiMA, "RSI-based MA", color=color.yellow)
+rsiUpperBand = hline(70, "RSI Upper Band", color=#787B86)
+hline(50, "RSI Middle Band", color=color.new(#787B86, 50))
+rsiLowerBand = hline(30, "RSI Lower Band", color=#787B86)
+fill(rsiUpperBand, rsiLowerBand, color=color.rgb(178, 8, 120, 90), title="RSI Background Fill")
+bbUpperBand = plot(isBB ? rsiMA + ta.stdev(rsi, maLengthInput) * bbMultInput : na, title = "Upper Bollinger Band", color=color.green)
+bbLowerBand = plot(isBB ? rsiMA - ta.stdev(rsi, maLengthInput) * bbMultInput : na, title = "Lower Bollinger Band", color=color.green)
+fill(bbUpperBand, bbLowerBand, color= isBB ? color.new(color.green, 90) : na, title="Bollinger Bands Background Fill")
+
+
+
+len = input.int(14, minval=1, title='RSI Length', group="RSI Settings")
+ob = input.int(defval=70, title='Overbought', minval=0, maxval=100, group="RSI Settings")
+os = input.int(defval=30, title='Oversold', minval=0, maxval=100, group="RSI Settings")
+
+
+band1 = hline(ob)
+band0 = hline(os)
+plot(rsi, color=rsi > ob or rsi < os ? color.rgb(255, 0, 0, 0) : color.new(color.black, 100), linewidth=1)
+fill(band1, band0, color=color.new(color.purple, 97))
+
+
+piv = input(false, 'Hide pivots?')
+shrt = input(false, 'Shorter labels?')
+hidel = input(true, 'Hide labels and color background')
+xbars = input.int(defval=90, title='Div lookback period (bars)?', minval=1)
+hb = math.abs(ta.highestbars(rsi, xbars))  
+lb = math.abs(ta.lowestbars(rsi, xbars))  
+
+
+max = float(na)
+max_rsi = float(na)
+min = float(na)
+min_rsi = float(na)
+pivoth = bool(na)
+pivotl = bool(na)
+divbear = bool(na)
+divbull = bool(na)
+
+
+max := hb == 0 ? close : na(max[1]) ? close : max[1]
+max_rsi := hb == 0 ? rsi : na(max_rsi[1]) ? rsi : max_rsi[1]
+min := lb == 0 ? close : na(min[1]) ? close : min[1]
+min_rsi := lb == 0 ? rsi : na(min_rsi[1]) ? rsi : min_rsi[1]
+
+
+
+if close > max  
+    max := close  
+    max
+if rsi > max_rsi  
+    max_rsi := rsi  
+    max_rsi
+if close < min  
+    min := close  
+    min
+if rsi < min_rsi  
+    min_rsi := rsi  
+    min_rsi
+
+
+pivoth := max_rsi == max_rsi[2] and max_rsi[2] != max_rsi[3] ? true : na
+pivotl := min_rsi == min_rsi[2] and min_rsi[2] != min_rsi[3] ? true : na
+
+
+if max[1] > max[2] and rsi[1] < max_rsi and rsi <= rsi[1]
+    divbear := true
+    divbear
+if min[1] < min[2] and rsi[1] > min_rsi and rsi >= rsi[1]
+    divbull := true
+    divbull
+
+
+alertcondition(divbear, title='Bear div', message='Bear div')
+alertcondition(divbull, title='Bull div', message='Bull div')
+alertcondition(pivoth, title='Pivot high', message='Pivot high')
+alertcondition(pivotl, title='Pivot low', message='Pivot low')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+if divbear
+    strategy.entry("Enter Long", strategy.long)
+else if divbull
+    strategy.entry("Enter Short", strategy.short)
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2022-05-12 17:45:45

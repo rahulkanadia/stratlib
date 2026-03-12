@@ -1,0 +1,49 @@
+
+> 策略名称
+
+boll傻瓜版
+
+> 策略作者
+
+sabar
+
+
+
+
+
+> 源码 (javascript)
+
+``` javascript
+ function main (){
+    $.CTA("BTC_USDT", function(st){
+        var r = st.records; 
+        if (r.Length <20) return; 
+        var close = r[r.length - 2].close; 
+        var mp = st. positLon.amount; 
+
+        var boll = TA.BOLL(r, 20, 2); 
+        var upLine = boll[0];
+        
+        var midLine = boll[1]; 
+        var downLine = boll[2];
+        var upPrice = upLine [upLine.length -2];
+        
+        var midPrice = midLine[midLine.length -2]; 
+        
+        var downPrice = downLine[ downLine.length -2];
+        
+        if(mp == 1 && (close < midPrice)) return -1; 
+        if (mp == -1 && (close > midPrice)) return 1; 
+        if (mp == 0 && close > midPrice) return 1; 
+        if (mp == 0 && close < midPrice) return -1; 
+    });
+ }     
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2021-09-23 09:43:52

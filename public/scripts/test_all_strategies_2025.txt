@@ -1,0 +1,196 @@
+"""
+Test all Top Gap Trading Strategies on 2025 data
+"""
+import pandas as pd
+import numpy as np
+import sys
+import os
+from datetime import datetime
+
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(os.path.join(parent_dir, 'TOP_STRATEGIES'))
+
+from base_strategy import GapStrategy
+
+import importlib.util
+
+def load_strategy_module(file_path):
+    """Dynamically load a strategy module"""
+    spec = importlib.util.spec_from_file_location("strategy_module", file_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+def calculate_sharpe_ratio(returns):
+    """Calculate Sharpe Ratio from returns"""
+    if len(returns) == 0 or returns.std() == 0:
+        return 0.0
+    return returns.mean() / returns.std()
+
+def run_strategy_test(strategy_file, data_file):
+    """Run a single strategy and return results"""
+    try:
+        strategy_module = load_strategy_module(strategy_file)
+
+        strategy_class = None
+        for item_name in dir(strategy_module):
+            item = getattr(strategy_module, item_name)
+            if isinstance(item, type) and issubclass(item, GapStrategy) and item != GapStrategy:
+                strategy_class = item
+                break
+
+        if strategy_class is None:
+            return None
+
+        strategy = strategy_class()
+        stats, trades_df = strategy.run_strategy(data_file)
+
+        if trades_df is None or len(trades_df) == 0:
+            return {
+                'strategy_name': strategy.name,
+                'total_trades': 0,
+                'winning_trades': 0,
+                'losing_trades': 0,
+                'success_rate': 0,
+                'total_profit': 0,
+                'avg_profit_per_trade': 0,
+                'roi': 0,
+                'final_equity': 16000,
+                'sharpe_ratio': 0,
+                'best_trade': 0,
+                'worst_trade': 0,
+                'avg_win': 0,
+                'avg_loss': 0
+            }
+
+        sharpe_ratio = calculate_sharpe_ratio(trades_df['Profit/Loss'])
+
+        return {
+            'strategy_name': stats['Strategy'],
+            'total_trades': stats['Total Trades'],
+            'winning_trades': stats['Winning Trades'],
+            'losing_trades': stats['Losing Trades'],
+            'success_rate': stats['Success Rate'],
+            'total_profit': stats['Total Profit'],
+            'avg_profit_per_trade': stats['Average Profit'],
+            'roi': stats['ROI'],
+            'final_equity': stats['Final Equity'],
+            'sharpe_ratio': sharpe_ratio,
+            'best_trade': trades_df['Profit/Loss'].max(),
+            'worst_trade': trades_df['Profit/Loss'].min(),
+            'avg_win': stats.get('Average Win', 0),
+            'avg_loss': stats.get('Average Loss', 0)
+        }
+
+    except Exception as e:
+        print(f"Error running strategy {strategy_file}: {str(e)}")
+        return None
+
+def main():
+    print("=" * 80)
+    print("TESTING ALL STRATEGIES ON 2025 DATA")
+    print("=" * 80)
+    print()
+
+    data_file = "SPY_2025_data.csv"
+    if not os.path.exists(data_file):
+        print(f"ERROR: Data file {data_file} not found!")
+        return
+
+    strategies_dir = os.path.join(parent_dir, 'TOP_STRATEGIES')
+    strategy_files = sorted([
+        os.path.join(strategies_dir, f)
+        for f in os.listdir(strategies_dir)
+        if f.endswith('.py') and f[0].isdigit()
+    ])
+
+    print(f"Found {len(strategy_files)} strategies to test")
+    print(f"Data file: {data_file}")
+    print()
+
+    results = []
+    for i, strategy_file in enumerate(strategy_files, 1):
+        filename = os.path.basename(strategy_file)
+        print(f"[{i}/{len(strategy_files)}] Testing {filename}...", end=" ")
+
+        result = run_strategy_test(strategy_file, data_file)
+        if result:
+            results.append(result)
+            print(f"✓ {result['total_trades']} trades, {result['success_rate']:.2f}% success, ${result['total_profit']:.2f} profit")
+        else:
+            print("✗ Failed")
+
+    print()
+    print("=" * 80)
+    print("2025 RESULTS SUMMARY")
+    print("=" * 80)
+    print()
+
+    df = pd.DataFrame(results)
+
+    print("TOP 5 BY SUCCESS RATE:")
+    top_success = df.nlargest(5, 'success_rate')[['strategy_name', 'success_rate', 'total_trades', 'total_profit', 'sharpe_ratio']]
+    print(top_success.to_string(index=False))
+    print()
+
+    print("TOP 5 BY TOTAL PROFIT:")
+    top_profit = df.nlargest(5, 'total_profit')[['strategy_name', 'total_profit', 'success_rate', 'total_trades', 'sharpe_ratio']]
+    print(top_profit.to_string(index=False))
+    print()
+
+    print("TOP 5 BY SHARPE RATIO:")
+    top_sharpe = df.nlargest(5, 'sharpe_ratio')[['strategy_name', 'sharpe_ratio', 'success_rate', 'total_profit', 'total_trades']]
+    print(top_sharpe.to_string(index=False))
+    print()
+
+    print("TOP 5 BY ROI:")
+    top_roi = df.nlargest(5, 'roi')[['strategy_name', 'roi', 'total_profit', 'success_rate', 'sharpe_ratio']]
+    print(top_roi.to_string(index=False))
+    print()
+
+    print("=" * 80)
+    print("OVERALL STATISTICS:")
+    print("=" * 80)
+    print(f"Average Success Rate: {df['success_rate'].mean():.2f}%")
+    print(f"Average Total Profit: ${df['total_profit'].mean():.2f}")
+    print(f"Average ROI: {df['roi'].mean():.2f}%")
+    print(f"Average Sharpe Ratio: {df['sharpe_ratio'].mean():.3f}")
+    print(f"Total Combined Profit: ${df['total_profit'].sum():.2f}")
+    print()
+
+    output_csv = "2025_strategies_results.csv"
+    df.to_csv(output_csv, index=False)
+    print(f"Results saved to: {output_csv}")
+
+    try:
+        output_excel = "2025_strategies_results.xlsx"
+        with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='All Results', index=False)
+
+            df.nlargest(10, 'success_rate').to_excel(writer, sheet_name='Top by Success Rate', index=False)
+
+            df.nlargest(10, 'total_profit').to_excel(writer, sheet_name='Top by Profit', index=False)
+
+            df.nlargest(10, 'sharpe_ratio').to_excel(writer, sheet_name='Top by Sharpe', index=False)
+
+            df.nlargest(10, 'roi').to_excel(writer, sheet_name='Top by ROI', index=False)
+
+            summary_data = {
+                'Metric': ['Average Success Rate (%)', 'Average Total Profit ($)',
+                          'Average ROI (%)', 'Average Sharpe Ratio',
+                          'Total Combined Profit ($)', 'Number of Strategies'],
+                'Value': [df['success_rate'].mean(), df['total_profit'].mean(),
+                         df['roi'].mean(), df['sharpe_ratio'].mean(),
+                         df['total_profit'].sum(), len(df)]
+            }
+            pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
+
+        print(f"Excel file saved to: {output_excel}")
+    except Exception as e:
+        print(f"Could not save Excel file: {str(e)}")
+
+    print()
+    print("=" * 80)
+
+if __name__ == "__main__":
+    main()

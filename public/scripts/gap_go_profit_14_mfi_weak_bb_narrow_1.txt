@@ -1,0 +1,216 @@
+"""
+Gap & Go Strategy: Mfi Weak + Bb Narrow
+----------------------------------------
+Ranked #14 by Profit
+
+This strategy trades gaps in the direction of the gap when both indicators confirm.
+Entry occurs when:
+1. Mfi Weak condition is met
+2. Bb Narrow condition is met
+3. Valid gap occurs (>= 0.3%)
+
+Exit Conditions:
+- Profit target: 1% gain
+- Stop loss: 0.5% loss  
+- Market close if neither hit
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utils import BaseStrategy, calculate_rsi, calculate_atr, calculate_bollinger_bands, calculate_macd
+
+
+class GapGoMFI_WeakBB_NarrowStrategy(BaseStrategy):
+    """Gap & Go strategy combining Mfi Weak and Bb Narrow."""
+    
+    def __init__(self, initial_investment=16000):
+        super().__init__("Gap & Go: Mfi Weak + Bb Narrow", initial_investment)
+        self.min_gap_percent = 0.3
+        self.profit_target_percent = 1.0
+        self.stop_loss_percent = 0.5
+        
+    def calculate_indicators(self, df):
+        """Calculate all required technical indicators."""
+        df['Prev_Close'] = df['Close'].shift(1)
+        df['Gap'] = ((df['Open'] - df['Prev_Close']) / df['Prev_Close']) * 100
+        df['Gap_Abs'] = df['Gap'].abs()
+        df['Gap_Up'] = df['Gap'] > self.min_gap_percent
+        df['Gap_Down'] = df['Gap'] < -self.min_gap_percent
+        
+        for period in [5, 10, 20, 50]:
+            df[f'SMA_{period}'] = df['Close'].rolling(window=period).mean()
+            
+        for period in [8, 21]:
+            df[f'EMA_{period}'] = df['Close'].ewm(span=period, adjust=False).mean()
+            
+        df['RSI'] = calculate_rsi(df['Close'], period=14)
+        
+        df['ATR'] = calculate_atr(df['High'], df['Low'], df['Close'], period=14)
+        df['ATR_Ratio'] = df['ATR'] / df['Close']
+        
+        bb_middle, bb_upper, bb_lower, bb_width = calculate_bollinger_bands(df['Close'])
+        df['BB_Middle'] = bb_middle
+        df['BB_Upper'] = bb_upper
+        df['BB_Lower'] = bb_lower
+        df['BB_Width'] = bb_width
+        df['BB_Squeeze'] = df['BB_Width'] < df['BB_Width'].rolling(20).mean()
+        
+        macd_line, signal_line, histogram = calculate_macd(df['Close'])
+        df['MACD'] = macd_line
+        df['MACD_Signal'] = signal_line
+        
+        df['Volume_SMA'] = df['Volume'].rolling(window=20).mean()
+        df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA']
+        df['OBV'] = (df['Volume'] * ((df['Close'] > df['Close'].shift(1)) * 2 - 1)).cumsum()
+        
+        
+        df['Momentum'] = ((df['Close'] - df['Close'].shift(10)) / df['Close'].shift(10)) * 100
+        df['ROC'] = ((df['Close'] - df['Close'].shift(10)) / df['Close'].shift(10)) * 100
+        
+        df['DayOfWeek'] = pd.to_datetime(df['Date']).dt.dayofweek
+        
+        df['SMA20_Rising'] = df['SMA_20'] > df['SMA_20'].shift(1)
+        df['SMA50_Rising'] = df['SMA_50'] > df['SMA_50'].shift(1)
+        
+        indicator_cols = [col for col in df.columns if col not in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+        for col in indicator_cols:
+            if col not in ['Gap', 'Gap_Abs', 'Gap_Up', 'Gap_Down', 'Prev_Close', 'DayOfWeek']:
+                df[col] = df[col].shift(1)
+        
+        return df
+    
+    def get_entry_conditions(self, df):
+        """Define entry conditions combining both indicators."""
+        valid_gap = (df['Gap_Up']) | (df['Gap_Down'])
+        
+        condition1 = df['MFI'] < 50
+        
+        condition2 = df['BB_Width'] < df['BB_Width'].rolling(20).mean()
+        
+        entry_signals = valid_gap & condition1 & condition2
+        
+        return entry_signals
+    
+    def calculate_exit_price(self, entry_price, high, low, close, direction):
+        """Calculate exit price based on profit target, stop loss, or close."""
+        if direction == 'Long':
+            profit_target = entry_price * (1 + self.profit_target_percent / 100)
+            stop_loss = entry_price * (1 - self.stop_loss_percent / 100)
+            
+            if high >= profit_target:
+                return profit_target, 'Profit Target'
+            elif low <= stop_loss:
+                return stop_loss, 'Stop Loss'
+            else:
+                return close, 'Market Close'
+        else:  # Short
+            profit_target = entry_price * (1 - self.profit_target_percent / 100)
+            stop_loss = entry_price * (1 + self.stop_loss_percent / 100)
+            
+            if low <= profit_target:
+                return profit_target, 'Profit Target'
+            elif high >= stop_loss:
+                return stop_loss, 'Stop Loss'
+            else:
+                return close, 'Market Close'
+    
+    def run_backtest(self, data_file):
+        """Custom backtest for gap and go strategy."""
+        self.df = pd.read_csv(data_file, parse_dates=['Date'])
+        self.df.sort_values('Date', inplace=True)
+        self.df.reset_index(drop=True, inplace=True)
+        
+        self.df = self.calculate_indicators(self.df)
+        
+        entry_signals = self.get_entry_conditions(self.df)
+        
+        trades = []
+        capital = self.initial_investment
+        
+        for i in range(1, len(self.df)):  # Start from 1 to have previous day
+            if entry_signals.iloc[i]:
+                entry_row = self.df.iloc[i]
+                entry_price = entry_row['Open']
+                
+                if entry_row['Gap_Up']:
+                    trade_type = 'Long'
+                else:  # Gap down
+                    trade_type = 'Short'
+                
+                position = self.calculate_position_size(capital, entry_price)
+                
+                exit_price, exit_reason = self.calculate_exit_price(
+                    entry_price,
+                    entry_row['High'],
+                    entry_row['Low'], 
+                    entry_row['Close'],
+                    trade_type
+                )
+                
+                if trade_type == 'Long':
+                    profit = (exit_price - entry_price) * position
+                else:  # Short
+                    profit = (entry_price - exit_price) * position
+                
+                capital += profit
+                
+                trades.append({
+                    'Entry Date': entry_row['Date'],
+                    'Entry Price': entry_price,
+                    'Exit Date': entry_row['Date'],  # Same day exit
+                    'Exit Price': exit_price,
+                    'Type': trade_type,
+                    'Gap %': entry_row['Gap'],
+                    'Shares': position,
+                    'Profit': profit,
+                    'Exit Reason': exit_reason,
+                    'Capital After': capital
+                })
+        
+        trades_df = pd.DataFrame(trades)
+        
+        if len(trades_df) > 0:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(trades_df, self.initial_investment)
+            
+            exit_analysis = trades_df['Exit Reason'].value_counts()
+            statistics['profit_target_exits'] = exit_analysis.get('Profit Target', 0)
+            statistics['stop_loss_exits'] = exit_analysis.get('Stop Loss', 0)
+            statistics['close_exits'] = exit_analysis.get('Market Close', 0)
+            statistics['avg_gap_size'] = trades_df['Gap %'].abs().mean()
+        else:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(pd.DataFrame(), self.initial_investment)
+            statistics['profit_target_exits'] = 0
+            statistics['stop_loss_exits'] = 0
+            statistics['close_exits'] = 0
+            statistics['avg_gap_size'] = 0
+        
+        return trades_df, statistics
+
+
+def main():
+    """Run the Gap & Go Mfi Weak + Bb Narrow strategy."""
+    strategy = GapGoMFI_WeakBB_NarrowStrategy(initial_investment=16000)
+    
+    data_file = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        'data', '7J0OK1VR.csv'
+    )
+    
+    trades_df, statistics = strategy.run(data_file, save_results=True, 
+                                       output_dir='../../results')
+    
+    if statistics['total_trades'] < 100:
+        print(f"⚠️  WARNING: Strategy only generated {statistics['total_trades']} trades, "
+              f"below recommended minimum of 100 trades for statistical significance.")
+    
+    return trades_df, statistics
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,89 @@
+
+> 策略名称
+
+图表界面信息展示实例1
+
+> 策略作者
+
+太极
+
+> 策略描述
+
+11111111
+
+
+
+> 源码 (javascript)
+
+``` javascript
+
+
+var chart = { 
+  __isStock: true,                                    
+  tooltip: {xDateFormat: '%Y-%m-%d %H:%M:%S, %A'},    
+  title : { text : '差价分析图'},                       
+  rangeSelector: {                                    
+      buttons:  [{type: 'hour',count: 1, text: '1h'}, {type: 'hour',count: 3, text: '3h'}, {type: 'hour', count: 8, text: '8h'}, {type: 'all',text: 'All'}],
+      selected: 0,
+      inputEnabled: false
+  },
+  xAxis: { type: 'datetime'},                         
+  yAxis : {                                           
+      title:{text: '差价'},                           
+      opposite:false,                                
+  },
+  series : [                                          
+      {name:"交易所0",id:"0,Buy",color:'#FF3030',data:[]},  
+      {name:"交易所1",id:"1,Buy",dashStyle:'shortdash',data:[]}, 
+      {name:"交易所2",id:"2,Buy",color:'#912CEE',data:[]},
+      
+  ]
+};
+
+
+function getNowFormatDate() {
+    var date = new Date();
+    var seperator1 = "-";
+    var seperator2 = ":";
+    var month = date.getMonth() + 1;
+    var strDate = date.getDate();
+    if (month >= 1 && month <= 9) {
+        month = "0" + month;
+    }
+    if (strDate >= 0 && strDate <= 9) {
+        strDate = "0" + strDate;
+    }
+    var currentdate = date.getFullYear()+seperator1+month+seperator1+strDate+" "+date.getHours()+seperator2+date.getMinutes()+seperator2+date.getSeconds();
+    return currentdate;
+}
+
+
+function main() {
+
+    
+    var ObjChart = Chart(chart);  
+    ObjChart.reset();           
+    while(true){
+        var nowTime = new Date().getTime();   
+        var Buy_0 = _C(exchanges[0].GetTicker).Buy;  
+        var Buy_1 = _C(exchanges[1].GetTicker).Buy; 
+        var Buy_2 = _C(exchanges[2].GetTicker).Buy; 
+        ObjChart.add([0, [nowTime,Buy_0]]); 
+        ObjChart.add([1, [nowTime,Buy_1]]); 
+        ObjChart.add([2, [nowTime,Buy_2]]); 
+        ObjChart.update(chart);                  
+        Sleep(2000);
+    }
+
+
+}
+
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2017-02-18 15:29:31

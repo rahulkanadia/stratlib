@@ -1,0 +1,63 @@
+import pandas as pd
+import numpy as np
+from base_strategy import GapStrategy
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from gap_utils import *
+
+class RSIOverbought70Strategy(GapStrategy):
+    """
+    RSI Overbought 70 Strategy
+    Success Rate: 74.52% | Total Profit: $2,282.93 | Trades: 208
+    
+    This strategy trades gaps when RSI is above 70, indicating overbought conditions
+    that are likely to see mean reversion.
+    """
+    
+    def __init__(self):
+        super().__init__(
+            name="RSI Overbought 70",
+            description="Fade gaps when RSI is above 70"
+        )
+        self.rsi_period = 14
+        self.rsi_threshold = 70
+    
+    def calculate_indicators(self, df):
+        """Calculate RSI"""
+        df['RSI'] = calculate_rsi(df, period=self.rsi_period)
+        return df
+    
+    def get_filter_condition(self, df):
+        """RSI must be above 70"""
+        return df['RSI'] > self.rsi_threshold
+
+def main():
+    """Run the strategy"""
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv') and f not in ['gap_strategies_all_results.csv', 'gap_strategies_top10_profit.csv', 'gap_strategies_top10_success_rate.csv']]
+    
+    if csv_files:
+        data_file = csv_files[0]
+        print(f"Using data file: {data_file}")
+    else:
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_file = os.path.join(parent_dir, '..', '7J0OK1VR.csv')
+        if not os.path.exists(data_file):
+            print("Error: No CSV data file found. Please place a CSV file in the current directory.")
+            return
+    
+    strategy = RSIOverbought70Strategy()
+    
+    try:
+        stats, trades_df = strategy.run_strategy(data_file)
+        strategy.print_results(stats, trades_df)
+        
+        output_file = f"{strategy.name.replace(' ', '_')}_trades.csv"
+        trades_df.to_csv(output_file, index=False)
+        print(f"Trade details saved to: {output_file}")
+        
+    except Exception as e:
+        print(f"Error running strategy: {e}")
+
+if __name__ == "__main__":
+    main()

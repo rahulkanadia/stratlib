@@ -1,0 +1,335 @@
+"""
+Base Strategy Class
+-------------------
+Abstract base class for all trading strategies.
+Provides common interface and functionality for backtesting.
+"""
+
+from abc import ABC, abstractmethod
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from trading_utils import *
+
+
+class BaseStrategy(ABC):
+    """
+    Abstract base class for trading strategies.
+    
+    All strategies should inherit from this class and implement
+    the required abstract methods.
+    """
+    
+    def __init__(self, name, initial_investment=16000):
+        """
+        Initialize the strategy.
+        
+        Parameters:
+        -----------
+        name : str
+            Name of the strategy
+        initial_investment : float
+            Initial investment amount (default: $16,000)
+        """
+        self.name = name
+        self.initial_investment = initial_investment
+        self.trades = []
+        self.df = None
+        
+    @abstractmethod
+    def calculate_indicators(self, df):
+        """
+        Calculate all required technical indicators.
+        
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            DataFrame with price data
+            
+        Returns:
+        --------
+        pd.DataFrame
+            DataFrame with indicators added
+        """
+        pass
+    
+    @abstractmethod
+    def get_entry_conditions(self, df):
+        """
+        Define entry conditions for the strategy.
+        
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            DataFrame with price data and indicators
+            
+        Returns:
+        --------
+        pd.Series
+            Boolean series indicating entry signals
+        """
+        pass
+    
+    def get_exit_conditions(self, df, entry_index):
+        """
+        Define exit conditions for the strategy.
+        
+        Default implementation: exit at next bar's close.
+        Override this method for custom exit logic.
+        
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            DataFrame with price data and indicators
+        entry_index : int
+            Index of entry bar
+            
+        Returns:
+        --------
+        tuple
+            (exit_index, exit_price, exit_reason)
+        """
+        if entry_index + 1 < len(df):
+            return entry_index + 1, df.iloc[entry_index + 1]['Close'], 'Next Bar Close'
+        return None, None, None
+    
+    def calculate_position_size(self, capital, entry_price):
+        """
+        Calculate position size for a trade.
+        
+        Default implementation: use all available capital.
+        Override for custom position sizing.
+        
+        Parameters:
+        -----------
+        capital : float
+            Available capital
+        entry_price : float
+            Entry price
+            
+        Returns:
+        --------
+        int
+            Number of shares to buy
+        """
+        return int(capital / entry_price)
+    
+    def run_backtest(self, data_file):
+        """
+        Run the backtest on historical data.
+        
+        Parameters:
+        -----------
+        data_file : str
+            Path to the data file
+            
+        Returns:
+        --------
+        tuple
+            (trades_df, statistics)
+        """
+        self.df = load_data(data_file)
+        if self.df is None:
+            return None, None
+        
+        required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        if not validate_data(self.df, required_columns):
+            return None, None
+        
+        self.df = self.calculate_indicators(self.df)
+        
+        entry_signals = self.get_entry_conditions(self.df)
+        
+        capital = self.initial_investment
+        position = 0
+        entry_price = 0
+        
+        for i in range(len(self.df)):
+            if entry_signals.iloc[i] and position == 0:
+                entry_price = self.df.iloc[i]['Close']
+                position = self.calculate_position_size(capital, entry_price)
+                entry_date = self.df.iloc[i]['Date']
+                
+                exit_index, exit_price, exit_reason = self.get_exit_conditions(self.df, i)
+                
+                if exit_index is not None:
+                    exit_date = self.df.iloc[exit_index]['Date']
+                    profit = (exit_price - entry_price) * position
+                    capital += profit
+                    
+                    self.trades.append({
+                        'Entry Date': entry_date,
+                        'Entry Price': entry_price,
+                        'Exit Date': exit_date,
+                        'Exit Price': exit_price,
+                        'Shares': position,
+                        'Profit': profit,
+                        'Exit Reason': exit_reason,
+                        'Capital After': capital
+                    })
+                    
+                    position = 0
+        
+        trades_df = pd.DataFrame(self.trades)
+        
+        if len(trades_df) > 0:
+            statistics = calculate_statistics(trades_df, self.initial_investment)
+        else:
+            statistics = calculate_statistics(pd.DataFrame(), self.initial_investment)
+        
+        return trades_df, statistics
+    
+    def print_results(self, trades_df=None, statistics=None):
+        """
+        Print strategy results.
+        
+        Parameters:
+        -----------
+        trades_df : pd.DataFrame
+            DataFrame with trade results
+        statistics : dict
+            Dictionary with statistics
+        """
+        if statistics is not None:
+            print_statistics(statistics, self.name)
+        else:
+            print(f"No results to display for {self.name}")
+    
+    def save_results(self, trades_df, statistics, output_dir):
+        """
+        Save results to files.
+        
+        Parameters:
+        -----------
+        trades_df : pd.DataFrame
+            DataFrame with trade results
+        statistics : dict
+            Dictionary with statistics
+        output_dir : str
+            Directory to save results
+        """
+        save_results(trades_df, statistics, self.name.lower().replace(' ', '_'), output_dir)
+    
+    def run(self, data_file, save_results=False, output_dir='results'):
+        """
+        Run the complete strategy workflow.
+        
+        Parameters:
+        -----------
+        data_file : str
+            Path to the data file
+        save_results : bool
+            Whether to save results to files
+        output_dir : str
+            Directory to save results
+            
+        Returns:
+        --------
+        tuple
+            (trades_df, statistics)
+        """
+        print(f"\nRunning {self.name}...")
+        
+        trades_df, statistics = self.run_backtest(data_file)
+        
+        if trades_df is not None:
+            self.print_results(trades_df, statistics)
+            
+            if save_results:
+                self.save_results(trades_df, statistics, output_dir)
+        
+        return trades_df, statistics
+
+
+class LongShortStrategy(BaseStrategy):
+    """
+    Base class for strategies that can go both long and short.
+    """
+    
+    @abstractmethod
+    def get_entry_conditions(self, df):
+        """
+        Define entry conditions for both long and short trades.
+        
+        Returns:
+        --------
+        tuple
+            (long_signals, short_signals) - Boolean series for each
+        """
+        pass
+    
+    def run_backtest(self, data_file):
+        """
+        Run backtest for long/short strategy.
+        """
+        self.df = load_data(data_file)
+        if self.df is None:
+            return None, None
+        
+        required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        if not validate_data(self.df, required_columns):
+            return None, None
+        
+        self.df = self.calculate_indicators(self.df)
+        
+        long_signals, short_signals = self.get_entry_conditions(self.df)
+        
+        capital = self.initial_investment
+        position = 0
+        position_type = None  # 'long' or 'short'
+        entry_price = 0
+        
+        for i in range(len(self.df)):
+            if position == 0:
+                if long_signals.iloc[i]:
+                    entry_price = self.df.iloc[i]['Close']
+                    position = self.calculate_position_size(capital, entry_price)
+                    position_type = 'long'
+                    entry_date = self.df.iloc[i]['Date']
+                    
+                elif short_signals.iloc[i]:
+                    entry_price = self.df.iloc[i]['Close']
+                    position = self.calculate_position_size(capital, entry_price)
+                    position_type = 'short'
+                    entry_date = self.df.iloc[i]['Date']
+                
+                if position > 0:
+                    exit_index, exit_price, exit_reason = self.get_exit_conditions(self.df, i)
+                    
+                    if exit_index is not None:
+                        exit_date = self.df.iloc[exit_index]['Date']
+                        
+                        if position_type == 'long':
+                            profit = (exit_price - entry_price) * position
+                        else:  # short
+                            profit = (entry_price - exit_price) * position
+                        
+                        capital += profit
+                        
+                        self.trades.append({
+                            'Entry Date': entry_date,
+                            'Entry Price': entry_price,
+                            'Exit Date': exit_date,
+                            'Exit Price': exit_price,
+                            'Type': position_type,
+                            'Shares': position,
+                            'Profit': profit,
+                            'Exit Reason': exit_reason,
+                            'Capital After': capital
+                        })
+                        
+                        position = 0
+                        position_type = None
+        
+        trades_df = pd.DataFrame(self.trades)
+        
+        if len(trades_df) > 0:
+            statistics = calculate_statistics(trades_df, self.initial_investment)
+        else:
+            statistics = calculate_statistics(pd.DataFrame(), self.initial_investment)
+        
+        return trades_df, statistics

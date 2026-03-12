@@ -1,0 +1,299 @@
+import pandas as pd
+import numpy as np
+from itertools import product
+import warnings
+from multiprocessing import Pool, cpu_count
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', None)      # Display all rows
+pd.set_option('display.max_columns', None)   # Display all columns
+pd.set_option('display.width', None)         # Adjust display width to fit the console
+pd.set_option('display.max_colwidth', None)  # Display full content in each column
+
+def load_data(file_name):
+    """
+    Loads the CSV file into a DataFrame, sorts it by date, and resets the index.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    """
+    Loads the VIX data from a CSV file into a DataFrame, sorts it by date, and resets the index.
+    Ensures that the 'Date' column is in datetime format.
+    """
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'], dayfirst=True, errors='coerce')
+    vix_df.dropna(subset=['Date'], inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+def load_events(file_name):
+    """
+    Loads the events CSV file, extracts unique event dates, and returns them as a set.
+    Assumes that the first column contains the date in 'dd/mm/yyyy' format.
+    """
+    events_df = pd.read_csv(file_name, header=None, parse_dates=[0], dayfirst=True)
+    event_dates = events_df.iloc[:, 0].dt.normalize()  # Normalize to remove time component
+    unique_event_dates = set(event_dates.unique())
+    return unique_event_dates
+
+def calculate_day_range(day):
+    """
+    Calculates the trading range of a day (High - Low).
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    Calculates the gap between the previous day's close and the current day's open.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    """
+    Checks if the gap meets the specified conditions:
+    - At least $0.20
+    - Between 15% and 85% of the previous day's range
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    """
+    Determines the trade direction based on the gap:
+    - Gap up: Short position
+    - Gap down: Long position
+    """
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """
+    Checks if the gap is closed during the trading day and returns the exit price.
+    """
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long position
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    Calculates the profit or loss of a trade.
+    """
+    number_of_shares = position_size / entry_price
+
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:  # Short position
+        profit_loss = number_of_shares * (entry_price - exit_price)
+
+    return profit_loss
+
+def precompute_trades(df, vix_df, event_dates, initial_investment):
+    """
+    Precomputes all valid trades, excluding event dates, and their associated VIX_open values and profits.
+    Returns a DataFrame containing all trades.
+    """
+    trades = []
+    total_days = len(df)
+
+    vix_open_dict = {}
+    vix_dates = set(vix_df['Date'].unique())
+    for current_date in df['Date']:
+        prev_date = current_date - pd.Timedelta(days=1)
+        while prev_date not in vix_dates and prev_date > vix_df['Date'].min():
+            prev_date -= pd.Timedelta(days=1)
+        if prev_date in vix_dates:
+            vix_open = vix_df.loc[vix_df['Date'] == prev_date, 'OPEN'].values[0]
+            vix_open_dict[current_date] = vix_open
+        else:
+            vix_open_dict[current_date] = np.nan  # No VIX data for the previous day
+
+    for i_day in range(1, total_days):
+        prev_day = df.iloc[i_day - 1]
+        curr_day = df.iloc[i_day]
+        current_date = curr_day['Date']
+        curr_date_normalized = current_date.normalize()
+
+        if current_date in event_dates:
+            continue
+
+        vix_open = vix_open_dict.get(current_date, np.nan)
+
+        if pd.isna(vix_open):
+            continue  # Skip if no VIX data
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue  # Avoid division by zero
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+        entry_price = curr_day['Open']
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+
+        trades.append({
+            'Date': current_date,
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed,
+            'VIX_Open': vix_open,
+            'Profit/Loss': profit_loss
+        })
+
+    trades_df = pd.DataFrame(trades)
+    return trades_df
+
+def find_best_vix_conditions_optimized(trades_df, i_min=10.0, i_max=30.0, j_min=10.0, j_max=30.0, step=0.1):
+    """
+    Optimized function to find the best (i, j) VIX conditions that maximize profit.
+    Utilizes vectorized operations for efficiency.
+    Returns the best (i, j) pair and a DataFrame of all results.
+    """
+    i_values = np.round(np.arange(i_min, j_max + step, step), 1)
+    j_values = np.round(np.arange(j_min, j_max + step, step), 1)
+
+    i_grid, j_grid = np.meshgrid(i_values, j_values)
+    i_flat = i_grid.flatten()
+    j_flat = j_grid.flatten()
+    valid_pairs_mask = i_flat < j_flat
+    i_valid = i_flat[valid_pairs_mask]
+    j_valid = j_flat[valid_pairs_mask]
+
+    total_profits = np.zeros(len(i_valid))
+
+    vix_open_array = trades_df['VIX_Open'].values
+    profit_loss_array = trades_df['Profit/Loss'].values
+
+    sorted_indices = np.argsort(vix_open_array)
+    sorted_vix = vix_open_array[sorted_indices]
+    sorted_profits = profit_loss_array[sorted_indices]
+
+    cumulative_profits = np.cumsum(sorted_profits)
+
+    def compute_profit(i, j):
+        left = np.searchsorted(sorted_vix, i, side='right')
+        right = np.searchsorted(sorted_vix, j, side='left')
+        if right > 0:
+            return cumulative_profits[right - 1] - (cumulative_profits[left - 1] if left > 0 else 0)
+        else:
+            return 0.0
+
+    vectorized_compute_profit = np.vectorize(compute_profit)
+    total_profits = vectorized_compute_profit(i_valid, j_valid)
+
+    results_df = pd.DataFrame({
+        'i': i_valid,
+        'j': j_valid,
+        'Total Profit': total_profits
+    })
+
+    best_idx = results_df['Total Profit'].idxmax()
+    best_i = results_df.loc[best_idx, 'i']
+    best_j = results_df.loc[best_idx, 'j']
+    best_profit = results_df.loc[best_idx, 'Total Profit']
+
+    results_df_sorted = results_df.sort_values(by='Total Profit', ascending=False).reset_index(drop=True)
+
+    print("\n=== Optimization Complete ===")
+    print(f"Best VIX Conditions: i={best_i}, j={best_j} with Total Profit: ${best_profit:,.2f}\n")
+
+    print("Top 10 VIX Conditions by Total Profit:")
+    print(results_df_sorted.head(10).to_string(index=False))
+
+    return best_i, best_j, results_df_sorted
+
+def analyze_spy_gaps_optimized(main_file, vix_file, events_file, initial_investment):
+    """
+    Main function that orchestrates the gap analysis and optimized VIX condition search,
+    excluding trading on event dates.
+    """
+    print("Loading trading data...")
+    df = load_data(main_file)
+    print("Loading VIX data...")
+    vix_df = load_vix_data(vix_file)
+    print("Loading event dates...")
+    event_dates = load_events(events_file)
+    print(f"Total Event Dates Loaded: {len(event_dates)}")
+
+    print("Precomputing trades...")
+    trades_df = precompute_trades(df, vix_df, event_dates, initial_investment)
+
+    if trades_df.empty:
+        print("No valid trades found based on initial criteria and excluding event dates.")
+        return None, None
+
+    print(f"Total Valid Trades after Excluding Event Dates: {len(trades_df)}")
+
+    best_i, best_j, all_results = find_best_vix_conditions_optimized(
+        trades_df=trades_df,
+        i_min=10.0,
+        i_max=30.0,
+        j_min=10.0,
+        j_max=30.0,
+        step=0.1
+    )
+
+    all_results.to_csv('vix_optimization_results.csv', index=False)
+    print("\nVIX optimization results saved to 'vix_optimization_results.csv'.")
+
+    print(f"\nBest VIX Conditions for Maximum Profit:")
+    print(f"i = {best_i}, j = {best_j} with Total Profit = ${best_j:,.2f}")
+
+
+    return trades_df, all_results
+
+def count_winning_trades(trades_df):
+    """
+    Returns the number of trades with Profit/Loss greater than zero.
+    """
+    return trades_df[trades_df['Profit/Loss'] > 0].shape[0]
+
+def count_losing_trades(trades_df):
+    """
+    Returns the number of trades with Profit/Loss less than zero.
+    """
+    return trades_df[trades_df['Profit/Loss'] < 0].shape[0]
+
+if __name__ == "__main__":
+    initial_investment = 16000  # $16,000 initial investment
+
+    main_file = 'OTSWHDQQ.csv'
+    vix_file = 'VIX_History.csv'
+    events_file = 'events.csv'
+
+    trades, all_results = analyze_spy_gaps_optimized(main_file, vix_file, events_file, initial_investment)
+
+    if trades is not None:
+        print("\nTrade Details:")
+        print(trades.to_string(index=False))  # Prints the entire DataFrame without truncation
+
+        num_winning_trades = count_winning_trades(trades)
+        num_losing_trades = count_losing_trades(trades)
+
+        print(f"\nNumber of Winning Trades: {num_winning_trades}")
+        print(f"Number of Losing Trades: {num_losing_trades}")

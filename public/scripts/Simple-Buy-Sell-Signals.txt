@@ -1,0 +1,57 @@
+
+> 策略名称
+
+Simple-Buy-Sell-Signals
+
+> 策略作者
+
+Zer3192
+
+
+
+
+
+> 源码 (PineScript)
+
+``` javascript
+
+
+
+
+
+indicator("Simple Buy Sell Signals",overlay=true,format=format.price,shorttitle="SBS")
+
+[dp,dm,adx]  =ta.dmi(14,14)
+
+rsi = ta.rsi(close,9)
+rsiOB = rsi > 60 and not(rsi[1] < 40)
+rsiOS = rsi < 40 and not(rsi[1] > 60)
+
+ma1 = math.avg(ta.sma(close,21),ta.ema(close,50))
+ma2 = ta.ema(close,35)
+
+nmL = ta.crossover(ma1,ma2) and rsiOB
+nmS = ta.crossover(ma1,ma2) and rsiOS
+
+plotshape(nmL ? nmL : 0,title="Long",style=shape.labelup,text="Buy",textcolor=color.white,color=color.aqua,location=location.belowbar)
+plotshape(nmS ? nmS : 0,title="Short",style=shape.labeldown,text="Sell",textcolor=color.white,color=color.orange,location=location.abovebar)
+
+
+
+
+
+if nmL 
+    strategy.entry("Enter Long", strategy.long)
+else if nmS
+    strategy.entry("Enter Short", strategy.short)
+
+
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2022-08-28 18:30:25

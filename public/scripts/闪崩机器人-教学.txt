@@ -1,0 +1,98 @@
+
+> 策略名称
+
+闪崩机器人-教学
+
+> 策略作者
+
+小小梦
+
+
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|Spread|50|挂单价格间隔|
+|OrderSize|0.1|每单大小|
+|SpreadTimes|true|订单大小递增倍数|
+|TotalBuy|3|总买单量|
+|TotalSell|3|总卖单量|
+|Interval|300|休眠时间（ms)|
+|fee|0.25|手续费|
+
+
+> 源码 (javascript)
+
+``` javascript
+function CancelPendingOrders(orders) {                             
+    for (var j = 0; j < orders.length; j++) {                      
+        exchange.CancelOrder(orders[j].Id, orders[j]);
+        Sleep(300);                                                
+    }
+}
+function LogOrders(orders){                                        
+    var buyString = '';                                            
+    var sellString = '';                                           
+    orders.sort(function(x, y){return x.Price - y.Price;});        
+    for (var j = 0; j < orders.length; j++) {                      
+        if (orders[j].Type == ORDER_TYPE_SELL){                    
+            sellString += String(orders[j].Price) + ' ' + String(orders[j].Amount) +　'｜';    
+        }else{
+            buyString += String(orders[j].Price) + ' ' + String(orders[j].Amount) +　'｜';     
+        }
+    }
+    LogStatus('买单：' + buyString + '\n' + '卖单：' + sellString);                             
+}
+function main() {                                           
+    while(true){                                            
+        var orders = _C(exchange.GetOrders);                
+        CancelPendingOrders(orders);                        
+        var ticker = _C(exchange.GetTicker);                
+        var account = _C(exchange.GetAccount);              
+        var midPrice = (ticker.Buy + ticker.Sell) / 2;      
+        var buyAmount  = 0;                                 
+        var sellAmount = 0;                                 
+        var amount = OrderSize;                             
+        var buyPrice = midPrice  - Spread;                  
+        var sellPrice = midPrice + Spread;                  
+        while((buyAmount < TotalBuy) && (account.Balance > amount*buyPrice) && buyPrice > 0){       
+            if(exchange.Buy(buyPrice, amount)){             
+                buyAmount += amount;                        
+                account.Balance -= amount*buyPrice;         
+                buyPrice -= Spread;                         
+                amount = amount * SpreadTimes;              
+            
+            }else{                                          
+                account = _C(exchange.GetAccount);
+            }
+            Sleep(500);                                     
+        }
+        amount = OrderSize;                                 
+        while((sellAmount < TotalSell) && (account.Stocks*(1-fee/100) > amount)){        
+            if(exchange.Sell(sellPrice, amount)){           
+                sellAmount += amount;                       
+                account.Stocks -= amount;                   
+                sellPrice += Spread;                        
+                amount = amount * SpreadTimes;              
+            }else{
+                account = _C(exchange.GetAccount);          
+            }
+            Sleep(500);
+        }
+        orders = _C(exchange.GetOrders);                    
+        LogOrders(orders);                                  
+        Sleep(Interval*1000);                               
+    }
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2021-01-15 17:41:59

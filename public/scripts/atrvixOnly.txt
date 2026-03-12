@@ -1,0 +1,253 @@
+
+import pandas as pd
+import numpy as np
+from itertools import product
+from multiprocessing import Pool, cpu_count
+
+def load_data(file_name):
+    """
+    טוען קובץ CSV לתוך DataFrame, ממיין לפי תאריך ומאפס את האינדקס.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_day_range(day):
+    """
+    מחשב את הטווח היומי (High - Low).
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    מחשב את הפער (gap) בין מחיר הסגירה של היום הקודם למחיר הפתיחה של היום הנוכחי.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    """
+    בודק האם הפער עומד בתנאים:
+      - לפחות 0.20$
+      - בין 15% ל-85% מהטווח היומי הקודם
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    """
+    קובע את כיוון העסקה על סמך הפער:
+      - פער חיובי => Short
+      - פער שלילי => Long
+    """
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """
+    בודק האם הפער נסגר במהלך היום (תלוי בכיוון העסקה) ומחזיר את מחיר היציאה.
+    """
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    מחשב את הרווח/הפסד (ב-$) של עסקה.
+    position_size הוא סכום הדולרים המושקעים בעסקה.
+    """
+    shares = position_size / entry_price
+    if trade_direction == 'Long':
+        return shares * (exit_price - entry_price)
+    else:  # Short
+        return shares * (entry_price - exit_price)
+
+def precompute_cumulative_changes(df, max_y=10):
+    """
+    מחשב מראש לכל Y מ-1 עד max_y את השינוי המצטבר באחוזים
+    ושומר בעמודה 'CumulativeChange_y'.
+    """
+    n = len(df)
+    for Y in range(1, max_y + 1):
+        col_name = f'CumulativeChange_{Y}'
+        df[col_name] = np.nan
+
+        for i in range(Y, n):
+            close_start = df.at[i - Y, 'Close']
+            close_today = df.at[i, 'Close']
+            if close_start != 0:
+                df.at[i, col_name] = (close_today - close_start) / close_start * 100.0
+
+def compute_skip_days(df, X, Y, Z):
+    """
+    מחזירה מערך בוליאני skip_days באורך df,
+    כאשר skip_days[i] == True => לא נסחור ביום i.
+
+    משתמשת בערכי העמודה 'CumulativeChange_Y' שחושב מראש.
+    אם abs(cumulative_change) >= X => מדלגים Z ימים קדימה.
+    """
+    n = len(df)
+    skip_days = np.zeros(n, dtype=bool)
+
+    col_name = f'CumulativeChange_{Y}'
+    if col_name not in df.columns:
+        return skip_days
+
+    for i in range(n):
+        val = df.at[i, col_name]
+        if pd.isna(val):
+            continue
+        if abs(val) >= X:
+            start_skip = i + 1
+            end_skip = i + 1 + Z
+            for j in range(start_skip, min(end_skip, n)):
+                skip_days[j] = True
+
+    return skip_days
+
+def analyze_trades(df, skip_days, initial_investment):
+    """
+    מפעיל את אסטרטגיית ה-Gap על הנתונים, תוך התחשבות בימי דילוג.
+    מחזיר DataFrame עם פירוט העסקאות.
+    """
+    trades = []
+    total_days = len(df)
+    for i in range(1, total_days):
+        if skip_days[i]:
+            continue
+
+        prev_day = df.iloc[i - 1]
+        curr_day = df.iloc[i]
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+        entry_price = curr_day['Open']
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+
+        trades.append({
+            'Date': curr_day['Date'],
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed,
+            'Profit/Loss': profit_loss
+        })
+
+    return pd.DataFrame(trades)
+
+def simulate_trading(trades_df):
+    """
+    מחזיר (total_profit, success_rate, occurrence_count).
+    """
+    if trades_df.empty:
+        return 0.0, 0.0, 0
+
+    profits = trades_df['Profit/Loss'].values
+    total_profit = profits.sum()
+    occurrence_count = len(profits)
+    success_count = np.sum(profits > 0)
+    success_rate = success_count / occurrence_count if occurrence_count > 0 else 0.0
+    return total_profit, success_rate, occurrence_count
+
+def single_combination(args):
+    """
+    פונקציה לריצה מקבילית (עבור combination אחד של X, Y, Z).
+    """
+    df, X, Y, Z, initial_investment = args
+
+    skip_days = compute_skip_days(df, X, Y, Z)
+    trades_df = analyze_trades(df, skip_days, initial_investment)
+    total_profit, success_rate, occurrence_count = simulate_trading(trades_df)
+
+    return (X, Y, Z, occurrence_count, success_rate, total_profit)
+
+def optimize_market_moves(df, initial_investment,
+                          X_values, Y_values, Z_values):
+    """
+    מבצע לולאה מקבילית על כל השילובים של X, Y, Z.
+    ממיין קודם לפי SuccessRate ואז לפי TotalProfit, ומחזיר DataFrame.
+    """
+    combinations = []
+    for X, Y, Z in product(X_values, Y_values, Z_values):
+        combinations.append((df, X, Y, Z, initial_investment))
+
+    with Pool(processes=cpu_count()) as pool:
+        results = pool.map(single_combination, combinations)
+
+    results_df = pd.DataFrame(results, columns=[
+        'X%', 'Y_days', 'Z_days', 'Occurrences', 'SuccessRate', 'TotalProfit'
+    ])
+
+    results_df.sort_values(by=['SuccessRate', 'TotalProfit'],
+                           ascending=[False, False],
+                           inplace=True)
+    results_df.reset_index(drop=True, inplace=True)
+
+    return results_df
+
+def main_filter_market_moves(file_name, initial_investment=16000):
+    """
+    פונקציית main להרצת הדוגמה המורחבת.
+    1) טוענת נתונים
+    2) מחשבת מראש שינוי מצטבר (Precomputation) לכל Y מ-1 עד 10
+    3) מגדירה טווח פרמטרים X, Y, Z
+    4) רצה במקביל (multiprocessing) על כל השילובים
+    5) ממיינת ומציגה טופ 100
+    """
+    print("Loading data...")
+    df = load_data(file_name)
+
+    print("Precomputing cumulative changes...")
+    precompute_cumulative_changes(df, max_y=10)
+
+    X_values = np.arange(1.0, 10.1, 0.1).round(1).tolist()  # 1.0, 1.1, 1.2, ... 10.0
+    Y_values = list(range(1, 11))  # 1..10
+    Z_values = list(range(1, 11))  # 1..10
+
+    print("\n=== Starting Parallel Optimization (X, Y, Z) ===")
+    results_df = optimize_market_moves(df, initial_investment,
+                                       X_values, Y_values, Z_values)
+
+    print("\n=== Top 100 Combinations (sort by SuccessRate desc, then TotalProfit desc) ===")
+    print(results_df.head(100).to_string(index=False))
+
+    if not results_df.empty:
+        best_row = results_df.iloc[0]
+        best_X = best_row['X%']
+        best_Y = best_row['Y_days']
+        best_Z = best_row['Z_days']
+        best_occurrences = best_row['Occurrences']
+        best_success_rate = best_row['SuccessRate']
+        best_total_profit = best_row['TotalProfit']
+        print(f"\nBest Combination (SuccessRate->TotalProfit):")
+        print(f"X={best_X}%, Y={best_Y}, Z={best_Z}, Occurrences={best_occurrences}, "
+              f"SuccessRate={best_success_rate:.2f}, TotalProfit=${best_total_profit:,.2f}")
+    else:
+        print("No valid results found.")
+
+if __name__ == "__main__":
+    file_name = "D6CK32X6.csv"
+    initial_investment = 16000
+    main_filter_market_moves(file_name, initial_investment)

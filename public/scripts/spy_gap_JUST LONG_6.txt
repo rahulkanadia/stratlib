@@ -1,0 +1,109 @@
+import pandas as pd
+
+def load_data(file_name):
+    """
+    Loads the CSV file into a DataFrame, sorts it by date, and resets the index.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_profit_loss(entry_price, exit_price, investment):
+    """
+    Calculates the profit or loss of a long trade.
+    """
+    number_of_shares = investment / entry_price
+    profit_loss = number_of_shares * (exit_price - entry_price)
+    return profit_loss
+
+def analyze_long_trades(df, investment):
+    """
+    Analyzes the DataFrame for long trades and returns a DataFrame of trades.
+    """
+    trades = []
+    
+    for index, row in df.iterrows():
+        entry_price = row['Open']
+        exit_price = row['Close']
+        profit_loss = calculate_profit_loss(entry_price, exit_price, investment)
+        
+        trades.append({
+            'Date': row['Date'],
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Profit/Loss': profit_loss
+        })
+        
+    return pd.DataFrame(trades)
+
+def calculate_statistics(trades_df):
+    """
+    Calculates and prints the required statistics:
+    - Average Gain per Trade
+    - Average Loss per Trade
+    - Maximum Gain per Trade and date
+    - Maximum Loss per Trade and date
+    """
+    if trades_df.empty:
+        print("No trades to analyze.")
+        return
+
+    gains = trades_df[trades_df['Profit/Loss'] > 0]
+    losses = trades_df[trades_df['Profit/Loss'] < 0]
+
+    average_gain = gains['Profit/Loss'].mean() if not gains.empty else 0
+    average_loss = losses['Profit/Loss'].mean() if not losses.empty else 0
+    max_gain = gains['Profit/Loss'].max() if not gains.empty else 0
+    max_loss = losses['Profit/Loss'].min() if not losses.empty else 0  # Losses are negative
+
+    max_gain_date = gains.loc[gains['Profit/Loss'].idxmax(), 'Date'] if not gains.empty else None
+    max_loss_date = losses.loc[losses['Profit/Loss'].idxmin(), 'Date'] if not losses.empty else None
+
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Average Gain per Trade: ${average_gain:,.2f}")
+    print(f"Average Loss per Trade: ${average_loss:,.2f}")
+    if max_gain_date is not None:
+        print(f"Maximum Gain: ${max_gain:,.2f} on {max_gain_date.date()}")
+    else:
+        print("No gains to report.")
+    if max_loss_date is not None:
+        print(f"Maximum Loss: ${max_loss:,.2f} on {max_loss_date.date()}")
+    else:
+        print("No losses to report.")
+
+def simulate_trading(trades_df, investment):
+    """
+    Simulates trading with a fixed investment each trade and returns the final amount.
+    """
+    if trades_df.empty:
+        print("No trades to simulate.")
+        return investment
+
+    total_profit_loss = trades_df['Profit/Loss'].sum()
+    final_amount = investment + total_profit_loss
+
+    print(f"Initial Investment per Trade: ${investment:,.2f}")
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Total Profit/Loss from All Trades: ${total_profit_loss:,.2f}")
+    print(f"Final Amount after All Trades: ${final_amount:,.2f}")
+
+    return final_amount
+
+def long_only_strategy(file_name, initial_investment):
+    """
+    Main function that orchestrates the long-only trading strategy.
+    """
+    df = load_data(file_name)
+    trades_df = analyze_long_trades(df, initial_investment)
+    
+    calculate_statistics(trades_df)
+    final_amount = simulate_trading(trades_df, initial_investment)
+    return trades_df, final_amount
+
+initial_investment = 16000  # $16,000 initial investment per trade
+
+trades, final_amount = long_only_strategy('B5WS00NT.csv', initial_investment)
+
+print("\nTrade Details:")
+print(trades)

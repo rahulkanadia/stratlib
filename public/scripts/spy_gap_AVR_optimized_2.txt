@@ -1,0 +1,228 @@
+import pandas as pd
+import numpy as np
+from itertools import product
+import warnings
+from multiprocessing import Pool, cpu_count
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', None)      # Display all rows
+pd.set_option('display.max_columns', None)   # Display all columns
+pd.set_option('display.width', None)         # Adjust display width to fit the console
+pd.set_option('display.max_colwidth', None)  # Display full content in each column
+
+def load_data(file_name):
+    """
+    Loads the CSV file into a DataFrame, sorts it by date, and resets the index.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_true_range(df):
+    """
+    Calculates the True Range (TR) for each day.
+    """
+    df['Previous Close'] = df['Close'].shift(1)
+    df['High-Low'] = df['High'] - df['Low']
+    df['High-PrevClose'] = abs(df['High'] - df['Previous Close'])
+    df['Low-PrevClose'] = abs(df['Low'] - df['Previous Close'])
+    df['TR'] = df[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+    return df
+
+def calculate_atr(df, n):
+    """
+    Calculates the Average True Range (ATR) over 'n' consecutive days.
+    """
+    n = int(n)  # Ensure n is an integer
+    df = calculate_true_range(df)
+    df['ATR'] = df['TR'].rolling(window=n).mean()
+    return df
+
+def calculate_day_range(day):
+    """
+    Calculates the trading range of a day (High - Low).
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    Calculates the gap between the previous day's close and the current day's open.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    """
+    Checks if the gap meets the specified conditions:
+    - At least $0.20
+    - Between 15% and 85% of the previous day's range
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    """
+    Determines the trade direction based on the gap:
+    - Gap up: Short position
+    - Gap down: Long position
+    """
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """
+    Checks if the gap is closed during the trading day and returns the exit price.
+    """
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long position
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    Calculates the profit or loss of a trade.
+    """
+    number_of_shares = position_size / entry_price
+
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:  # Short position
+        profit_loss = number_of_shares * (entry_price - exit_price)
+
+    return profit_loss
+
+def analyze_trades(df, n, T, initial_investment):
+    """
+    Analyzes the DataFrame for valid gap trades, applying the ATR condition.
+    """
+    trades = []
+    df = calculate_atr(df, n)
+    total_days = len(df)
+
+    for i in range(int(n), total_days):
+        prev_day = df.iloc[i - 1]
+        curr_day = df.iloc[i]
+
+        atr_value = df['ATR'].iloc[i - 1]
+        if atr_value > T:
+            continue  # Skip trade due to high ATR
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue  # Avoid division by zero
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+        entry_price = curr_day['Open']
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+
+        trades.append({
+            'Date': curr_day['Date'],
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed,
+            'ATR': atr_value,
+            'Profit/Loss': profit_loss
+        })
+
+    trades_df = pd.DataFrame(trades)
+    return trades_df
+
+def compute_total_profit(args):
+    """
+    Computes the total profit for a given combination of n and T.
+    This function must be defined at the top level to be picklable by multiprocessing.
+    """
+    df_copy, n, T, initial_investment = args
+    trades_df = analyze_trades(df_copy, n, T, initial_investment)
+    total_profit = trades_df['Profit/Loss'].sum() if not trades_df.empty else 0
+    return (n, T, total_profit)
+
+def optimize_n_T(df, initial_investment, n_values, T_values):
+    """
+    Optimizes both ATR period 'n' and ATR threshold 'T' to maximize total profit.
+    """
+    param_combinations = list(product(n_values, T_values))
+
+    args_list = [(df.copy(), n, T, initial_investment) for n, T in param_combinations]
+
+    pool = Pool(processes=cpu_count())
+    results = pool.map(compute_total_profit, args_list)
+    pool.close()
+    pool.join()
+
+    results_df = pd.DataFrame(results, columns=['n', 'T', 'Total Profit'])
+
+    best_result = results_df.loc[results_df['Total Profit'].idxmax()]
+
+    print("\n=== Optimization Complete ===")
+    print(f"Best Parameters: n={best_result['n']}, T={best_result['T']} with Total Profit: ${best_result['Total Profit']:,.2f}\n")
+
+    top_results = results_df.sort_values(by='Total Profit', ascending=False).reset_index(drop=True)
+    print("Top 100 Parameter Combinations by Total Profit:")
+    print(top_results.head(100).to_string(index=False))
+
+    return best_result['n'], best_result['T'], top_results
+
+def analyze_spy_gaps_optimized(main_file, initial_investment, n_values, T_values):
+    """
+    Main function that orchestrates the gap analysis and optimization of n and T.
+    """
+    print("Loading data...")
+    df = load_data(main_file)
+
+    print("Optimizing n and T...")
+    best_n, best_T, all_results = optimize_n_T(df, initial_investment, n_values, T_values)
+
+    print(f"\nAnalyzing trades with best parameters: n={best_n}, T={best_T}")
+    trades_df = analyze_trades(df, best_n, best_T, initial_investment)
+
+    if trades_df.empty:
+        print("No valid trades found with the best parameters.")
+        return None, None
+
+    total_profit = trades_df['Profit/Loss'].sum()
+    print(f"\nTotal Profit with best parameters: ${total_profit:,.2f}")
+
+    all_results.to_csv('n_T_optimization_results.csv', index=False)
+
+    return trades_df, all_results
+
+if __name__ == "__main__":
+    initial_investment = 16000  # $16,000 initial investment
+
+    main_file = 'BBO9UI00.csv'
+
+    n_values = range(2, 21)          # ATR periods from 2 to 20
+    T_values = np.arange(10, 20.5, 0.5)  # ATR thresholds from 10 to 20 with step 0.5
+
+    trades, all_results = analyze_spy_gaps_optimized(main_file, initial_investment, n_values, T_values)
+
+    if trades is not None:
+        print("\nTrade Details:")
+        print(trades.to_string(index=False))
+
+        num_winning_trades = trades[trades['Profit/Loss'] > 0].shape[0]
+        num_losing_trades = trades[trades['Profit/Loss'] < 0].shape[0]
+
+        print(f"\nNumber of Winning Trades: {num_winning_trades}")
+        print(f"Number of Losing Trades: {num_losing_trades}")

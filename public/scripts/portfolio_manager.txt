@@ -1,0 +1,411 @@
+"""
+Portfolio Management Utilities
+------------------------------
+Tools for managing multiple trading strategies as a portfolio,
+including position sizing, risk management, and performance analysis.
+"""
+
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import os
+import sys
+from typing import List, Dict, Tuple, Optional
+from collections import defaultdict
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from trading_utils import calculate_statistics, calculate_sharpe_ratio, calculate_max_drawdown
+
+
+class StrategyPortfolio:
+    """
+    Manages a portfolio of trading strategies with risk management
+    and allocation controls.
+    """
+    
+    def __init__(self, initial_capital: float = 100000, max_risk_per_trade: float = 0.02):
+        """
+        Initialize portfolio manager.
+        
+        Parameters:
+        -----------
+        initial_capital : float
+            Starting capital for the portfolio
+        max_risk_per_trade : float
+            Maximum risk per trade as percentage of capital (default: 2%)
+        """
+        self.initial_capital = initial_capital
+        self.current_capital = initial_capital
+        self.max_risk_per_trade = max_risk_per_trade
+        
+        self.strategies = {}
+        self.strategy_weights = {}
+        self.strategy_results = {}
+        
+        self.portfolio_trades = []
+        self.daily_returns = []
+        self.equity_curve = [initial_capital]
+        
+        self.max_correlation = 0.7  # Max correlation between strategies
+        self.max_drawdown_limit = 0.20  # Stop trading if drawdown exceeds 20%
+        
+    def add_strategy(self, strategy_name: str, strategy_obj, weight: float = 1.0):
+        """
+        Add a strategy to the portfolio.
+        
+        Parameters:
+        -----------
+        strategy_name : str
+            Name identifier for the strategy
+        strategy_obj : BaseStrategy
+            Strategy object with run_backtest method
+        weight : float
+            Weight/allocation for this strategy (will be normalized)
+        """
+        self.strategies[strategy_name] = strategy_obj
+        self.strategy_weights[strategy_name] = weight
+        
+        total_weight = sum(self.strategy_weights.values())
+        for name in self.strategy_weights:
+            self.strategy_weights[name] /= total_weight
+            
+        print(f"Added strategy '{strategy_name}' with {weight:.2f} weight")
+        print(f"Normalized weight: {self.strategy_weights[strategy_name]:.2f}")
+    
+    def run_individual_strategies(self, data_file: str):
+        """Run each strategy individually and collect results."""
+        print("Running individual strategies...")
+        
+        for name, strategy in self.strategies.items():
+            print(f"\nRunning {name}...")
+            
+            try:
+                trades_df, statistics = strategy.run_backtest(data_file)
+                self.strategy_results[name] = {
+                    'trades': trades_df,
+                    'statistics': statistics,
+                    'equity_curve': self._calculate_equity_curve(trades_df),
+                    'daily_returns': self._calculate_daily_returns(trades_df)
+                }
+                
+                print(f"  ✓ {statistics['total_trades']} trades, "
+                      f"{statistics['win_rate']:.2f}% win rate, "
+                      f"${statistics['total_profit']:,.2f} profit")
+                      
+            except Exception as e:
+                print(f"  ✗ Error running {name}: {e}")
+                self.strategy_results[name] = None
+    
+    def _calculate_equity_curve(self, trades_df):
+        """Calculate equity curve from trades."""
+        if len(trades_df) == 0:
+            return pd.Series([self.initial_capital])
+        
+        strategy_capital = self.initial_capital * 0.2  # 20% allocation example
+        
+        equity = [strategy_capital]
+        current_equity = strategy_capital
+        
+        for _, trade in trades_df.iterrows():
+            current_equity += trade['Profit']
+            equity.append(current_equity)
+        
+        return pd.Series(equity[:-1])  # Remove last element to match trades length
+    
+    def _calculate_daily_returns(self, trades_df):
+        """Calculate daily returns from trades."""
+        if len(trades_df) == 0:
+            return pd.Series([0])
+        
+        trades_df['Entry Date'] = pd.to_datetime(trades_df['Entry Date'])
+        daily_profits = trades_df.groupby(trades_df['Entry Date'].dt.date)['Profit'].sum()
+        
+        daily_returns = daily_profits / self.initial_capital
+        return daily_returns
+    
+    def analyze_correlations(self):
+        """Analyze correlations between strategy returns."""
+        if len(self.strategy_results) < 2:
+            return None
+        
+        returns_data = {}
+        for name, results in self.strategy_results.items():
+            if results and len(results['daily_returns']) > 0:
+                returns_data[name] = results['daily_returns']
+        
+        if len(returns_data) < 2:
+            return None
+        
+        returns_df = pd.DataFrame(returns_data)
+        correlations = returns_df.corr()
+        
+        print("\nStrategy Correlations:")
+        print("="*50)
+        print(correlations.round(3))
+        
+        high_corr_pairs = []
+        for i in range(len(correlations.columns)):
+            for j in range(i+1, len(correlations.columns)):
+                corr_val = correlations.iloc[i, j]
+                if abs(corr_val) > self.max_correlation:
+                    high_corr_pairs.append((
+                        correlations.columns[i],
+                        correlations.columns[j],
+                        corr_val
+                    ))
+        
+        if high_corr_pairs:
+            print(f"\n⚠️  High correlation pairs (>{self.max_correlation}):")
+            for name1, name2, corr in high_corr_pairs:
+                print(f"  {name1} ↔ {name2}: {corr:.3f}")
+        
+        return correlations
+    
+    def optimize_weights(self):
+        """Optimize strategy weights based on Sharpe ratios and correlations."""
+        if len(self.strategy_results) == 0:
+            return
+        
+        print("\nOptimizing portfolio weights...")
+        
+        sharpe_ratios = {}
+        for name, results in self.strategy_results.items():
+            if results and results['statistics']['sharpe_ratio'] > 0:
+                sharpe_ratios[name] = results['statistics']['sharpe_ratio']
+        
+        if len(sharpe_ratios) == 0:
+            print("No strategies with positive Sharpe ratios")
+            return
+        
+        total_sharpe = sum(sharpe_ratios.values())
+        old_weights = self.strategy_weights.copy()
+        
+        for name in sharpe_ratios:
+            self.strategy_weights[name] = sharpe_ratios[name] / total_sharpe
+        
+        for name in list(self.strategy_weights.keys()):
+            if name not in sharpe_ratios:
+                del self.strategy_weights[name]
+        
+        print("Weight optimization results:")
+        for name in self.strategy_weights:
+            old_weight = old_weights.get(name, 0)
+            new_weight = self.strategy_weights[name]
+            print(f"  {name}: {old_weight:.3f} → {new_weight:.3f}")
+    
+    def run_combined_portfolio(self, data_file: str):
+        """
+        Run portfolio simulation combining all strategies.
+        
+        This simulates running multiple strategies simultaneously with
+        proper capital allocation and risk management.
+        """
+        print("\nRunning combined portfolio simulation...")
+        
+        if len(self.strategy_results) == 0:
+            print("No strategy results available. Run individual strategies first.")
+            return
+        
+        df = pd.read_csv(data_file, parse_dates=['Date'])
+        df.sort_values('Date', inplace=True)
+        
+        all_trades = []
+        for name, results in self.strategy_results.items():
+            if results and len(results['trades']) > 0:
+                trades = results['trades'].copy()
+                trades['Strategy'] = name
+                trades['Weight'] = self.strategy_weights.get(name, 0)
+                trades['Allocated_Capital'] = self.current_capital * trades['Weight']
+                
+                trades['Adjusted_Shares'] = trades['Allocated_Capital'] / trades['Entry Price']
+                trades['Adjusted_Profit'] = (trades['Exit Price'] - trades['Entry Price']) * trades['Adjusted_Shares']
+                
+                short_mask = trades.get('Type', 'Long') == 'Short'
+                trades.loc[short_mask, 'Adjusted_Profit'] = (
+                    trades.loc[short_mask, 'Entry Price'] - trades.loc[short_mask, 'Exit Price']
+                ) * trades.loc[short_mask, 'Adjusted_Shares']
+                
+                all_trades.append(trades)
+        
+        if len(all_trades) == 0:
+            print("No trades to simulate")
+            return
+        
+        portfolio_trades = pd.concat(all_trades, ignore_index=True)
+        portfolio_trades['Entry Date'] = pd.to_datetime(portfolio_trades['Entry Date'])
+        portfolio_trades.sort_values('Entry Date', inplace=True)
+        
+        portfolio_equity = [self.initial_capital]
+        current_equity = self.initial_capital
+        
+        for _, trade in portfolio_trades.iterrows():
+            current_equity += trade['Adjusted_Profit']
+            portfolio_equity.append(current_equity)
+        
+        portfolio_stats = self._calculate_portfolio_statistics(portfolio_trades)
+        
+        return portfolio_trades, portfolio_stats
+    
+    def _calculate_portfolio_statistics(self, portfolio_trades):
+        """Calculate comprehensive portfolio statistics."""
+        if len(portfolio_trades) == 0:
+            return {}
+        
+        total_trades = len(portfolio_trades)
+        total_profit = portfolio_trades['Adjusted_Profit'].sum()
+        winning_trades = (portfolio_trades['Adjusted_Profit'] > 0).sum()
+        win_rate = winning_trades / total_trades * 100
+        
+        equity_curve = self.initial_capital + portfolio_trades['Adjusted_Profit'].cumsum()
+        
+        returns = portfolio_trades['Adjusted_Profit'] / self.initial_capital
+        
+        sharpe_ratio = calculate_sharpe_ratio(returns) if len(returns) > 1 else 0
+        max_drawdown = calculate_max_drawdown(equity_curve)
+        
+        strategy_contributions = portfolio_trades.groupby('Strategy')['Adjusted_Profit'].sum()
+        strategy_trade_counts = portfolio_trades['Strategy'].value_counts()
+        
+        return {
+            'total_trades': total_trades,
+            'win_rate': win_rate,
+            'total_profit': total_profit,
+            'roi': (total_profit / self.initial_capital) * 100,
+            'sharpe_ratio': sharpe_ratio,
+            'max_drawdown': max_drawdown,
+            'final_equity': self.initial_capital + total_profit,
+            'avg_profit_per_trade': total_profit / total_trades,
+            'best_strategy': strategy_contributions.idxmax(),
+            'worst_strategy': strategy_contributions.idxmin(),
+            'strategy_contributions': strategy_contributions.to_dict(),
+            'strategy_trade_counts': strategy_trade_counts.to_dict(),
+            'diversification_ratio': len(strategy_contributions) / total_trades
+        }
+    
+    def print_portfolio_summary(self, portfolio_stats):
+        """Print comprehensive portfolio performance summary."""
+        print("\n" + "="*70)
+        print("PORTFOLIO PERFORMANCE SUMMARY")
+        print("="*70)
+        
+        print(f"Initial Capital:     ${self.initial_capital:,.2f}")
+        print(f"Final Equity:        ${portfolio_stats['final_equity']:,.2f}")
+        print(f"Total Profit:        ${portfolio_stats['total_profit']:,.2f}")
+        print(f"ROI:                 {portfolio_stats['roi']:.2f}%")
+        print(f"Total Trades:        {portfolio_stats['total_trades']}")
+        print(f"Win Rate:            {portfolio_stats['win_rate']:.2f}%")
+        print(f"Sharpe Ratio:        {portfolio_stats['sharpe_ratio']:.3f}")
+        print(f"Max Drawdown:        {portfolio_stats['max_drawdown']:.2f}%")
+        print(f"Avg Profit/Trade:    ${portfolio_stats['avg_profit_per_trade']:.2f}")
+        
+        print(f"\nStrategy Allocations:")
+        for name, weight in self.strategy_weights.items():
+            print(f"  {name:25} {weight:8.1%}")
+        
+        print(f"\nStrategy Contributions:")
+        for name, profit in portfolio_stats['strategy_contributions'].items():
+            percentage = profit / portfolio_stats['total_profit'] * 100
+            print(f"  {name:25} ${profit:10,.2f} ({percentage:5.1f}%)")
+        
+        print(f"\nStrategy Trade Counts:")
+        for name, count in portfolio_stats['strategy_trade_counts'].items():
+            percentage = count / portfolio_stats['total_trades'] * 100
+            print(f"  {name:25} {count:8d} trades ({percentage:5.1f}%)")
+        
+        print("="*70)
+    
+    def save_portfolio_results(self, portfolio_trades, portfolio_stats, output_dir='results'):
+        """Save portfolio results to files."""
+        os.makedirs(output_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        trades_file = os.path.join(output_dir, f'portfolio_trades_{timestamp}.csv')
+        portfolio_trades.to_csv(trades_file, index=False)
+        
+        stats_file = os.path.join(output_dir, f'portfolio_stats_{timestamp}.txt')
+        with open(stats_file, 'w') as f:
+            f.write("PORTFOLIO PERFORMANCE SUMMARY\n")
+            f.write("="*50 + "\n\n")
+            
+            for key, value in portfolio_stats.items():
+                if isinstance(value, dict):
+                    f.write(f"{key}:\n")
+                    for k, v in value.items():
+                        f.write(f"  {k}: {v}\n")
+                else:
+                    f.write(f"{key}: {value}\n")
+        
+        print(f"\nPortfolio results saved:")
+        print(f"  Trades: {trades_file}")
+        print(f"  Stats:  {stats_file}")
+
+
+def equal_weight_portfolio(strategies_list, data_file, initial_capital=100000):
+    """
+    Quick function to create an equal-weighted portfolio from a list of strategies.
+    
+    Parameters:
+    -----------
+    strategies_list : list
+        List of (name, strategy_object) tuples
+    data_file : str
+        Path to data file
+    initial_capital : float
+        Starting capital
+        
+    Returns:
+    --------
+    StrategyPortfolio
+        Configured and run portfolio
+    """
+    portfolio = StrategyPortfolio(initial_capital=initial_capital)
+    
+    for name, strategy in strategies_list:
+        portfolio.add_strategy(name, strategy, weight=1.0)
+    
+    portfolio.run_individual_strategies(data_file)
+    portfolio.analyze_correlations()
+    portfolio.optimize_weights()
+    
+    portfolio_trades, portfolio_stats = portfolio.run_combined_portfolio(data_file)
+    portfolio.print_portfolio_summary(portfolio_stats)
+    
+    return portfolio
+
+
+def main():
+    """Example usage of portfolio management."""
+    print("Portfolio Management Example")
+    print("="*50)
+    
+    print("To use the portfolio manager:")
+    print("1. Import your strategy classes")
+    print("2. Create StrategyPortfolio instance") 
+    print("3. Add strategies with weights")
+    print("4. Run individual strategies")
+    print("5. Analyze correlations")
+    print("6. Optimize weights")
+    print("7. Run combined portfolio")
+    
+    print("\nExample code:")
+    print("""
+from strategies.spy_strategies.spy_gap_fade import SPYGapFadeStrategy
+from strategies.dip_strategies.dip_basic import DIPBasicStrategy
+
+portfolio = StrategyPortfolio(initial_capital=100000)
+
+portfolio.add_strategy('SPY Gap Fade', SPYGapFadeStrategy())
+portfolio.add_strategy('DIP Basic', DIPBasicStrategy())
+
+portfolio.run_individual_strategies('data/7J0OK1VR.csv')
+portfolio.analyze_correlations()
+portfolio.optimize_weights()
+
+trades, stats = portfolio.run_combined_portfolio('data/7J0OK1VR.csv')
+portfolio.print_portfolio_summary(stats)
+""")
+
+
+if __name__ == "__main__":
+    main()

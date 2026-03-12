@@ -1,0 +1,513 @@
+"""
+Walk-Forward Analysis Tool
+--------------------------
+Implements walk-forward analysis for trading strategies to test robustness
+and avoid overfitting. This tests strategies on rolling time periods
+to see how performance changes over time.
+"""
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import os
+import sys
+from typing import List, Dict, Tuple, Optional
+import matplotlib.pyplot as plt
+import warnings
+
+warnings.filterwarnings('ignore')
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from trading_utils import calculate_statistics
+
+
+class WalkForwardAnalyzer:
+    """
+    Performs walk-forward analysis on trading strategies.
+    
+    Walk-forward analysis tests a strategy on sequential time periods
+    to validate its robustness and identify potential overfitting.
+    """
+    
+    def __init__(self, train_period_months=12, test_period_months=3, min_trades_per_period=20):
+        """
+        Initialize walk-forward analyzer.
+        
+        Parameters:
+        -----------
+        train_period_months : int
+            Number of months to use for training/optimization (default: 12)
+        test_period_months : int
+            Number of months to test on (default: 3)
+        min_trades_per_period : int
+            Minimum trades required per period for valid results (default: 20)
+        """
+        self.train_period_months = train_period_months
+        self.test_period_months = test_period_months
+        self.min_trades_per_period = min_trades_per_period
+        self.results = []
+        
+    def create_time_periods(self, start_date, end_date):
+        """
+        Create overlapping train/test periods for walk-forward analysis.
+        
+        Parameters:
+        -----------
+        start_date : datetime
+            Start date of the data
+        end_date : datetime
+            End date of the data
+            
+        Returns:
+        --------
+        list
+            List of (train_start, train_end, test_start, test_end) tuples
+        """
+        periods = []
+        current_date = start_date
+        
+        while current_date < end_date:
+            train_start = current_date
+            train_end = train_start + timedelta(days=self.train_period_months * 30)
+            
+            test_start = train_end
+            test_end = test_start + timedelta(days=self.test_period_months * 30)
+            
+            if test_end <= end_date:
+                periods.append((train_start, train_end, test_start, test_end))
+            
+            current_date = test_start
+        
+        return periods
+    
+    def run_strategy_on_period(self, strategy, data_df, start_date, end_date):
+        """
+        Run a strategy on a specific time period.
+        
+        Parameters:
+        -----------
+        strategy : BaseStrategy
+            Strategy to test
+        data_df : pd.DataFrame
+            Full dataset
+        start_date : datetime
+            Period start date
+        end_date : datetime
+            Period end date
+            
+        Returns:
+        --------
+        tuple
+            (trades_df, statistics) for the period
+        """
+        period_mask = (data_df['Date'] >= start_date) & (data_df['Date'] < end_date)
+        period_data = data_df[period_mask].copy().reset_index(drop=True)
+        
+        if len(period_data) < 30:  # Need minimum data
+            return pd.DataFrame(), None
+        
+        try:
+            period_data = strategy.calculate_indicators(period_data)
+            
+            entry_signals = strategy.get_entry_conditions(period_data)
+            
+            trades = []
+            capital = strategy.initial_investment
+            
+            for i in range(1, len(period_data)):
+                if entry_signals.iloc[i]:
+                    entry_row = period_data.iloc[i]
+                    entry_price = entry_row['Open']
+                    
+                    exit_index, exit_price, exit_reason = strategy.get_exit_conditions(period_data, i)
+                    
+                    if exit_index is not None and exit_index < len(period_data):
+                        position = strategy.calculate_position_size(capital, entry_price)
+                        
+                        profit = (exit_price - entry_price) * position
+                        capital += profit
+                        
+                        trades.append({
+                            'Entry Date': entry_row['Date'],
+                            'Entry Price': entry_price,
+                            'Exit Date': period_data.iloc[exit_index]['Date'],
+                            'Exit Price': exit_price,
+                            'Shares': position,
+                            'Profit': profit,
+                            'Exit Reason': exit_reason,
+                            'Capital After': capital
+                        })
+            
+            trades_df = pd.DataFrame(trades)
+            
+            if len(trades_df) >= self.min_trades_per_period:
+                statistics = calculate_statistics(trades_df, strategy.initial_investment)
+            else:
+                statistics = None
+                
+            return trades_df, statistics
+            
+        except Exception as e:
+            print(f"Error running strategy on period {start_date} to {end_date}: {e}")
+            return pd.DataFrame(), None
+    
+    def run_walk_forward_analysis(self, strategy, data_file):
+        """
+        Run complete walk-forward analysis on a strategy.
+        
+        Parameters:
+        -----------
+        strategy : BaseStrategy
+            Strategy to analyze
+        data_file : str
+            Path to data file
+            
+        Returns:
+        --------
+        dict
+            Complete walk-forward analysis results
+        """
+        print(f"Running walk-forward analysis for {strategy.name}")
+        print(f"Training: {self.train_period_months} months, Testing: {self.test_period_months} months")
+        print("="*70)
+        
+        data_df = pd.read_csv(data_file, parse_dates=['Date'])
+        data_df.sort_values('Date', inplace=True)
+        data_df.reset_index(drop=True, inplace=True)
+        
+        start_date = data_df['Date'].min()
+        end_date = data_df['Date'].max()
+        
+        print(f"Data range: {start_date.date()} to {end_date.date()}")
+        
+        periods = self.create_time_periods(start_date, end_date)
+        print(f"Created {len(periods)} walk-forward periods")
+        
+        wf_results = []
+        
+        for i, (train_start, train_end, test_start, test_end) in enumerate(periods, 1):
+            print(f"\nPeriod {i}/{len(periods)}: {test_start.date()} to {test_end.date()}")
+            
+            train_trades, train_stats = self.run_strategy_on_period(
+                strategy, data_df, train_start, train_end
+            )
+            
+            test_trades, test_stats = self.run_strategy_on_period(
+                strategy, data_df, test_start, test_end
+            )
+            
+            if test_stats is not None:
+                period_result = {
+                    'period': i,
+                    'train_start': train_start,
+                    'train_end': train_end,
+                    'test_start': test_start,
+                    'test_end': test_end,
+                    'train_trades': len(train_trades),
+                    'test_trades': len(test_trades),
+                    'test_win_rate': test_stats['win_rate'],
+                    'test_total_profit': test_stats['total_profit'],
+                    'test_roi': test_stats['roi'],
+                    'test_sharpe': test_stats['sharpe_ratio'],
+                    'test_max_dd': test_stats['max_drawdown'],
+                    'train_stats': train_stats,
+                    'test_stats': test_stats,
+                    'test_trades_df': test_trades
+                }
+                
+                wf_results.append(period_result)
+                
+                print(f"  Test period: {len(test_trades)} trades, "
+                      f"{test_stats['win_rate']:.2f}% win rate, "
+                      f"${test_stats['total_profit']:,.2f} profit")
+            else:
+                print(f"  Insufficient trades in test period")
+        
+        analysis = self._analyze_walk_forward_results(wf_results, strategy.name)
+        
+        return {
+            'strategy_name': strategy.name,
+            'periods': wf_results,
+            'analysis': analysis,
+            'parameters': {
+                'train_months': self.train_period_months,
+                'test_months': self.test_period_months,
+                'min_trades': self.min_trades_per_period
+            }
+        }
+    
+    def _analyze_walk_forward_results(self, wf_results, strategy_name):
+        """Analyze walk-forward results for robustness."""
+        if len(wf_results) == 0:
+            return {'error': 'No valid periods'}
+        
+        win_rates = [r['test_win_rate'] for r in wf_results]
+        profits = [r['test_total_profit'] for r in wf_results]
+        rois = [r['test_roi'] for r in wf_results]
+        sharpes = [r['test_sharpe'] for r in wf_results]
+        max_dds = [r['test_max_dd'] for r in wf_results]
+        
+        win_rate_std = np.std(win_rates)
+        profit_std = np.std(profits)
+        roi_std = np.std(rois)
+        
+        positive_periods = sum(1 for p in profits if p > 0)
+        consistency_ratio = positive_periods / len(profits)
+        
+        total_trades = sum(r['test_trades'] for r in wf_results)
+        total_profit = sum(profits)
+        avg_win_rate = np.mean(win_rates)
+        avg_roi = np.mean(rois)
+        avg_sharpe = np.mean(sharpes)
+        avg_max_dd = np.mean(max_dds)
+        
+        win_rate_trend = self._calculate_trend(win_rates)
+        profit_trend = self._calculate_trend(profits)
+        
+        analysis = {
+            'total_periods': len(wf_results),
+            'total_trades': total_trades,
+            'total_profit': total_profit,
+            'avg_win_rate': avg_win_rate,
+            'avg_roi': avg_roi,
+            'avg_sharpe': avg_sharpe,
+            'avg_max_dd': avg_max_dd,
+            'win_rate_stability': win_rate_std,
+            'profit_stability': profit_std,
+            'roi_stability': roi_std,
+            'consistency_ratio': consistency_ratio,
+            'positive_periods': positive_periods,
+            'negative_periods': len(profits) - positive_periods,
+            'win_rate_trend': win_rate_trend,
+            'profit_trend': profit_trend,
+            'best_period': max(wf_results, key=lambda x: x['test_total_profit']),
+            'worst_period': min(wf_results, key=lambda x: x['test_total_profit']),
+            'robustness_score': self._calculate_robustness_score(
+                avg_win_rate, win_rate_std, consistency_ratio, avg_sharpe
+            )
+        }
+        
+        return analysis
+    
+    def _calculate_trend(self, values):
+        """Calculate trend direction using linear regression."""
+        if len(values) < 3:
+            return 0
+        
+        x = np.arange(len(values))
+        slope, _ = np.polyfit(x, values, 1)
+        return slope
+    
+    def _calculate_robustness_score(self, avg_win_rate, win_rate_std, consistency_ratio, avg_sharpe):
+        """
+        Calculate a robustness score (0-100).
+        
+        Higher scores indicate more robust strategies.
+        """
+        win_rate_component = min(avg_win_rate / 70, 1.0) * 25  # Max 25 points
+        stability_component = max(0, (20 - win_rate_std) / 20) * 25  # Max 25 points
+        consistency_component = consistency_ratio * 25  # Max 25 points
+        sharpe_component = min(max(avg_sharpe, 0) / 2, 1.0) * 25  # Max 25 points
+        
+        score = win_rate_component + stability_component + consistency_component + sharpe_component
+        return round(score, 1)
+    
+    def print_walk_forward_summary(self, wf_results):
+        """Print comprehensive walk-forward analysis summary."""
+        analysis = wf_results['analysis']
+        
+        print("\n" + "="*70)
+        print("WALK-FORWARD ANALYSIS SUMMARY")
+        print("="*70)
+        print(f"Strategy: {wf_results['strategy_name']}")
+        print(f"Training Period: {wf_results['parameters']['train_months']} months")
+        print(f"Testing Period: {wf_results['parameters']['test_months']} months")
+        
+        print(f"\nOverall Performance:")
+        print(f"  Total Periods:       {analysis['total_periods']}")
+        print(f"  Total Trades:        {analysis['total_trades']}")
+        print(f"  Total Profit:        ${analysis['total_profit']:,.2f}")
+        print(f"  Average Win Rate:    {analysis['avg_win_rate']:.2f}%")
+        print(f"  Average ROI:         {analysis['avg_roi']:.2f}%")
+        print(f"  Average Sharpe:      {analysis['avg_sharpe']:.3f}")
+        print(f"  Average Max DD:      {analysis['avg_max_dd']:.2f}%")
+        
+        print(f"\nRobustness Metrics:")
+        print(f"  Consistency Ratio:   {analysis['consistency_ratio']:.2f}")
+        print(f"  Positive Periods:    {analysis['positive_periods']}")
+        print(f"  Negative Periods:    {analysis['negative_periods']}")
+        print(f"  Win Rate Stability:  {analysis['win_rate_stability']:.2f}")
+        print(f"  Profit Stability:    {analysis['profit_stability']:.2f}")
+        print(f"  Robustness Score:    {analysis['robustness_score']}/100")
+        
+        print(f"\nTrend Analysis:")
+        win_trend = "Improving" if analysis['win_rate_trend'] > 0 else "Declining" if analysis['win_rate_trend'] < 0 else "Stable"
+        profit_trend = "Improving" if analysis['profit_trend'] > 0 else "Declining" if analysis['profit_trend'] < 0 else "Stable"
+        print(f"  Win Rate Trend:      {win_trend} ({analysis['win_rate_trend']:+.3f})")
+        print(f"  Profit Trend:        {profit_trend} ({analysis['profit_trend']:+.3f})")
+        
+        print(f"\nBest Period:")
+        best = analysis['best_period']
+        print(f"  Period:              {best['test_start'].date()} to {best['test_end'].date()}")
+        print(f"  Profit:              ${best['test_total_profit']:,.2f}")
+        print(f"  Win Rate:            {best['test_win_rate']:.2f}%")
+        
+        print(f"\nWorst Period:")
+        worst = analysis['worst_period']
+        print(f"  Period:              {worst['test_start'].date()} to {worst['test_end'].date()}")
+        print(f"  Profit:              ${worst['test_total_profit']:,.2f}")
+        print(f"  Win Rate:            {worst['test_win_rate']:.2f}%")
+        
+        score = analysis['robustness_score']
+        if score >= 80:
+            interpretation = "Excellent - Very robust strategy"
+        elif score >= 60:
+            interpretation = "Good - Reasonably robust"
+        elif score >= 40:
+            interpretation = "Fair - Some concerns about robustness"
+        else:
+            interpretation = "Poor - Significant robustness issues"
+            
+        print(f"\nRobustness Assessment: {interpretation}")
+        print("="*70)
+    
+    def save_walk_forward_results(self, wf_results, output_dir='results'):
+        """Save walk-forward analysis results to files."""
+        os.makedirs(output_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        strategy_name = wf_results['strategy_name'].lower().replace(' ', '_')
+        
+        summary_file = os.path.join(output_dir, f'walk_forward_{strategy_name}_{timestamp}.txt')
+        with open(summary_file, 'w') as f:
+            f.write("WALK-FORWARD ANALYSIS RESULTS\n")
+            f.write("="*50 + "\n\n")
+            
+            analysis = wf_results['analysis']
+            f.write(f"Strategy: {wf_results['strategy_name']}\n")
+            f.write(f"Total Periods: {analysis['total_periods']}\n")
+            f.write(f"Total Trades: {analysis['total_trades']}\n")
+            f.write(f"Total Profit: ${analysis['total_profit']:,.2f}\n")
+            f.write(f"Average Win Rate: {analysis['avg_win_rate']:.2f}%\n")
+            f.write(f"Robustness Score: {analysis['robustness_score']}/100\n")
+            f.write(f"Consistency Ratio: {analysis['consistency_ratio']:.2f}\n")
+        
+        detailed_results = []
+        for period in wf_results['periods']:
+            detailed_results.append({
+                'Period': period['period'],
+                'Test Start': period['test_start'].date(),
+                'Test End': period['test_end'].date(),
+                'Test Trades': period['test_trades'],
+                'Win Rate': period['test_win_rate'],
+                'Total Profit': period['test_total_profit'],
+                'ROI': period['test_roi'],
+                'Sharpe': period['test_sharpe'],
+                'Max DD': period['test_max_dd']
+            })
+        
+        detailed_file = os.path.join(output_dir, f'walk_forward_details_{strategy_name}_{timestamp}.csv')
+        pd.DataFrame(detailed_results).to_csv(detailed_file, index=False)
+        
+        print(f"\nWalk-forward results saved:")
+        print(f"  Summary: {summary_file}")
+        print(f"  Details: {detailed_file}")
+
+
+def compare_strategies_walk_forward(strategies_list, data_file, output_dir='results'):
+    """
+    Compare multiple strategies using walk-forward analysis.
+    
+    Parameters:
+    -----------
+    strategies_list : list
+        List of (name, strategy_object) tuples
+    data_file : str
+        Path to data file
+    output_dir : str
+        Directory to save results
+        
+    Returns:
+    --------
+    dict
+        Comparison results
+    """
+    print("WALK-FORWARD STRATEGY COMPARISON")
+    print("="*70)
+    
+    analyzer = WalkForwardAnalyzer()
+    all_results = {}
+    
+    for name, strategy in strategies_list:
+        print(f"\nAnalyzing {name}...")
+        results = analyzer.run_walk_forward_analysis(strategy, data_file)
+        all_results[name] = results
+        analyzer.print_walk_forward_summary(results)
+    
+    comparison = []
+    for name, results in all_results.items():
+        analysis = results['analysis']
+        comparison.append({
+            'Strategy': name,
+            'Robustness Score': analysis['robustness_score'],
+            'Consistency Ratio': analysis['consistency_ratio'],
+            'Avg Win Rate': analysis['avg_win_rate'],
+            'Total Profit': analysis['total_profit'],
+            'Avg Sharpe': analysis['avg_sharpe'],
+            'Periods': analysis['total_periods']
+        })
+    
+    comparison.sort(key=lambda x: x['Robustness Score'], reverse=True)
+    
+    print("\n" + "="*70)
+    print("STRATEGY ROBUSTNESS RANKING")
+    print("="*70)
+    print(f"{'Rank':<4} {'Strategy':<25} {'Score':<8} {'Consist':<8} {'WinRate':<8} {'Profit':<12}")
+    print("-"*70)
+    
+    for i, result in enumerate(comparison, 1):
+        print(f"{i:<4} {result['Strategy']:<25} {result['Robustness Score']:<8.1f} "
+              f"{result['Consistency Ratio']:<8.2f} {result['Avg Win Rate']:<8.2f}% "
+              f"${result['Total Profit']:<11,.0f}")
+    
+    comparison_df = pd.DataFrame(comparison)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    comparison_file = os.path.join(output_dir, f'walk_forward_comparison_{timestamp}.csv')
+    comparison_df.to_csv(comparison_file, index=False)
+    
+    print(f"\nComparison saved to: {comparison_file}")
+    
+    return all_results
+
+
+def main():
+    """Example usage of walk-forward analysis."""
+    print("Walk-Forward Analysis Example")
+    print("="*50)
+    
+    print("To use walk-forward analysis:")
+    print("1. Import your strategy classes")
+    print("2. Create WalkForwardAnalyzer instance")
+    print("3. Run analysis on individual strategies")
+    print("4. Compare multiple strategies")
+    
+    print("\nExample code:")
+    print("""
+from strategies.spy_strategies.spy_gap_fade import SPYGapFadeStrategy
+from utils.walk_forward_analysis import WalkForwardAnalyzer
+
+analyzer = WalkForwardAnalyzer(train_period_months=12, test_period_months=3)
+strategy = SPYGapFadeStrategy()
+results = analyzer.run_walk_forward_analysis(strategy, 'data/7J0OK1VR.csv')
+analyzer.print_walk_forward_summary(results)
+
+strategies = [
+    ('SPY Gap Fade', SPYGapFadeStrategy()),
+    ('DIP Basic', DIPBasicStrategy())
+]
+comparison = compare_strategies_walk_forward(strategies, 'data/7J0OK1VR.csv')
+""")
+
+
+if __name__ == "__main__":
+    main()

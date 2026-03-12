@@ -1,0 +1,94 @@
+
+strategy(title="3 EMA/SMA + Cross Strategy [Alorse]", overlay=true, pyramiding=0, currency=currency.USD, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+
+
+src = input(title="Source", type=input.source, defval=close)
+SP = input(title="Short Stop Loss (%)", type=input.float, minval=0.0, step=0.1, defval=99) * 0.01
+lenFast = input(10, minval=1, title="Fast EMA")
+lenSlow = input(20, minval=1, title="Slow EMA")
+lenTend = input(100, minval=1, title="Tendence EMA")
+
+
+fastEMA = ema(src, lenFast)
+slowEMA = ema(src, lenSlow)
+tendEMA = ema(src, lenTend)
+
+
+plot(fastEMA, color=#c643dc)
+plot(slowEMA, color=color.orange)
+plot(tendEMA, color=color.white)
+
+
+crossover  = crossover(fastEMA, slowEMA)
+crossunder = crossunder(fastEMA, slowEMA)
+plot(crossover or crossunder ? fastEMA : na, style=plot.style_cross, title="Cross", linewidth=2, color=color.white)
+
+crossBack = input(title="Check Cross in the last # candles", type=input.integer, defval=10, group="Strategy")
+
+
+wasCrossLong = false
+enterLong = false
+for i = 1 to crossBack
+    if crossover(fastEMA[i], slowEMA[i])
+        wasCrossLong := true
+        break
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+if close[0] >= fastEMA and low[1] <= fastEMA and tendEMA <= close[0]
+    enterLong := true
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+longStopPrice  = strategy.position_avg_price * (1 - SP)
+shortStopPrice = strategy.position_avg_price * (1 + SP)
+
+
+
+
+
+
+
+
+
+
+strategy.entry("Long", true, when=wasCrossLong and enterLong)
+strategy.close("Long", when=crossunder(fastEMA, slowEMA))
+
+
+
+
+
+if (strategy.position_size > 0)
+    strategy.exit(id="Exit", stop=longStopPrice)
+
+if (strategy.position_size < 0)
+    strategy.exit(id="Exit", stop=shortStopPrice)

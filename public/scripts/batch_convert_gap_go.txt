@@ -1,0 +1,706 @@
+"""
+Batch Convert Gap & Go Strategies
+---------------------------------
+Converts the 200 Gap & Go strategies (100 profit + 100 success ranked) 
+into clean, standardized versions using the new framework.
+
+The original Gap & Go strategies combine two indicators for entry conditions.
+This converter extracts the indicators and creates unified strategy classes.
+"""
+
+import os
+import re
+import pandas as pd
+import json
+from collections import defaultdict
+
+
+def extract_indicator_from_filename(filename):
+    """Extract the two indicators from a Gap & Go strategy filename."""
+    name = filename.replace('.py', '')
+    
+    if 'profit' in name:
+        ranking_type = 'profit'
+        pattern = r'gap_go_profit_(\d+)_(.*)'
+    else:
+        ranking_type = 'success'
+        pattern = r'gap_go_success_(\d+)_(.*)'
+    
+    match = re.match(pattern, name)
+    if not match:
+        return None, None, None, None
+    
+    rank = int(match.group(1))
+    indicator_part = match.group(2)
+    
+    if '_and_' not in indicator_part:
+        return ranking_type, rank, None, None
+    
+    indicators = indicator_part.split('_and_')
+    if len(indicators) != 2:
+        return ranking_type, rank, None, None
+    
+    indicator1 = indicators[0].replace('_', ' ').title()
+    indicator2 = indicators[1].replace('_', ' ').title()
+    
+    return ranking_type, rank, indicator1, indicator2
+
+
+def normalize_indicator_name(indicator):
+    """Normalize indicator names for consistency."""
+    mappings = {
+        'Rsi Bullish': 'RSI_Bullish',
+        'Rsi Bearish': 'RSI_Bearish',
+        'Rsi Strong': 'RSI_Strong',
+        'Rsi Weak': 'RSI_Weak',
+        'Bb Squeeze Active': 'BB_Squeeze_Active',
+        'Bb Narrow': 'BB_Narrow',
+        'Bb Wide': 'BB_Wide',
+        'Obv Rising': 'OBV_Rising',
+        'Volume Trend Up': 'Volume_Trend_Up',
+        'Volume Trend Down': 'Volume_Trend_Down',
+        'Macd Bullish': 'MACD_Bullish',
+        'Macd Bearish': 'MACD_Bearish',
+        'Uptrend Sma20': 'Uptrend_SMA20',
+        'Downtrend Sma20': 'Downtrend_SMA20',
+        'Uptrend Sma50': 'Uptrend_SMA50',
+        'Downtrend Sma50': 'Downtrend_SMA50',
+        'Sma 5 Above 10': 'SMA_5_Above_10',
+        'Sma 10 Above 20': 'SMA_10_Above_20',
+        'Ema 8 Above 21': 'EMA_8_Above_21',
+        'Strong Uptrend': 'Strong_Uptrend',
+        'Strong Downtrend': 'Strong_Downtrend',
+        'Trend Alignment': 'Trend_Alignment',
+        'Normal Volume': 'Normal_Volume',
+        'High Volume': 'High_Volume',
+        'Low Volume': 'Low_Volume',
+        'Normal Volatility': 'Normal_Volatility',
+        'Low Volatility': 'Low_Volatility',
+        'High Volatility': 'High_Volatility',
+        'Adx Trending': 'ADX_Trending',
+        'Adx Nontrending': 'ADX_NonTrending',
+        'Cci Bullish': 'CCI_Bullish',
+        'Cci Bearish': 'CCI_Bearish',
+        'Stoch Bullish': 'Stoch_Bullish',
+        'Stoch Bearish': 'Stoch_Bearish',
+        'Stoch Neutral': 'Stoch_Neutral',
+        'Williams Overbought': 'Williams_Overbought',
+        'Williams Oversold': 'Williams_Oversold',
+        'Momentum Positive': 'Momentum_Positive',
+        'Momentum Negative': 'Momentum_Negative',
+        'Roc Positive': 'ROC_Positive',
+        'Roc Negative': 'ROC_Negative',
+        'Mfi Strong': 'MFI_Strong',
+        'Mfi Weak': 'MFI_Weak',
+        'Atr Expanding': 'ATR_Expanding',
+        'Atr Contracting': 'ATR_Contracting',
+        'Price Near Bb Upper': 'Price_Near_BB_Upper',
+        'Price Near Bb Lower': 'Price_Near_BB_Lower',
+        'Mid Week': 'Mid_Week',
+        'Early Week': 'Early_Week',
+        'Late Week': 'Late_Week',
+        'Not Monday': 'Not_Monday',
+        'Not Friday': 'Not_Friday',
+        'Medium Gap': 'Medium_Gap',
+        'Small Gap': 'Small_Gap',
+        'Large Gap': 'Large_Gap',
+        'Gap Up': 'Gap_Up',
+        'Gap Down': 'Gap_Down'
+    }
+    
+    return mappings.get(indicator, indicator.replace(' ', '_'))
+
+
+def generate_indicator_condition_code(indicator):
+    """Generate the Python code for an indicator condition."""
+    conditions = {
+        'Uptrend_SMA20': "df['Close'] > df['SMA_20']",
+        'Downtrend_SMA20': "df['Close'] <= df['SMA_20']",
+        'Uptrend_SMA50': "df['Close'] > df['SMA_50']",
+        'Downtrend_SMA50': "df['Close'] <= df['SMA_50']",
+        'SMA_5_Above_10': "df['SMA_5'] > df['SMA_10']",
+        'SMA_10_Above_20': "df['SMA_10'] > df['SMA_20']",
+        'EMA_8_Above_21': "df['EMA_8'] > df['EMA_21']",
+        'Strong_Uptrend': "(df['SMA_5'] > df['SMA_10']) & (df['SMA_10'] > df['SMA_20'])",
+        'Strong_Downtrend': "(df['SMA_5'] < df['SMA_10']) & (df['SMA_10'] < df['SMA_20'])",
+        'Trend_Alignment': "df['SMA20_Rising'] & df['SMA50_Rising']",
+        
+        'RSI_Bullish': "df['RSI'] > 50",
+        'RSI_Bearish': "df['RSI'] < 50",
+        'RSI_Strong': "(df['RSI'] > 60) & (df['RSI'] < 80)",
+        'RSI_Weak': "(df['RSI'] > 20) & (df['RSI'] < 40)",
+        
+        'MACD_Bullish': "df['MACD'] > df['MACD_Signal']",
+        'MACD_Bearish': "df['MACD'] < df['MACD_Signal']",
+        
+        'BB_Squeeze_Active': "df['BB_Squeeze']",
+        'BB_Narrow': "df['BB_Width'] < df['BB_Width'].rolling(20).mean()",
+        'BB_Wide': "df['BB_Width'] > df['BB_Width'].rolling(20).mean()",
+        'Price_Near_BB_Upper': "(df['Close'] > df['BB_Middle']) & (df['Close'] < df['BB_Upper'])",
+        'Price_Near_BB_Lower': "(df['Close'] < df['BB_Middle']) & (df['Close'] > df['BB_Lower'])",
+        
+        'Normal_Volume': "(df['Volume_Ratio'] > 0.8) & (df['Volume_Ratio'] < 1.2)",
+        'High_Volume': "df['Volume_Ratio'] > 1.2",
+        'Low_Volume': "df['Volume_Ratio'] < 0.8",
+        'OBV_Rising': "df['OBV'] > df['OBV'].shift(5)",
+        'Volume_Trend_Up': "df['Volume_SMA'] > df['Volume_SMA'].shift(5)",
+        'Volume_Trend_Down': "df['Volume_SMA'] < df['Volume_SMA'].shift(5)",
+        'MFI_Strong': "df['MFI'] > 50",
+        'MFI_Weak': "df['MFI'] < 50",
+        
+        'Normal_Volatility': "(df['ATR_Ratio'] > 0.01) & (df['ATR_Ratio'] < 0.02)",
+        'Low_Volatility': "df['ATR_Ratio'] < 0.01",
+        'High_Volatility': "df['ATR_Ratio'] > 0.02",
+        'ATR_Expanding': "df['ATR'] > df['ATR'].shift(5)",
+        'ATR_Contracting': "df['ATR'] < df['ATR'].shift(5)",
+        
+        'ADX_Trending': "df['ADX'] > 25",
+        'ADX_NonTrending': "df['ADX'] < 25",
+        'CCI_Bullish': "df['CCI'] > 0",
+        'CCI_Bearish': "df['CCI'] < 0",
+        'Stoch_Bullish': "df['Stoch_K'] > df['Stoch_D']",
+        'Stoch_Bearish': "df['Stoch_K'] < df['Stoch_D']",
+        'Stoch_Neutral': "(df['Stoch_K'] > 20) & (df['Stoch_K'] < 80)",
+        'Williams_Overbought': "df['Williams_R'] > -20",
+        'Williams_Oversold': "df['Williams_R'] < -80",
+        
+        'Momentum_Positive': "df['Momentum'] > 0",
+        'Momentum_Negative': "df['Momentum'] < 0",
+        'ROC_Positive': "df['ROC'] > 0",
+        'ROC_Negative': "df['ROC'] < 0",
+        
+        'Mid_Week': "df['DayOfWeek'].isin([2, 3])",
+        'Early_Week': "df['DayOfWeek'].isin([0, 1])",
+        'Late_Week': "df['DayOfWeek'] == 4",
+        'Not_Monday': "df['DayOfWeek'] != 0",
+        'Not_Friday': "df['DayOfWeek'] != 4",
+        'Monday': "df['DayOfWeek'] == 0",
+        'Friday': "df['DayOfWeek'] == 4",
+        
+        'Medium_Gap': "(df['Gap_Abs'] > 0.5) & (df['Gap_Abs'] <= 1.0)",
+        'Small_Gap': "(df['Gap_Abs'] >= 0.3) & (df['Gap_Abs'] <= 0.5)",
+        'Large_Gap': "df['Gap_Abs'] > 1.0",
+        'Gap_Up': "df['Gap'] > 0.3",
+        'Gap_Down': "df['Gap'] < -0.3"
+    }
+    
+    return conditions.get(indicator, f"# TODO: Define condition for {indicator}")
+
+
+def get_required_indicators(indicator):
+    """Get the list of technical indicators needed for a condition."""
+    requirements = {
+        'Uptrend_SMA20': ['SMA_20'],
+        'Downtrend_SMA20': ['SMA_20'],
+        'Uptrend_SMA50': ['SMA_50'],
+        'Downtrend_SMA50': ['SMA_50'],
+        'SMA_5_Above_10': ['SMA_5', 'SMA_10'],
+        'SMA_10_Above_20': ['SMA_10', 'SMA_20'],
+        'EMA_8_Above_21': ['EMA_8', 'EMA_21'],
+        'Strong_Uptrend': ['SMA_5', 'SMA_10', 'SMA_20'],
+        'Strong_Downtrend': ['SMA_5', 'SMA_10', 'SMA_20'],
+        'Trend_Alignment': ['SMA20_Rising', 'SMA50_Rising'],
+        'RSI_Bullish': ['RSI'],
+        'RSI_Bearish': ['RSI'],
+        'RSI_Strong': ['RSI'],
+        'RSI_Weak': ['RSI'],
+        'MACD_Bullish': ['MACD', 'MACD_Signal'],
+        'MACD_Bearish': ['MACD', 'MACD_Signal'],
+        'BB_Squeeze_Active': ['BB_Squeeze'],
+        'BB_Narrow': ['BB_Width'],
+        'BB_Wide': ['BB_Width'],
+        'Price_Near_BB_Upper': ['BB_Middle', 'BB_Upper'],
+        'Price_Near_BB_Lower': ['BB_Middle', 'BB_Lower'],
+        'OBV_Rising': ['OBV'],
+        'Volume_Trend_Up': ['Volume_SMA'],
+        'Volume_Trend_Down': ['Volume_SMA'],
+        'MFI_Strong': ['MFI'],
+        'MFI_Weak': ['MFI'],
+        'ATR_Expanding': ['ATR'],
+        'ATR_Contracting': ['ATR'],
+        'ADX_Trending': ['ADX'],
+        'ADX_NonTrending': ['ADX'],
+        'CCI_Bullish': ['CCI'],
+        'CCI_Bearish': ['CCI'],
+        'Stoch_Bullish': ['Stoch_K', 'Stoch_D'],
+        'Stoch_Bearish': ['Stoch_K', 'Stoch_D'],
+        'Stoch_Neutral': ['Stoch_K'],
+        'Williams_Overbought': ['Williams_R'],
+        'Williams_Oversold': ['Williams_R'],
+        'Momentum_Positive': ['Momentum'],
+        'Momentum_Negative': ['Momentum'],
+        'ROC_Positive': ['ROC'],
+        'ROC_Negative': ['ROC']
+    }
+    
+    return requirements.get(indicator, [])
+
+
+def generate_gap_go_strategy(indicator1, indicator2, ranking_type, rank):
+    """Generate a clean Gap & Go strategy based on two indicators."""
+    
+    ind1_norm = normalize_indicator_name(indicator1)
+    ind2_norm = normalize_indicator_name(indicator2)
+    
+    class_name = f"GapGo{ind1_norm}{ind2_norm}Strategy"
+    strategy_name = f"Gap & Go: {indicator1} + {indicator2}"
+    
+    required_indicators = list(set(get_required_indicators(ind1_norm) + get_required_indicators(ind2_norm)))
+    
+    template = f'''"""
+Gap & Go Strategy: {indicator1} + {indicator2}
+{'-' * (len(strategy_name) + 10)}
+Ranked #{rank} by {ranking_type.title()}
+
+This strategy trades gaps in the direction of the gap when both indicators confirm.
+Entry occurs when:
+1. {indicator1} condition is met
+2. {indicator2} condition is met
+3. Valid gap occurs (>= 0.3%)
+
+Exit Conditions:
+- Profit target: 1% gain
+- Stop loss: 0.5% loss  
+- Market close if neither hit
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utils import BaseStrategy, calculate_rsi, calculate_atr, calculate_bollinger_bands, calculate_macd
+
+
+class {class_name}(BaseStrategy):
+    """Gap & Go strategy combining {indicator1} and {indicator2}."""
+    
+    def __init__(self, initial_investment=16000):
+        super().__init__("{strategy_name}", initial_investment)
+        self.min_gap_percent = 0.3
+        self.profit_target_percent = 1.0
+        self.stop_loss_percent = 0.5
+        
+    def calculate_indicators(self, df):
+        """Calculate all required technical indicators."""
+        df['Prev_Close'] = df['Close'].shift(1)
+        df['Gap'] = ((df['Open'] - df['Prev_Close']) / df['Prev_Close']) * 100
+        df['Gap_Abs'] = df['Gap'].abs()
+        df['Gap_Up'] = df['Gap'] > self.min_gap_percent
+        df['Gap_Down'] = df['Gap'] < -self.min_gap_percent
+        
+        for period in [5, 10, 20, 50]:
+            df[f'SMA_{{period}}'] = df['Close'].rolling(window=period).mean()
+            
+        for period in [8, 21]:
+            df[f'EMA_{{period}}'] = df['Close'].ewm(span=period, adjust=False).mean()
+            
+        df['RSI'] = calculate_rsi(df['Close'], period=14)
+        
+        df['ATR'] = calculate_atr(df['High'], df['Low'], df['Close'], period=14)
+        df['ATR_Ratio'] = df['ATR'] / df['Close']
+        
+        bb_middle, bb_upper, bb_lower, bb_width = calculate_bollinger_bands(df['Close'])
+        df['BB_Middle'] = bb_middle
+        df['BB_Upper'] = bb_upper
+        df['BB_Lower'] = bb_lower
+        df['BB_Width'] = bb_width
+        df['BB_Squeeze'] = df['BB_Width'] < df['BB_Width'].rolling(20).mean()
+        
+        macd_line, signal_line, histogram = calculate_macd(df['Close'])
+        df['MACD'] = macd_line
+        df['MACD_Signal'] = signal_line
+        
+        df['Volume_SMA'] = df['Volume'].rolling(window=20).mean()
+        df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA']
+        df['OBV'] = (df['Volume'] * ((df['Close'] > df['Close'].shift(1)) * 2 - 1)).cumsum()
+        
+        
+        df['Momentum'] = ((df['Close'] - df['Close'].shift(10)) / df['Close'].shift(10)) * 100
+        df['ROC'] = ((df['Close'] - df['Close'].shift(10)) / df['Close'].shift(10)) * 100
+        
+        df['DayOfWeek'] = pd.to_datetime(df['Date']).dt.dayofweek
+        
+        df['SMA20_Rising'] = df['SMA_20'] > df['SMA_20'].shift(1)
+        df['SMA50_Rising'] = df['SMA_50'] > df['SMA_50'].shift(1)
+        
+        indicator_cols = [col for col in df.columns if col not in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']]
+        for col in indicator_cols:
+            if col not in ['Gap', 'Gap_Abs', 'Gap_Up', 'Gap_Down', 'Prev_Close', 'DayOfWeek']:
+                df[col] = df[col].shift(1)
+        
+        return df
+    
+    def get_entry_conditions(self, df):
+        """Define entry conditions combining both indicators."""
+        valid_gap = (df['Gap_Up']) | (df['Gap_Down'])
+        
+        condition1 = {generate_indicator_condition_code(ind1_norm)}
+        
+        condition2 = {generate_indicator_condition_code(ind2_norm)}
+        
+        entry_signals = valid_gap & condition1 & condition2
+        
+        return entry_signals
+    
+    def calculate_exit_price(self, entry_price, high, low, close, direction):
+        """Calculate exit price based on profit target, stop loss, or close."""
+        if direction == 'Long':
+            profit_target = entry_price * (1 + self.profit_target_percent / 100)
+            stop_loss = entry_price * (1 - self.stop_loss_percent / 100)
+            
+            if high >= profit_target:
+                return profit_target, 'Profit Target'
+            elif low <= stop_loss:
+                return stop_loss, 'Stop Loss'
+            else:
+                return close, 'Market Close'
+        else:  # Short
+            profit_target = entry_price * (1 - self.profit_target_percent / 100)
+            stop_loss = entry_price * (1 + self.stop_loss_percent / 100)
+            
+            if low <= profit_target:
+                return profit_target, 'Profit Target'
+            elif high >= stop_loss:
+                return stop_loss, 'Stop Loss'
+            else:
+                return close, 'Market Close'
+    
+    def run_backtest(self, data_file):
+        """Custom backtest for gap and go strategy."""
+        self.df = pd.read_csv(data_file, parse_dates=['Date'])
+        self.df.sort_values('Date', inplace=True)
+        self.df.reset_index(drop=True, inplace=True)
+        
+        self.df = self.calculate_indicators(self.df)
+        
+        entry_signals = self.get_entry_conditions(self.df)
+        
+        trades = []
+        capital = self.initial_investment
+        
+        for i in range(1, len(self.df)):  # Start from 1 to have previous day
+            if entry_signals.iloc[i]:
+                entry_row = self.df.iloc[i]
+                entry_price = entry_row['Open']
+                
+                if entry_row['Gap_Up']:
+                    trade_type = 'Long'
+                else:  # Gap down
+                    trade_type = 'Short'
+                
+                position = self.calculate_position_size(capital, entry_price)
+                
+                exit_price, exit_reason = self.calculate_exit_price(
+                    entry_price,
+                    entry_row['High'],
+                    entry_row['Low'], 
+                    entry_row['Close'],
+                    trade_type
+                )
+                
+                if trade_type == 'Long':
+                    profit = (exit_price - entry_price) * position
+                else:  # Short
+                    profit = (entry_price - exit_price) * position
+                
+                capital += profit
+                
+                trades.append({{
+                    'Entry Date': entry_row['Date'],
+                    'Entry Price': entry_price,
+                    'Exit Date': entry_row['Date'],  # Same day exit
+                    'Exit Price': exit_price,
+                    'Type': trade_type,
+                    'Gap %': entry_row['Gap'],
+                    'Shares': position,
+                    'Profit': profit,
+                    'Exit Reason': exit_reason,
+                    'Capital After': capital
+                }})
+        
+        trades_df = pd.DataFrame(trades)
+        
+        if len(trades_df) > 0:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(trades_df, self.initial_investment)
+            
+            exit_analysis = trades_df['Exit Reason'].value_counts()
+            statistics['profit_target_exits'] = exit_analysis.get('Profit Target', 0)
+            statistics['stop_loss_exits'] = exit_analysis.get('Stop Loss', 0)
+            statistics['close_exits'] = exit_analysis.get('Market Close', 0)
+            statistics['avg_gap_size'] = trades_df['Gap %'].abs().mean()
+        else:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(pd.DataFrame(), self.initial_investment)
+            statistics['profit_target_exits'] = 0
+            statistics['stop_loss_exits'] = 0
+            statistics['close_exits'] = 0
+            statistics['avg_gap_size'] = 0
+        
+        return trades_df, statistics
+
+
+def main():
+    """Run the Gap & Go {indicator1} + {indicator2} strategy."""
+    strategy = {class_name}(initial_investment=16000)
+    
+    data_file = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        'data', '7J0OK1VR.csv'
+    )
+    
+    trades_df, statistics = strategy.run(data_file, save_results=True, 
+                                       output_dir='../../results')
+    
+    if statistics['total_trades'] < 100:
+        print(f"⚠️  WARNING: Strategy only generated {{statistics['total_trades']}} trades, "
+              f"below recommended minimum of 100 trades for statistical significance.")
+    
+    return trades_df, statistics
+
+
+if __name__ == "__main__":
+    main()
+'''
+    
+    return template
+
+
+def analyze_gap_go_strategies():
+    """Analyze all Gap & Go strategy files and extract patterns."""
+    gap_go_dir = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/GAP_AND_GO_1000_STRATEGIES'
+    
+    strategy_files = [f for f in os.listdir(gap_go_dir) 
+                     if f.startswith('gap_go_') and f.endswith('.py')]
+    
+    print(f"Found {len(strategy_files)} Gap & Go strategy files")
+    
+    profit_strategies = []
+    success_strategies = []
+    indicator_frequency = defaultdict(int)
+    
+    for filename in strategy_files:
+        ranking_type, rank, ind1, ind2 = extract_indicator_from_filename(filename)
+        
+        if ranking_type and ind1 and ind2:
+            strategy_info = {
+                'filename': filename,
+                'rank': rank,
+                'indicator1': ind1,
+                'indicator2': ind2,
+                'normalized_ind1': normalize_indicator_name(ind1),
+                'normalized_ind2': normalize_indicator_name(ind2)
+            }
+            
+            if ranking_type == 'profit':
+                profit_strategies.append(strategy_info)
+            else:
+                success_strategies.append(strategy_info)
+            
+            indicator_frequency[normalize_indicator_name(ind1)] += 1
+            indicator_frequency[normalize_indicator_name(ind2)] += 1
+    
+    profit_strategies.sort(key=lambda x: x['rank'])
+    success_strategies.sort(key=lambda x: x['rank'])
+    
+    return profit_strategies, success_strategies, indicator_frequency
+
+
+def create_top_strategies_only(profit_strategies, success_strategies, top_n=10):
+    """Create only the top N strategies by each ranking to avoid duplication."""
+    strategies_to_create = []
+    
+    for strategy in profit_strategies[:top_n]:
+        strategies_to_create.append(('profit', strategy))
+    
+    for strategy in success_strategies[:top_n]:
+        strategies_to_create.append(('success', strategy))
+    
+    return strategies_to_create
+
+
+def batch_convert_gap_go_strategies():
+    """Convert Gap & Go strategies to the new format."""
+    print("="*70)
+    print("BATCH CONVERTING GAP & GO STRATEGIES")
+    print("="*70)
+    
+    profit_strategies, success_strategies, indicator_freq = analyze_gap_go_strategies()
+    
+    print(f"\nFound {len(profit_strategies)} profit-ranked strategies")
+    print(f"Found {len(success_strategies)} success-ranked strategies")
+    
+    print(f"\nMost common indicators:")
+    for indicator, count in sorted(indicator_freq.items(), key=lambda x: x[1], reverse=True)[:10]:
+        print(f"  {indicator}: {count} strategies")
+    
+    strategies_to_create = create_top_strategies_only(profit_strategies, success_strategies, top_n=15)
+    
+    print(f"\nCreating {len(strategies_to_create)} representative strategies...")
+    
+    output_dir = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/clean_strategies/strategies/gap_and_go_strategies'
+    
+    summary = {
+        'total_analyzed': len(profit_strategies) + len(success_strategies),
+        'created': 0,
+        'skipped': 0,
+        'errors': 0
+    }
+    
+    for i, (ranking_type, strategy_info) in enumerate(strategies_to_create, 1):
+        try:
+            print(f"\n[{i}/{len(strategies_to_create)}] Creating: {strategy_info['indicator1']} + {strategy_info['indicator2']}")
+            
+            ind1_clean = strategy_info['normalized_ind1'].lower()
+            ind2_clean = strategy_info['normalized_ind2'].lower()
+            filename = f"gap_go_{ranking_type}_{strategy_info['rank']:02d}_{ind1_clean}_{ind2_clean}.py"
+            
+            output_path = os.path.join(output_dir, filename)
+            
+            if os.path.exists(output_path):
+                print(f"  → Skipped (already exists)")
+                summary['skipped'] += 1
+                continue
+            
+            strategy_code = generate_gap_go_strategy(
+                strategy_info['indicator1'],
+                strategy_info['indicator2'],
+                ranking_type,
+                strategy_info['rank']
+            )
+            
+            with open(output_path, 'w') as f:
+                f.write(strategy_code)
+            
+            print(f"  ✓ Created: {filename}")
+            summary['created'] += 1
+            
+        except Exception as e:
+            print(f"  ✗ Error: {e}")
+            summary['errors'] += 1
+    
+    print("\n" + "="*70)
+    print("CONVERSION SUMMARY")
+    print("="*70)
+    print(f"Total analyzed:  {summary['total_analyzed']}")
+    print(f"Created:         {summary['created']}")
+    print(f"Skipped:         {summary['skipped']}")
+    print(f"Errors:          {summary['errors']}")
+    
+    create_gap_go_index(strategies_to_create, indicator_freq)
+    
+    return summary
+
+
+def create_gap_go_index(created_strategies, indicator_freq):
+    """Create an index file for Gap & Go strategies."""
+    output_dir = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/clean_strategies/strategies/gap_and_go_strategies'
+    
+    index_content = f'''"""
+Gap & Go Strategies Index
+-------------------------
+Overview of Gap & Go strategy variations that trade WITH the gap direction.
+
+
+Gap & Go strategies trade in the direction of the gap, expecting momentum continuation.
+Each strategy combines two technical indicators for entry confirmation.
+
+1. Valid gap occurs (≥ 0.3%)
+2. Both indicator conditions are met
+3. Trade in direction of gap (gap up = long, gap down = short)
+
+- Profit target: 1% gain
+- Stop loss: 0.5% loss
+- Market close if neither hit
+
+
+'''
+    
+    profit_strategies = [s for ranking, s in created_strategies if ranking == 'profit']
+    for strategy in sorted(profit_strategies, key=lambda x: x['rank']):
+        index_content += f"- **Rank {strategy['rank']}**: {strategy['indicator1']} + {strategy['indicator2']}\n"
+    
+    index_content += f"\n### Top Success Rate Performers\n"
+    
+    success_strategies = [s for ranking, s in created_strategies if ranking == 'success']
+    for strategy in sorted(success_strategies, key=lambda x: x['rank']):
+        index_content += f"- **Rank {strategy['rank']}**: {strategy['indicator1']} + {strategy['indicator2']}\n"
+    
+    index_content += f'''
+
+
+The following indicators appear most frequently in successful combinations:
+
+'''
+    
+    for indicator, count in sorted(indicator_freq.items(), key=lambda x: x[1], reverse=True)[:15]:
+        index_content += f"- **{indicator}**: Used in {count} strategies\n"
+    
+    index_content += f'''
+
+
+```bash
+cd gap_and_go_strategies
+python gap_go_profit_01_rsi_bearish_bb_squeeze_active.py
+```
+
+```bash
+cd ../..
+python run_all.py --filter gap_go
+```
+
+
+Use the pattern from existing strategies:
+
+```python
+from utils import BaseStrategy
+
+class GapGoCustomStrategy(BaseStrategy):
+    def calculate_indicators(self, df):
+        return df
+        
+    def get_entry_conditions(self, df):
+        valid_gap = (df['Gap_Up']) | (df['Gap_Down'])
+        condition1 = # Your first indicator
+        condition2 = # Your second indicator
+        return valid_gap & condition1 & condition2
+```
+
+
+- **Minimum Trades**: All original strategies had 100+ trades
+- **Time Period**: Tested on historical SPY data
+- **Risk Management**: Built-in profit targets and stop losses
+- **No Look-Ahead Bias**: All indicators properly shifted
+
+
+These strategies were generated from combinations of 65+ technical indicators,
+testing all pairs and ranking by profit and success rate.
+Only the top performers are included here.
+'''
+    
+    index_path = os.path.join(output_dir, 'README.md')
+    with open(index_path, 'w') as f:
+        f.write(index_content)
+    
+    print(f"\nCreated Gap & Go strategies index at: {index_path}")
+
+
+def main():
+    """Main function to run Gap & Go batch conversion."""
+    summary = batch_convert_gap_go_strategies()
+    
+    print("\n" + "="*70)
+    print("NEXT STEPS:")
+    print("="*70)
+    print("1. Review created strategies in strategies/gap_and_go_strategies/")
+    print("2. Test strategies with: python run_all.py")
+    print("3. Check README.md for strategy overview")
+    print("4. Consider creating more combinations if needed")
+    print("\nNote: Only top 15 strategies of each type were created")
+    print("to avoid overwhelming the system with 200 similar files.")
+
+
+if __name__ == "__main__":
+    main()

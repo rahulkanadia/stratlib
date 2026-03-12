@@ -1,0 +1,119 @@
+import pandas as pd
+import numpy as np
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_overnight_gaps(df):
+    """Calculate overnight gaps and their statistics."""
+    df['PrevClose'] = df['Close'].shift(1)
+    df['OvernightGap'] = df['Open'] - df['PrevClose']
+    df['OvernightGapPct'] = df['OvernightGap'] / df['PrevClose'] * 100
+    df['AvgOvernightGap'] = df['OvernightGapPct'].abs().rolling(window=20).mean().shift(1)
+    return df
+
+def calculate_rolling_average_drop(df, window=21):
+    """Calculate rolling average of drops on red days."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=window).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def analyze_dip_strategy_with_gaps(df, initial_investment=16000, gap_threshold=0.5):
+    """
+    Implement DIP strategy filtered by overnight gap size.
+    Only trade when overnight gap is larger than threshold.
+    """
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    df = calculate_overnight_gaps(df)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:  # Need history for calculations
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        overnight_gap_pct = abs(current_day['OvernightGapPct']) if pd.notna(current_day['OvernightGapPct']) else 0
+        
+        if avg_drop <= 0 or overnight_gap_pct < gap_threshold:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            trades.append({
+                'Date': current_day['Date'],
+                'Entry': entry_price,
+                'Exit': exit_price,
+                'Profit/Loss': profit_loss,
+                'Gap%': overnight_gap_pct
+            })
+    
+    return trades
+
+def main():
+    df = load_data('../7J0OK1VR.csv')
+    
+    gap_thresholds = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
+    results = []
+    
+    print("=== Overnight Gap Filter Optimization Results ===")
+    
+    for threshold in gap_thresholds:
+        trades = analyze_dip_strategy_with_gaps(df, gap_threshold=threshold)
+        
+        if trades:
+            total_profit = sum(t['Profit/Loss'] for t in trades)
+            num_trades = len(trades)
+            success_rate = sum(1 for t in trades if t['Profit/Loss'] > 0) / num_trades
+            avg_gap = sum(t['Gap%'] for t in trades) / num_trades
+            
+            results.append({
+                'Gap Threshold': threshold,
+                'Total Trades': num_trades,
+                'Success Rate': success_rate,
+                'Total Profit': total_profit,
+                'Avg Gap%': avg_gap
+            })
+    
+    results_df = pd.DataFrame(results)
+    print(results_df.to_string(index=False))
+    
+    if results:
+        best_idx = results_df['Success Rate'].idxmax()
+        best_threshold = results_df.iloc[best_idx]['Gap Threshold']
+        best_rate = results_df.iloc[best_idx]['Success Rate']
+        
+        print(f"\nBest Gap Threshold: {best_threshold}%")
+        print(f"Best Success Rate: {best_rate:.2%}")
+        
+        final_trades = analyze_dip_strategy_with_gaps(df, gap_threshold=best_threshold)
+        print(f"\nFinal Results with {best_threshold}% gap threshold:")
+        print(f"Total Trades: {len(final_trades)}")
+        print(f"Total Profit: ${sum(t['Profit/Loss'] for t in final_trades):,.2f}")
+
+if __name__ == "__main__":
+    main()

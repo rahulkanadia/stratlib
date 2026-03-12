@@ -1,0 +1,145 @@
+import pandas as pd
+from datetime import datetime
+
+def generate_rtf_summary():
+    """Generate RTF summary report with tables"""
+    
+    csv_locations = [
+        'two_indicator_all_results.csv',
+        '/mnt/c/Windows/System32/two_indicator_all_results.csv',
+        '../two_indicator_all_results.csv'
+    ]
+    
+    all_results = None
+    for location in csv_locations:
+        try:
+            all_results = pd.read_csv(location)
+            print(f"Found results file at: {location}")
+            break
+        except:
+            continue
+    
+    if all_results is None:
+        print("Error: Could not find two_indicator_all_results.csv")
+        return
+    
+    top_success = all_results.nlargest(10, 'Success Rate')
+    top_profit = all_results.nlargest(10, 'Total Profit')
+    top_roi = all_results.nlargest(10, 'ROI')
+    
+    total_strategies = len(all_results)
+    profitable_strategies = len(all_results[all_results['Total Profit'] > 0])
+    avg_success_rate = all_results['Success Rate'].mean()
+    avg_profit = all_results['Total Profit'].mean()
+    best_success = all_results['Success Rate'].max()
+    best_profit = all_results['Total Profit'].max()
+    
+    rtf_content = r'''{\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang1033{\fonttbl{\f0\fswiss\fcharset0 Arial;}{\f1\fmodern\fcharset0 Courier New;}}
+{\colortbl ;\red0\green0\blue255;\red0\green128\blue0;\red255\green0\blue0;}
+{\*\generator Riched20 10.0.19041}\viewkind4\uc1 
+\pard\sa200\sl276\slmult1\b\f0\fs32 TWO-INDICATOR GAP TRADING STRATEGIES - COMPREHENSIVE ANALYSIS\b0\fs22\par
+\par
+\b\fs28 EXECUTIVE SUMMARY\b0\fs22\par
+This document presents the results of testing ''' + f"{total_strategies:,}" + r''' two-indicator gap trading strategies on SPY data from 2020-2024. Each strategy combines two technical indicators from a pool of 100 indicators, creating 4,950 unique combinations. All strategies were tested with an initial investment of $16,000 and are free from look-ahead bias.\par
+\par
+\b\fs24 Key Findings:\b0\fs22\par
+- Total Strategies Tested: ''' + f"{total_strategies:,}" + r'''\par
+- Profitable Strategies: ''' + f"{profitable_strategies:,}" + f" ({profitable_strategies/total_strategies*100:.1f}%)" + r'''\par
+- Average Success Rate: ''' + f"{avg_success_rate:.2f}%" + r'''\par
+- Average Profit: $''' + f"{avg_profit:,.2f}" + r'''\par
+- Best Success Rate: ''' + f"{best_success:.2f}%" + r'''\par
+- Best Total Profit: $''' + f"{best_profit:,.2f}" + r'''\par
+\par
+\b\fs28\cf1 TOP 10 STRATEGIES BY SUCCESS RATE\cf0\b0\fs22\par
+\par
+\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrt\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 '''
+
+    rtf_content += r'''\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx5800\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl\b Rank\cell Strategy (Indicator 1 + Indicator 2)\cell Success Rate\cell Total Trades\cell Total Profit\cell ROI\cell Final Equity\cell\b0\row'''
+
+    for i, (_, row) in enumerate(top_success.iterrows(), 1):
+        rtf_content += r'''\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 \clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx5800\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl '''
+        rtf_content += f"{i}\\cell {row['Strategy']}\\cell {row['Success Rate']:.2f}%\\cell {row['Total Trades']}\\cell ${row['Total Profit']:,.2f}\\cell {row['ROI']:.2f}%\\cell ${row['Final Equity']:,.2f}\\cell\\row"
+
+    rtf_content += r'''\pard\par
+\par
+\b\fs28\cf2 TOP 10 STRATEGIES BY TOTAL PROFIT\cf0\b0\fs22\par
+\par
+\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrt\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 '''
+
+    rtf_content += r'''\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx6000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7300\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl\b Rank\cell Strategy (Indicator 1 + Indicator 2)\cell Total Profit\cell Success Rate\cell Total Trades\cell ROI\cell Final Equity\cell\b0\row'''
+
+    for i, (_, row) in enumerate(top_profit.iterrows(), 1):
+        rtf_content += r'''\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 \clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx6000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7300\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl '''
+        rtf_content += f"{i}\\cell {row['Strategy']}\\cell ${row['Total Profit']:,.2f}\\cell {row['Success Rate']:.2f}%\\cell {row['Total Trades']}\\cell {row['ROI']:.2f}%\\cell ${row['Final Equity']:,.2f}\\cell\\row"
+
+    rtf_content += r'''\pard\par
+\par
+\b\fs28 TOP 10 STRATEGIES BY ROI\b0\fs22\par
+\par
+\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrt\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 '''
+
+    rtf_content += r'''\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx5700\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7000\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrt\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl\b Rank\cell Strategy (Indicator 1 + Indicator 2)\cell ROI\cell Total Profit\cell Success Rate\cell Total Trades\cell Final Equity\cell\b0\row'''
+
+    for i, (_, row) in enumerate(top_roi.iterrows(), 1):
+        rtf_content += r'''\trowd\trgaph70\trleft-70\trbrdrl\brdrs\brdrw10 \trbrdrr\brdrs\brdrw10 \trbrdrb\brdrs\brdrw10 \clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx1000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx4500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx5700\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx7000\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx8500\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx9700\clbrdrl\brdrw10\brdrs\clbrdrr\brdrw10\brdrs\clbrdrb\brdrw10\brdrs \cellx11200\pard\intbl '''
+        rtf_content += f"{i}\\cell {row['Strategy']}\\cell {row['ROI']:.2f}%\\cell ${row['Total Profit']:,.2f}\\cell {row['Success Rate']:.2f}%\\cell {row['Total Trades']}\\cell ${row['Final Equity']:,.2f}\\cell\\row"
+
+    rtf_content += r'''\pard\par
+\par
+\b\fs28 STRATEGY PERFORMANCE ANALYSIS\b0\fs22\par
+\par
+\b\fs24 Most Common Winning Indicators:\b0\fs22\par'''
+
+    all_indicators = []
+    for _, row in top_success.iterrows():
+        all_indicators.extend([row['Indicator1'], row['Indicator2']])
+    for _, row in top_profit.iterrows():
+        all_indicators.extend([row['Indicator1'], row['Indicator2']])
+    
+    indicator_counts = pd.Series(all_indicators).value_counts().head(10)
+    
+    for indicator, count in indicator_counts.items():
+        rtf_content += f"\\par - {indicator}: Appears in {count} top strategies"
+
+    rtf_content += r'''\par
+\par
+\b\fs24 Key Insights:\b0\fs22\par
+\par
+1. \b Indicator Synergy:\b0 The best performing strategies combine indicators from different categories (e.g., momentum + volume, trend + pattern).\par
+\par
+2. \b Trade Frequency:\b0 More selective strategies (fewer trades) tend to have higher success rates but may generate lower total profits.\par
+\par
+3. \b Risk-Reward Balance:\b0 The highest ROI strategies balance good success rates with adequate trade frequency.\par
+\par
+4. \b Market Conditions:\b0 Strategies that incorporate market condition filters (volatility, volume, patterns) tend to outperform single-indicator approaches.\par
+\par
+\b\fs28 IMPLEMENTATION RECOMMENDATIONS\b0\fs22\par
+\par
+\b\fs24 For Conservative Traders:\b0\fs22\par
+Focus on high success rate strategies from the first table. These offer more consistent wins but may have fewer trading opportunities.\par
+\par
+\b\fs24 For Growth-Oriented Traders:\b0\fs22\par
+Consider strategies from the total profit table. These generate more absolute returns but may have more volatility.\par
+\par
+\b\fs24 For Balanced Approach:\b0\fs22\par
+Look at the ROI table for strategies that optimize the profit-to-risk ratio.\par
+\par
+\b\fs24 Risk Management:\b0\fs22\par
+1. Always use stop losses\par
+2. Consider position sizing based on strategy success rate\par
+3. Monitor for strategy degradation over time\par
+4. Be aware of transaction costs impact on high-frequency strategies\par
+\par
+\cf3\b\fs24 Disclaimer:\cf0\b0\fs22\par
+Past performance does not guarantee future results. All trading involves risk. These results are based on historical data from 2020-2024 and should not be considered as investment advice.\par
+\par
+\b Report Generated:\b0 ''' + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + r'''\par
+}'''
+
+    with open('TWO_INDICATOR_STRATEGIES_SUMMARY.rtf', 'w') as f:
+        f.write(rtf_content)
+    
+    print("RTF summary report generated: TWO_INDICATOR_STRATEGIES_SUMMARY.rtf")
+
+if __name__ == "__main__":
+    generate_rtf_summary()

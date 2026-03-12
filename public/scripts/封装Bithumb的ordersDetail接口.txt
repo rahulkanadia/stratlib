@@ -1,0 +1,117 @@
+
+> 策略名称
+
+封装Bithumb的ordersDetail接口
+
+> 策略作者
+
+小小梦
+
+> 策略描述
+
+应部分用户需求，使用bithumb 的时候希望查询 某个ID 的订单信息，
+封装了 交易所的这个接口 :  https:
+只能查询完全成交的订单，其它状态的订单是查询不到的。
+
+接口信息如下：
+```
+    
+```
+
+
+```
+function main() {
+    var id = exchange.Sell(-1, 0.01)        
+                                            
+    Sleep(5000)
+    var order = $.GetOrder(exchange, id)    
+    Log(order)
+}
+```
+
+
+
+> 源码 (javascript)
+
+``` javascript
+function GetOrder(e, id, type){
+    
+    var symbol = e.GetCurrency()
+    var arr = symbol.split("_")
+    var currency = arr[0]
+    
+    var ret = e.IO("api", "POST", "/info/order_detail", "order_id=" + id + "&type=" + type + "&currency=" + currency)
+    
+    
+    
+    
+    
+    
+    var order = null
+    var typeValue = null
+    if(type == "Buy"){
+        typeValue = ORDER_TYPE_BUY
+    } else {
+        typeValue = ORDER_TYPE_SELL
+    }
+    if(ret){
+        order = {
+            Info      : ret,                 
+            Id        : id,                  
+            Price     : ret.data[0].price,   
+            Amount    : ret.data[0].units_traded,  
+            DealAmount: ret.data[0].units_traded,  
+            AvgPrice  : ret.data[0].price,         
+            Status    : ORDER_STATE_CLOSED,        
+            Type      : typeValue,                 
+        }
+    }
+    
+    return order
+}
+
+$.GetOrder = function(e, id, type){
+    if(e.GetName() != "Bithumb"){
+        Log("the parameter e is not bithumb!")
+        return null
+    }
+    
+    if(typeof(id) == "undefined"){
+        Log("id 参数错误！")
+        return null
+    }
+    
+    if(type == "Buy"){
+        GetOrder(e, id, type)
+    } else if (type == "Sell") {
+        GetOrder(e, id, type)
+    } else {
+        var buyOrder = GetOrder(e, id, "Buy")
+        if(buyOrder){
+            return buyOrder
+        }
+        var sellOrder = GetOrder(e, id, "Sell")
+        if(sellOrder){
+            return sellOrder
+        } else {
+            return null
+        }
+    }
+}
+
+function main() {
+    var id = exchange.Sell(-1, 0.01)        
+                                            
+    Sleep(5000)
+    var order = $.GetOrder(exchange, id)    
+    Log(order)
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2018-12-29 12:06:11

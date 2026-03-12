@@ -1,0 +1,286 @@
+import pandas as pd
+import numpy as np
+import warnings
+from sklearn.ensemble import RandomForestRegressor
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', None)      # Display all rows
+pd.set_option('display.max_columns', None)   # Display all columns
+pd.set_option('display.width', None)         # Adjust display width
+pd.set_option('display.max_colwidth', None)  # Display full content in each column
+
+def load_data(file_name):
+    df = pd.read_csv(file_name)
+    df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d', errors='coerce')
+    df.dropna(subset=['Date'], inplace=True)
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_cpci_data(cpci_file_name):
+    cpci_df = pd.read_csv(cpci_file_name)
+    cpci_df.rename(columns={'foll': 'Date'}, inplace=True)  # Rename if needed
+    cpci_df['Date'] = pd.to_datetime(cpci_df['Date'], format='%m/%d/%Y', errors='coerce')
+    cpci_df.dropna(subset=['Date'], inplace=True)
+    cpci_df.sort_values('Date', inplace=True)
+    cpci_df.reset_index(drop=True, inplace=True)
+    return cpci_df
+
+def calculate_day_range(day):
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap, reverse=False):
+    if reverse:
+        return 'Long' if gap > 0 else 'Short'
+    else:
+        return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    number_of_shares = position_size / entry_price
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:
+        profit_loss = number_of_shares * (entry_price - exit_price)
+    return profit_loss
+
+def precompute_trades(df, cpci_df, initial_investment):
+    trades = []
+    total_days = len(df)
+
+    df = df.merge(cpci_df[['Date', 'Last']], on='Date', how='left', suffixes=('', '_CPCI'))
+    df.rename(columns={'Last': 'CPCI'}, inplace=True)
+
+    for i_day in range(1, total_days):
+        prev_day = df.iloc[i_day - 1]
+        curr_day = df.iloc[i_day]
+        current_date = curr_day['Date']
+
+        cpci_value = curr_day['CPCI']
+        if pd.isna(cpci_value):
+            continue
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction_standard = determine_trade_direction(gap, reverse=False)
+        trade_direction_reversed = determine_trade_direction(gap, reverse=True)
+
+        entry_price = curr_day['Open']
+
+        exit_price_standard, _ = check_gap_closure(trade_direction_standard, curr_day, prev_day['Close'])
+        profit_loss_standard = calculate_profit_loss(trade_direction_standard, entry_price, exit_price_standard, initial_investment)
+
+        exit_price_reversed, _ = check_gap_closure(trade_direction_reversed, curr_day, prev_day['Close'])
+        profit_loss_reversed = calculate_profit_loss(trade_direction_reversed, entry_price, exit_price_reversed, initial_investment)
+
+        trades.append({
+            'Date': current_date,
+            'Gap': gap,
+            'Trade Direction Standard': trade_direction_standard,
+            'Trade Direction Reversed': trade_direction_reversed,
+            'Entry Price': entry_price,
+            'Exit Price Standard': exit_price_standard,
+            'Exit Price Reversed': exit_price_reversed,
+            'CPCI': cpci_value,
+            'Profit/Loss Standard': profit_loss_standard,
+            'Profit/Loss Reversed': profit_loss_reversed
+        })
+
+    trades_df = pd.DataFrame(trades)
+    return trades_df
+
+def find_best_cpci_conditions_optimized(trades_df, step=0.01):
+    cpci_min_value = trades_df['CPCI'].min()
+    cpci_max_value = trades_df['CPCI'].max()
+
+    cpci_values = np.round(np.arange(cpci_min_value, cpci_max_value + step, step), 2)
+    cpci_pairs = [(i, j) for i in cpci_values for j in cpci_values if i < j]
+
+    cpci_array = trades_df['CPCI'].values
+    profit_loss_standard = trades_df['Profit/Loss Standard'].values
+    profit_loss_reversed = trades_df['Profit/Loss Reversed'].values
+
+    results = []
+    cpci_array_broadcasted = cpci_array[:, np.newaxis]
+
+    for i, j in cpci_pairs:
+        mask = (cpci_array_broadcasted > i) & (cpci_array_broadcasted < j)
+        total_profit_standard = np.sum(profit_loss_standard[mask.flatten()])
+        total_profit_reversed = np.sum(profit_loss_reversed[mask.flatten()])
+
+        if total_profit_standard > total_profit_reversed:
+            total_profit = total_profit_standard
+            trade_direction = 'Standard'
+        else:
+            total_profit = total_profit_reversed
+            trade_direction = 'Reversed'
+
+        results.append({
+            'CPCI_Min': i,
+            'CPCI_Max': j,
+            'Total Profit': total_profit,
+            'Trade Direction': trade_direction
+        })
+
+    results_df = pd.DataFrame(results)
+    best_idx = results_df['Total Profit'].idxmax()
+    best_cpci_min = results_df.loc[best_idx, 'CPCI_Min']
+    best_cpci_max = results_df.loc[best_idx, 'CPCI_Max']
+    best_profit = results_df.loc[best_idx, 'Total Profit']
+    best_trade_direction = results_df.loc[best_idx, 'Trade Direction']
+
+    results_df_sorted = results_df.sort_values(by='Total Profit', ascending=False).reset_index(drop=True)
+    return best_cpci_min, best_cpci_max, best_profit, best_trade_direction, results_df_sorted
+
+def analyze_spy_gaps_optimized(main_file, cpci_file, initial_investment):
+    print("Loading trading data...")
+    df = load_data(main_file)
+    print("Loading CPCI data...")
+    cpci_df = load_cpci_data(cpci_file)
+
+    print("Precomputing trades...")
+    trades_df = precompute_trades(df, cpci_df, initial_investment)
+
+    if trades_df.empty:
+        print("No valid trades found.")
+        return None, None, None, None, None
+
+    print(f"Total Valid Trades: {len(trades_df)}")
+
+    best_cpci_min, best_cpci_max, best_profit, best_trade_direction, all_results = find_best_cpci_conditions_optimized(
+        trades_df=trades_df,
+        step=0.01
+    )
+
+    return trades_df, all_results, best_cpci_min, best_cpci_max, best_trade_direction
+
+def count_winning_trades(trades_df, trade_direction):
+    if trade_direction == 'Standard':
+        return trades_df[trades_df['Profit/Loss Standard'] > 0].shape[0]
+    else:
+        return trades_df[trades_df['Profit/Loss Reversed'] > 0].shape[0]
+
+def count_losing_trades(trades_df, trade_direction):
+    if trade_direction == 'Standard':
+        return trades_df[trades_df['Profit/Loss Standard'] < 0].shape[0]
+    else:
+        return trades_df[trades_df['Profit/Loss Reversed'] < 0].shape[0]
+
+def iterative_cpci_optimization(trades_df, initial_interval_expansion=0.1, max_iterations=10, min_interval_width=0.05, n_estimators=100, random_state=42):
+    """
+    Iteratively optimize the CPCI range using a Random Forest model feedback.
+    """
+    trades_df = trades_df.copy()
+    if 'Profit_Diff' not in trades_df.columns:
+        trades_df['Profit_Diff'] = trades_df['Profit/Loss Standard'] - trades_df['Profit/Loss Reversed']
+    trades_df.dropna(subset=['CPCI', 'Profit_Diff'], inplace=True)
+
+    cpci_min = trades_df['CPCI'].min()
+    cpci_max = trades_df['CPCI'].max()
+
+    cpci_range_width = cpci_max - cpci_min
+    cpci_min -= cpci_range_width * initial_interval_expansion
+    cpci_max += cpci_range_width * initial_interval_expansion
+
+    history = []
+
+    for iteration in range(max_iterations):
+        current_width = cpci_max - cpci_min
+        if current_width < min_interval_width:
+            print("Interval width below minimum threshold, stopping optimization.")
+            break
+
+        subset = trades_df[(trades_df['CPCI'] >= cpci_min) & (trades_df['CPCI'] <= cpci_max)]
+        if subset.empty:
+            print("No trades found in the current CPCI range. Stopping.")
+            break
+
+        X = subset[['CPCI']]
+        y = subset['Profit_Diff']
+
+        model = RandomForestRegressor(n_estimators=n_estimators, random_state=random_state)
+        model.fit(X, y)
+
+        cpci_grid = np.linspace(cpci_min, cpci_max, 200).reshape(-1, 1)
+        predictions = model.predict(cpci_grid)
+
+        max_idx = np.argmax(predictions)
+        peak_cpci = cpci_grid[max_idx, 0]
+        peak_profit = predictions[max_idx]
+
+        history.append({
+            'Iteration': iteration + 1,
+            'CPCI_Min': cpci_min,
+            'CPCI_Max': cpci_max,
+            'Peak_CPCI': peak_cpci,
+            'Peak_Predicted_Profit': peak_profit
+        })
+
+        print(f"Iteration {iteration + 1}: Best CPCI ~ {peak_cpci:.2f} with predicted profit diff {peak_profit:.2f}")
+
+        new_width = current_width / 2
+        cpci_min = peak_cpci - new_width/2
+        cpci_max = peak_cpci + new_width/2
+
+    return cpci_min, cpci_max, history
+
+
+if __name__ == "__main__":
+    main_file = '9UZ09RGM.csv'  # Your SPY CSV file
+    cpci_file = 'CPCI.csv'      # Your CPCI CSV file
+    initial_investment = 16000
+
+    trades_df, all_results, best_cpci_min, best_cpci_max, best_trade_direction = analyze_spy_gaps_optimized(main_file, cpci_file, initial_investment)
+    if trades_df is None or trades_df.empty:
+        print("No trades available for further optimization.")
+    else:
+        trades_df['Profit_Diff'] = trades_df['Profit/Loss Standard'] - trades_df['Profit/Loss Reversed']
+
+        print("\n=== Starting Iterative CPCI Optimization ===")
+        best_cpci_min_iter, best_cpci_max_iter, search_history = iterative_cpci_optimization(trades_df, max_iterations=10, min_interval_width=0.05)
+
+        print("\n=== Iterative Optimization Complete ===")
+        print(f"Final Optimized CPCI Range: {best_cpci_min_iter:.2f} to {best_cpci_max_iter:.2f}")
+        print("Search History:")
+        for record in search_history:
+            print(record)
+
+        final_filtered = trades_df[(trades_df['CPCI'] >= best_cpci_min_iter) & (trades_df['CPCI'] <= best_cpci_max_iter)]
+        if not final_filtered.empty:
+            final_avg_diff = final_filtered['Profit_Diff'].mean()
+            print(f"Average Profit Difference in the final narrowed range: {final_avg_diff:.2f}")
+        else:
+            print("No trades fall within the final narrowed CPCI range.")

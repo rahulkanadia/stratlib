@@ -1,0 +1,329 @@
+import pandas as pd
+import numpy as np
+from itertools import product
+import warnings
+from multiprocessing import Pool, cpu_count
+import sys
+import time
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', None)      
+pd.set_option('display.max_columns', None)   
+pd.set_option('display.width', None)         
+pd.set_option('display.max_colwidth', None)  
+
+global_trades_df = None
+global_initial_investment = None
+
+def init_worker(trades_df, initial_investment):
+    """
+    Initializes global variables for each worker process.
+    """
+    global global_trades_df
+    global global_initial_investment
+    global_trades_df = trades_df
+    global_initial_investment = initial_investment
+
+def compute_total_profit_combined(params):
+    """
+    Worker function to compute total profit for a given (n, T, i, j) combination.
+    """
+    n, T, i, j = params
+    trades_filtered_atr = global_trades_df[global_trades_df[f'ATR_{n}'] <= T]
+    if trades_filtered_atr.empty:
+        return (n, T, i, j, 0.0)
+    
+    trades_filtered_vix = trades_filtered_atr[
+        (trades_filtered_atr['VIX_Open'] >= i) & 
+        (trades_filtered_atr['VIX_Open'] <= j)
+    ]
+    total_profit = trades_filtered_vix['Profit/Loss'].sum() if not trades_filtered_vix.empty else 0.0
+    return (n, T, i, j, total_profit)
+
+def load_data(file_name):
+    """
+    Loads the CSV file into a DataFrame, sorts it by date, and resets the index.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    """
+    Loads the VIX data from a CSV file into a DataFrame, sorts it by date, and resets the index.
+    Ensures that the 'Date' column is in datetime format.
+    """
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'], dayfirst=True, errors='coerce')
+    vix_df.dropna(subset=['Date'], inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+def calculate_true_range(df):
+    """
+    Calculates the True Range (TR) for each day.
+    """
+    df['Previous Close'] = df['Close'].shift(1)
+    df['High-Low'] = df['High'] - df['Low']
+    df['High-PrevClose'] = abs(df['High'] - df['Previous Close'])
+    df['Low-PrevClose'] = abs(df['Low'] - df['Previous Close'])
+    df['TR'] = df[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+    return df
+
+def calculate_atr(df, n):
+    """
+    Calculates the Average True Range (ATR) over 'n' consecutive days.
+    """
+    n = int(n)  # Ensure n is an integer
+    df = calculate_true_range(df)
+    df[f'ATR_{n}'] = df['TR'].rolling(window=n).mean()
+    return df
+
+def calculate_day_range(day):
+    """
+    Calculates the trading range of a day (High - Low).
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    Calculates the gap between the previous day's close and the current day's open.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    """
+    Checks if the gap meets the specified conditions:
+    - At least $0.20
+    - Between 15% and 85% of the previous day's range
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    """
+    Determines the trade direction based on the gap:
+    - Gap up: Short position
+    - Gap down: Long position
+    """
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """
+    Checks if the gap is closed during the trading day and returns the exit price.
+    """
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long position
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    Calculates the profit or loss of a trade.
+    """
+    number_of_shares = position_size / entry_price
+
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:  # Short position
+        profit_loss = number_of_shares * (entry_price - exit_price)
+
+    return profit_loss
+
+def precompute_trades(df, vix_df, initial_investment, n_values):
+    """
+    Precomputes all valid trades, calculates ATR for all n_values, and assigns VIX_Open.
+    Returns a DataFrame containing all trades with their respective ATRs and VIX_Open values.
+    """
+    print("Calculating ATR for all n_values...")
+    for n in n_values:
+        print(f"Calculating ATR for n={n}...")
+        df = calculate_atr(df, n)
+    
+    print("Assigning VIX_Open values to trades...")
+    vix_open_series = vix_df.set_index('Date')['OPEN']
+    df['VIX_Open'] = df['Date'].apply(lambda x: vix_open_series.get(x - pd.Timedelta(days=1), np.nan))
+    
+    print("Identifying valid trades based on gap conditions...")
+    trades = []
+    total_days = len(df)
+    for i_day in range(1, total_days):
+        prev_day = df.iloc[i_day - 1]
+        curr_day = df.iloc[i_day]
+        current_date = curr_day['Date']
+        vix_open = curr_day['VIX_Open']
+
+        if pd.isna(vix_open):
+            continue  # Skip if no VIX data
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue  # Avoid division by zero
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+        entry_price = curr_day['Open']
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+
+        trades.append({
+            'Date': current_date,
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed,
+            'VIX_Open': vix_open,
+            'Profit/Loss': profit_loss
+        })
+
+    trades_df = pd.DataFrame(trades)
+    print(f"Total Valid Trades: {len(trades_df)}")
+
+    print("Assigning ATR values to trades...")
+    for n in n_values:
+        trades_df[f'ATR_{n}'] = df.set_index('Date').loc[trades_df['Date'], f'ATR_{n}'].values
+
+    return trades_df
+
+def generate_parameter_combinations(n_values, T_values, i_values, j_values):
+    """
+    Generator that yields valid (n, T, i, j) parameter combinations where i < j.
+    """
+    for n, T, i, j in product(n_values, T_values, i_values, j_values):
+        if i < j:
+            yield (n, T, i, j)
+
+def main():
+    """
+    Main function to orchestrate the combined ATR and VIX optimization.
+    """
+    initial_investment = 16000  # $16,000 initial investment
+
+    main_file = 'D6CK32X6.csv'
+    vix_file = 'VIX_History.csv'
+
+    n_values = range(2, 21)                 # ATR periods from 2 to 20
+    T_values = np.arange(10, 20.5, 0.1)      # ATR thresholds from 10 to 20 with step 0.1
+
+    i_min = 10.0
+    i_max = 30.0
+    j_min = 10.0
+    j_max = 30.0
+    step = 0.2
+    i_values = np.round(np.arange(i_min, i_max + step, step), 1)
+    j_values = np.round(np.arange(j_min, j_max + step, step), 1)
+
+    print("Loading main trading data...")
+    df = load_data(main_file)
+
+    print("Loading VIX data...")
+    vix_df = load_vix_data(vix_file)
+
+    print("Preprocessing trades...")
+    trades_df = precompute_trades(df, vix_df, initial_investment, n_values)
+
+    param_generator = generate_parameter_combinations(n_values, T_values, i_values, j_values)
+
+    print("Initializing multiprocessing pool...")
+    pool = Pool(processes=cpu_count(), initializer=init_worker, initargs=(trades_df, initial_investment))
+
+    output_file = 'combined_atr_vix_optimization_results.csv'
+    with open(output_file, 'w') as f_out:
+        f_out.write('n,T,i,j,Total Profit\n')
+        
+        chunk_size = 10000000  # Adjust based on available memory and desired performance
+
+        param_iter = generate_parameter_combinations(n_values, T_values, i_values, j_values)
+
+        print(f"Processing parameter combinations in chunks of {chunk_size}...")
+        total_combinations = len(n_values) * len(T_values) * len(i_values) * len(j_values) // 2  # Approximate
+        processed = 0
+        start_time = time.time()
+
+        while True:
+            current_chunk = list(product(n_values, T_values, i_values, j_values))[:chunk_size]
+            current_chunk = [combo for combo in current_chunk if combo[2] < combo[3]]
+            if not current_chunk:
+                break
+
+            results = pool.map(compute_total_profit_combined, current_chunk)
+
+            for result in results:
+                f_out.write(','.join(map(str, result)) + '\n')
+
+            processed += len(current_chunk)
+            elapsed = time.time() - start_time
+            print(f"Processed {processed} combinations in {elapsed:.2f} seconds.")
+
+            for _ in range(len(current_chunk)):
+                try:
+                    next(param_iter)
+                except StopIteration:
+                    break
+
+            if len(current_chunk) < chunk_size:
+                break
+
+    pool.close()
+    pool.join()
+
+    print("Optimization complete. Results saved to", output_file)
+
+    print("Loading optimization results for summary...")
+    results_df = pd.read_csv(output_file)
+    
+    best_result = results_df.loc[results_df['Total Profit'].idxmax()]
+    print("\n=== Combined Optimization Complete ===")
+    print(f"Best Parameters: n={best_result['n']}, T={best_result['T']}, i={best_result['i']}, j={best_result['j']} with Total Profit: ${best_result['Total Profit']:,.2f}\n")
+    
+    top_results = results_df.sort_values(by='Total Profit', ascending=False).reset_index(drop=True)
+    print("Top 100 Parameter Combinations by Total Profit:")
+    print(top_results.head(100).to_string(index=False))
+
+    best_n = best_result['n']
+    best_T = best_result['T']
+    best_i = best_result['i']
+    best_j = best_result['j']
+
+    optimized_trades = trades_df[
+        (trades_df[f'ATR_{int(best_n)}'] <= best_T) & 
+        (trades_df['VIX_Open'] >= best_i) & 
+        (trades_df['VIX_Open'] <= best_j)
+    ]
+
+    num_winning_trades = optimized_trades[optimized_trades['Profit/Loss'] > 0].shape[0]
+    num_losing_trades = optimized_trades[optimized_trades['Profit/Loss'] < 0].shape[0]
+
+    print("\n=== Optimization Summary ===")
+    print(f"Best Parameters:")
+    print(f"  ATR Period (n): {best_n}")
+    print(f"  ATR Threshold (T): {best_T}")
+    print(f"  VIX Condition i: {best_i}")
+    print(f"  VIX Condition j: {best_j}")
+    print(f"  Total Profit: ${best_result['Total Profit']:,.2f}")
+    print(f"  Number of Winning Trades: {num_winning_trades}")
+    print(f"  Number of Losing Trades: {num_losing_trades}")
+
+if __name__ == "__main__":
+    main()

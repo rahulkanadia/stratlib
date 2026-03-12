@@ -1,0 +1,132 @@
+import pandas as pd
+import numpy as np
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_rolling_average_drop(df, window=21):
+    """Calculate rolling average of drops on red days."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=window).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    return df
+
+def count_consecutive_red_days(df):
+    """Count consecutive red days up to current day."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['ConsecutiveRed'] = 0
+    
+    consecutive_count = 0
+    for i in range(len(df)):
+        if df.iloc[i]['IsRedDay']:
+            consecutive_count += 1
+        else:
+            consecutive_count = 0
+        df.loc[i, 'ConsecutiveRed'] = consecutive_count
+    
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def analyze_dip_with_consecutive_filter(df, initial_investment=16000, rolling_window=21, min_consecutive=2):
+    """Implement DIP strategy after N consecutive red days."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df, window=rolling_window)
+    df = count_consecutive_red_days(df)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i == 0:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        consecutive_red = df.iloc[i-1]['ConsecutiveRed']  # Check previous day's count
+        
+        if avg_drop <= 0:
+            continue
+        
+        if consecutive_red < min_consecutive:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            trades.append({
+                'Date': current_day['Date'],
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'Prev Red Days': consecutive_red,
+                'Profit/Loss': profit_loss
+            })
+    
+    return pd.DataFrame(trades)
+
+def optimize_consecutive_days(file_name, initial_investment=16000):
+    """Optimize minimum consecutive red days for best success rate."""
+    df = load_data(file_name)
+    
+    best_consecutive = None
+    best_success_rate = 0
+    results = []
+    
+    for consecutive in range(1, 6):
+        trades_df = analyze_dip_with_consecutive_filter(df, initial_investment, 21, consecutive)
+        
+        if len(trades_df) >= 100:  # Only consider if we have at least 100 trades
+            total_trades = len(trades_df)
+            winning_trades = len(trades_df[trades_df['Profit/Loss'] > 0])
+            success_rate = winning_trades / total_trades if total_trades > 0 else 0
+            total_profit = trades_df['Profit/Loss'].sum()
+            avg_red_days = trades_df['Prev Red Days'].mean() if len(trades_df) > 0 else 0
+            
+            results.append({
+                'Min Consecutive': consecutive,
+                'Total Trades': total_trades,
+                'Success Rate': success_rate,
+                'Total Profit': total_profit,
+                'Avg Red Days': avg_red_days
+            })
+            
+            if success_rate > best_success_rate:
+                best_success_rate = success_rate
+                best_consecutive = consecutive
+    
+    results_df = pd.DataFrame(results)
+    print("=== Consecutive Red Days Optimization Results ===")
+    print(results_df.sort_values('Success Rate', ascending=False))
+    
+    if best_consecutive:
+        print(f"\nBest Minimum Consecutive Red Days: {best_consecutive}")
+        print(f"Best Success Rate: {best_success_rate:.2%}")
+        
+        final_trades = analyze_dip_with_consecutive_filter(df, initial_investment, 21, best_consecutive)
+        print(f"\nFinal Results after {best_consecutive}+ consecutive red days:")
+        print(f"Total Trades: {len(final_trades)}")
+        print(f"Total Profit: ${final_trades['Profit/Loss'].sum():,.2f}")
+    
+    return best_consecutive, best_success_rate
+
+if __name__ == "__main__":
+    file_name = "../7J0OK1VR.csv"
+    initial_investment = 16000
+    best_consecutive, best_rate = optimize_consecutive_days(file_name, initial_investment)

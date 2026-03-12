@@ -1,0 +1,494 @@
+import pandas as pd
+import numpy as np
+from itertools import product
+import warnings
+from multiprocessing import Pool, cpu_count
+import os
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+pd.set_option('display.max_colwidth', None)
+
+def load_data(file_name):
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'], dayfirst=True, errors='coerce')
+    vix_df.dropna(subset=['Date'], inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+def load_5min_data(file_name_5min):
+    df_5 = pd.read_csv(file_name_5min)
+    df_5['Time'] = pd.to_datetime(df_5['Time'], format='%m/%d/%Y %H:%M', errors='coerce')
+    df_5.dropna(subset=['Time'], inplace=True)
+    df_5.sort_values('Time', inplace=True)
+    df_5.reset_index(drop=True, inplace=True)
+    df_5['Date_only'] = df_5['Time'].dt.date
+    return df_5
+
+def calculate_day_range(day):
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure(trade_direction, day_data, prev_close):
+    if trade_direction == 'Short':
+        if day_data['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = day_data['Close']
+            gap_closed = False
+    else:  # Long
+        if day_data['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = day_data['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    number_of_shares = position_size / entry_price
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:
+        profit_loss = number_of_shares * (entry_price - exit_price)
+    return profit_loss
+
+def precompute_trades(df, vix_df, initial_investment):
+    trades = []
+    total_days = len(df)
+
+    vix_open_dict = {}
+    vix_dates = set(vix_df['Date'])
+    min_vix_date = vix_df['Date'].min()
+    
+    for current_date in df['Date']:
+        prev_date = current_date - pd.Timedelta(days=1)
+        while prev_date not in vix_dates and prev_date > min_vix_date:
+            prev_date -= pd.Timedelta(days=1)
+        if prev_date in vix_dates:
+            vix_open = vix_df.loc[vix_df['Date'] == prev_date, 'OPEN'].values[0]
+            vix_open_dict[current_date] = vix_open
+        else:
+            vix_open_dict[current_date] = np.nan
+
+    for i_day in range(1, total_days):
+        prev_day = df.iloc[i_day - 1]
+        curr_day = df.iloc[i_day]
+        current_date = curr_day['Date']
+        vix_open = vix_open_dict.get(current_date, np.nan)
+
+        if pd.isna(vix_open):
+            continue
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+        entry_price = curr_day['Open']
+        exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+
+        trades.append({
+            'Date': current_date,
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed,
+            'VIX_Open': vix_open,
+            'Profit/Loss': profit_loss
+        })
+
+    trades_df = pd.DataFrame(trades)
+    return trades_df
+
+def find_best_vix_conditions_optimized(trades_df, i_min=10.0, i_max=30.0, j_min=10.0, j_max=30.0, step=0.1):
+    i_values = np.round(np.arange(i_min, j_max + step, step), 1)
+    j_values = np.round(np.arange(j_min, j_max + step, step), 1)
+
+    i_grid, j_grid = np.meshgrid(i_values, j_values)
+    i_flat = i_grid.flatten()
+    j_flat = j_grid.flatten()
+    valid_pairs_mask = i_flat < j_flat
+    i_valid = i_flat[valid_pairs_mask]
+    j_valid = j_flat[valid_pairs_mask]
+
+    vix_open_array = trades_df['VIX_Open'].values
+    profit_loss_array = trades_df['Profit/Loss'].values
+
+    results = []
+    for iv, jv in zip(i_valid, j_valid):
+        cond = (vix_open_array > iv) & (vix_open_array < jv)
+        occurrence_count = cond.sum()
+        if occurrence_count > 0:
+            subset_profits = profit_loss_array[cond]
+            success_count = (subset_profits > 0).sum()
+            total_profit = subset_profits.sum()
+            success_rate = success_count / occurrence_count if occurrence_count > 0 else 0.0
+        else:
+            success_count = 0
+            total_profit = 0.0
+            success_rate = 0.0
+        results.append((iv, jv, occurrence_count, success_count, success_rate, total_profit))
+
+    results_df = pd.DataFrame(results, columns=['i', 'j', 'OccurrenceCount', 'SuccessCount', 'SuccessRate', 'TotalProfit'])
+    results_df_sorted = results_df.sort_values(by=['TotalProfit', 'OccurrenceCount'], ascending=[False, False]).reset_index(drop=True)
+
+    if not results_df_sorted.empty:
+        best_i = results_df_sorted.loc[0, 'i']
+        best_j = results_df_sorted.loc[0, 'j']
+        best_occurrence_count = results_df_sorted.loc[0, 'OccurrenceCount']
+        best_success_count = results_df_sorted.loc[0, 'SuccessCount']
+        best_success_rate = results_df_sorted.loc[0, 'SuccessRate']
+        best_profit = results_df_sorted.loc[0, 'TotalProfit']
+    else:
+        best_i = None
+        best_j = None
+        best_occurrence_count = 0
+        best_success_count = 0
+        best_success_rate = 0.0
+        best_profit = 0.0
+
+    return best_i, best_j, results_df_sorted
+
+def calculate_atr(df, n):
+    n = int(n)
+    df['Previous Close'] = df['Close'].shift(1)
+    df['High-Low'] = df['High'] - df['Low']
+    df['High-PrevClose'] = abs(df['High'] - df['Previous Close'])
+    df['Low-PrevClose'] = abs(df['Low'] - df['Previous Close'])
+    df['TR'] = df[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+    df['ATR'] = df['TR'].rolling(window=n).mean()
+    return df
+
+def compute_atr_metrics_sequential(args):
+    trades_df, df, n, T, initial_investment = args
+    df_with_atr = calculate_atr(df.copy(), n)
+    trades_with_atr = trades_df.merge(df_with_atr[['Date', 'ATR']], on='Date', how='left')
+    trades_with_atr = trades_with_atr.dropna(subset=['ATR'])
+    trades_filtered = trades_with_atr[trades_with_atr['ATR'] <= T]
+
+    if not trades_filtered.empty:
+        occurrence_count = trades_filtered.shape[0]
+        profit_losses = trades_filtered['Profit/Loss'].values
+        success_count = (profit_losses > 0).sum()
+        total_profit = profit_losses.sum()
+        success_rate = success_count / occurrence_count if occurrence_count > 0 else 0.0
+    else:
+        occurrence_count = 0
+        success_count = 0
+        total_profit = 0.0
+        success_rate = 0.0
+
+    return (n, T, occurrence_count, success_count, success_rate, total_profit)
+
+def optimize_atr_parameters(trades_df, df, initial_investment, n_values, T_values):
+    param_combinations = list(product(n_values, T_values))
+    args_list = [(trades_df.copy(), df.copy(), n, T, initial_investment) for n, T in param_combinations]
+
+    with Pool(processes=cpu_count()) as pool:
+        results = pool.map(compute_atr_metrics_sequential, args_list)
+
+    results_df = pd.DataFrame(results, columns=['n', 'T', 'OccurrenceCount', 'SuccessCount', 'SuccessRate', 'TotalProfit'])
+    results_df_sorted = results_df.sort_values(by=['SuccessRate', 'OccurrenceCount'], ascending=[False, False]).reset_index(drop=True)
+
+    if not results_df_sorted.empty:
+        best_n = int(results_df_sorted.loc[0, 'n'])
+        best_T = results_df_sorted.loc[0, 'T']
+        best_occurrence_count = results_df_sorted.loc[0, 'OccurrenceCount']
+        best_success_count = results_df_sorted.loc[0, 'SuccessCount']
+        best_success_rate = results_df_sorted.loc[0, 'SuccessRate']
+        best_total_profit_atr = results_df_sorted.loc[0, 'TotalProfit']
+    else:
+        best_n = None
+        best_T = None
+        best_occurrence_count = 0
+        best_success_count = 0
+        best_success_rate = 0.0
+        best_total_profit_atr = 0.0
+
+    return best_n, best_T, results_df_sorted
+
+def precompute_trades_with_5min(df, vix_df, df_5, initial_investment):
+    total_days = len(df)
+
+    vix_open_dict = {}
+    vix_dates = set(vix_df['Date'])
+    min_vix_date = vix_df['Date'].min()
+    
+    for current_date in df['Date']:
+        prev_date = current_date - pd.Timedelta(days=1)
+        while prev_date not in vix_dates and prev_date > min_vix_date:
+            prev_date -= pd.Timedelta(days=1)
+        if prev_date in vix_dates:
+            vix_open = vix_df.loc[vix_df['Date'] == prev_date, 'OPEN'].values[0]
+            vix_open_dict[current_date] = vix_open
+        else:
+            vix_open_dict[current_date] = np.nan
+
+    potential_trades = []
+    for i_day in range(1, total_days):
+        prev_day = df.iloc[i_day - 1]
+        curr_day = df.iloc[i_day]
+        current_date = curr_day['Date']
+        vix_open = vix_open_dict.get(current_date, np.nan)
+
+        if pd.isna(vix_open):
+            continue
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+        potential_trades.append({
+            'Date': current_date,
+            'Trade Direction': trade_direction,
+            'Previous Close': prev_day['Close'],
+            'High': curr_day['High'],
+            'Low': curr_day['Low'],
+            'Close': curr_day['Close'],
+            'VIX_Open': vix_open
+        })
+
+    if not potential_trades:
+        return pd.DataFrame()
+
+    potential_trades_df = pd.DataFrame(potential_trades)
+    potential_trades_df['Date_only'] = potential_trades_df['Date'].dt.date
+
+    df_5_first_candle = df_5.groupby('Date_only').first().reset_index()
+
+    trades_merged = potential_trades_df.merge(df_5_first_candle[['Date_only', 'Last', 'Volume']], 
+                                              on='Date_only', how='left', suffixes=('', '_5min'))
+
+    finalized_trades = []
+    for _, row in trades_merged.iterrows():
+        trade_direction = row['Trade Direction']
+        entry_price = row['Last']
+        exit_price, gap_closed = check_gap_closure(trade_direction, row, row['Previous Close'])
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+        finalized_trades.append({
+            'Date': row['Date'],
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed,
+            'VIX_Open': row['VIX_Open'],
+            'Profit/Loss': profit_loss,
+            'Volume_5min': row['Volume']
+        })
+
+    return pd.DataFrame(finalized_trades)
+
+def find_best_volume_threshold_for_success(trades_df, volume_column='Volume_5min', num_levels=10):
+    """
+    Find the best volume threshold that yields the highest success rate.
+    Tiebreak by OccurrenceCount, then by TotalProfit.
+    """
+    if trades_df.empty:
+        return None, pd.DataFrame()
+
+    volumes = trades_df[volume_column].dropna()
+    if volumes.empty:
+        return None, pd.DataFrame()
+
+    percentiles = np.linspace(0, 1, 100)
+    candidate_thresholds = volumes.quantile(percentiles)
+
+    results = []
+    for vol_threshold in candidate_thresholds:
+        filtered = trades_df[trades_df[volume_column] <= vol_threshold]
+        occurrence_count = len(filtered)
+        if occurrence_count > 0:
+            success_count = (filtered['Profit/Loss'] > 0).sum()
+            success_rate = success_count / occurrence_count if occurrence_count > 0 else 0.0
+            total_profit = filtered['Profit/Loss'].sum()
+        else:
+            success_count = 0
+            success_rate = 0.0
+            total_profit = 0.0
+
+        results.append((vol_threshold, occurrence_count, success_count, success_rate, total_profit))
+
+    results_df = pd.DataFrame(results, columns=['Volume_Threshold', 'OccurrenceCount', 'SuccessCount', 'SuccessRate', 'TotalProfit'])
+    results_df_sorted = results_df.sort_values(by=['SuccessRate', 'OccurrenceCount', 'TotalProfit'], ascending=[False, False, False]).reset_index(drop=True)
+
+    if not results_df_sorted.empty:
+        best_threshold = results_df_sorted.loc[0, 'Volume_Threshold']
+    else:
+        best_threshold = None
+
+    return best_threshold, results_df_sorted
+
+def analyze_spy_gaps_combined_and_optimize_volume_for_success(main_file, vix_file, data_5min_file, initial_investment, 
+                                                              vix_i_min=10.0, vix_i_max=30.0, 
+                                                              vix_j_min=10.0, vix_j_max=30.0, vix_step=0.1,
+                                                              atr_n_min=2, atr_n_max=20, atr_T_min=10.0, atr_T_max=20.0, atr_T_step=0.1):
+    print("Loading stock data...")
+    df = load_data(main_file)
+    print("Loading VIX data...")
+    vix_df = load_vix_data(vix_file)
+    print("Loading 5-minute data...")
+    df_5 = load_5min_data(data_5min_file)
+
+    print("Precomputing trades based on gap and applying 5-min entry price...")
+    trades_df = precompute_trades_with_5min(df, vix_df, df_5, initial_investment)
+
+    if trades_df.empty:
+        print("No valid trades found based on initial criteria.")
+        return None
+
+    print(f"Total Valid Trades: {len(trades_df)}")
+
+    best_i, best_j, all_vix_results = find_best_vix_conditions_optimized(
+        trades_df=trades_df,
+        i_min=vix_i_min,
+        i_max=vix_i_max,
+        j_min=vix_j_min,
+        j_max=vix_j_max,
+        step=vix_step
+    )
+
+    if best_i is None or best_j is None:
+        print("No suitable VIX conditions found.")
+        return None
+
+    trades_best_vix = trades_df[(trades_df['VIX_Open'] > best_i) & (trades_df['VIX_Open'] < best_j)]
+    if trades_best_vix.empty:
+        print("No trades found with the best VIX conditions.")
+        return best_i, best_j, None
+
+    n_values = range(atr_n_min, atr_n_max + 1)
+    T_values = np.round(np.arange(atr_T_min, atr_T_max + atr_T_step, atr_T_step), 1)
+
+    best_n, best_T, all_atr_results = optimize_atr_parameters(
+        trades_df=trades_best_vix,
+        df=df,
+        initial_investment=initial_investment,
+        n_values=n_values,
+        T_values=T_values
+    )
+
+    if best_n is None or best_T is None:
+        print("No suitable ATR parameters found.")
+        return best_i, best_j, None, None
+
+    print(f"\nAnalyzing trades with best VIX (profit-based) and ATR (success-based) parameters: i={best_i}, j={best_j}, n={best_n}, T={best_T}")
+    df_with_atr = calculate_atr(df.copy(), best_n)
+    trades_final = trades_df.merge(df_with_atr[['Date', 'ATR']], on='Date', how='left')
+    trades_final = trades_final[
+        (trades_final['VIX_Open'] > best_i) & 
+        (trades_final['VIX_Open'] < best_j) & 
+        (trades_final['ATR'] <= best_T)
+    ]
+
+    if trades_final.empty:
+        print("No trades meet both VIX and ATR conditions.")
+        return best_i, best_j, best_n, best_T, 0.0
+
+    print(f"Total trades after applying best VIX and ATR conditions: {len(trades_final)}")
+
+    print("\nOptimizing Volume Threshold for Success Rate...")
+    best_threshold, volume_results_df = find_best_volume_threshold_for_success(trades_final, volume_column='Volume_5min', num_levels=10)
+
+    if best_threshold is not None:
+        filtered_trades = trades_final[trades_final['Volume_5min'] <= best_threshold]
+        occurrence_count = len(filtered_trades)
+        success_count = (filtered_trades['Profit/Loss'] > 0).sum()
+        success_rate = success_count / occurrence_count if occurrence_count > 0 else 0.0
+        total_profit = filtered_trades['Profit/Loss'].sum()
+
+        print("\n=== Volume Threshold Optimization (Success-Based) ===")
+        print(f"Best Volume Threshold: {best_threshold:.0f}")
+        print(f"Occurrences: {occurrence_count}, Successes: {success_count}, Success Rate: {success_rate:.2f}, Total Profit: ${total_profit:,.2f}\n")
+
+        print("Top 10 Volume Thresholds (Success-Based):")
+        print(volume_results_df.head(10).to_string(index=False))
+
+        df_min_30 = volume_results_df[volume_results_df['OccurrenceCount'] >= 30].head(10)
+        print("\n=== Top 10 Volume Thresholds with >=30 Occurrences ===")
+        if not df_min_30.empty:
+            print(df_min_30.to_string(index=False))
+        else:
+            print("No volume thresholds meet the >=30 occurrences criterion.")
+
+        df_min_50 = volume_results_df[volume_results_df['OccurrenceCount'] >= 50].head(10)
+        print("\n=== Top 10 Volume Thresholds with >=50 Occurrences ===")
+        if not df_min_50.empty:
+            print(df_min_50.to_string(index=False))
+        else:
+            print("No volume thresholds meet the >=50 occurrences criterion.")
+
+        print("\nFinal filtered trades details:")
+        if not filtered_trades.empty:
+            print(filtered_trades.to_string(index=False))
+        else:
+            print("No trades meet the final volume threshold conditions.")
+
+        return best_i, best_j, best_n, best_T, best_threshold, total_profit, success_rate
+    else:
+        print("No volume threshold could be determined for improved success rate.")
+        return best_i, best_j, best_n, best_T, None, 0.0, 0.0
+
+if __name__ == "__main__":
+    initial_investment = 16000
+    main_file = '7J0OK1VR.csv'       # Replace with your daily data
+    vix_file = 'VIX_History.csv'     # Replace with your VIX data
+    data_5min_file = '5_MINUTES_DATA.csv' # Replace with your 5-minute data
+
+    if not os.path.exists(main_file):
+        print(f"Error: Main data file '{main_file}' not found.")
+    elif not os.path.exists(vix_file):
+        print(f"Error: VIX data file '{vix_file}' not found.")
+    elif not os.path.exists(data_5min_file):
+        print(f"Error: 5-min data file '{data_5min_file}' not found.")
+    else:
+        analyze_spy_gaps_combined_and_optimize_volume_for_success(
+            main_file=main_file,
+            vix_file=vix_file,
+            data_5min_file=data_5min_file,
+            initial_investment=initial_investment,
+            vix_i_min=10.0,
+            vix_i_max=30.0,
+            vix_j_min=10.0,
+            vix_j_max=30.0,
+            vix_step=0.1,
+            atr_n_min=2,
+            atr_n_max=20,
+            atr_T_min=10.0,
+            atr_T_max=20.0,
+            atr_T_step=0.1
+        )

@@ -1,0 +1,1066 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    """Loads VIX data and merges with main dataframe."""
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date', 'OPEN': 'VIX_Open'}, inplace=True)
+    return vix_df
+
+def calculate_rolling_average_drop(df, window=21):
+    """Calculate rolling average of drops on red days."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=window).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def run_base_strategy(df, initial_investment=16000):
+    """Base DIP strategy for comparison."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        
+        if avg_drop <= 0:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            trades.append({
+                'Date': current_day['Date'],
+                'Entry': entry_price,
+                'Exit': exit_price,
+                'Profit/Loss': profit_loss
+            })
+    
+    return trades
+
+def opt_overnight_gap(df, initial_investment=16000):
+    """Trade only when overnight gap exceeds threshold."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['PrevClose'] = df['Close'].shift(1)
+    df['OvernightGapPct'] = ((df['Open'] - df['PrevClose']) / df['PrevClose'] * 100).abs()
+    
+    best_results = {'threshold': 0, 'trades': 0, 'profit': 0, 'success_rate': 0}
+    
+    for gap_threshold in [0.5, 1.0, 1.5, 2.0]:
+        trades = []
+        
+        for i in range(len(df)):
+            if i < 21:
+                continue
+            
+            current_day = df.iloc[i]
+            avg_drop = current_day['RollingAvgDrop']
+            gap_pct = current_day['OvernightGapPct']
+            
+            if avg_drop <= 0 or pd.isna(gap_pct) or gap_pct < gap_threshold:
+                continue
+            
+            open_price = current_day['Open']
+            low_price = current_day['Low']
+            close_price = current_day['Close']
+            
+            desired_entry = open_price - avg_drop
+            
+            if low_price <= desired_entry:
+                entry_price = desired_entry
+                exit_price = close_price
+                profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+                trades.append(profit_loss)
+        
+        if trades:
+            profit = sum(trades)
+            success_rate = sum(1 for t in trades if t > 0) / len(trades)
+            
+            if success_rate > best_results['success_rate']:
+                best_results = {
+                    'threshold': gap_threshold,
+                    'trades': len(trades),
+                    'profit': profit,
+                    'success_rate': success_rate
+                }
+    
+    return best_results
+
+def opt_market_breadth(df, initial_investment=16000):
+    """Trade when market breadth is weak (oversold)."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['DailyReturn'] = df['Close'].pct_change()
+    df['IsUpDay'] = df['DailyReturn'] > 0
+    df['BreadthRatio'] = df['IsUpDay'].rolling(window=10).mean()
+    
+    best_results = {'threshold': 0, 'trades': 0, 'profit': 0, 'success_rate': 0}
+    
+    for breadth_threshold in [0.2, 0.3, 0.4, 0.5]:
+        trades = []
+        
+        for i in range(len(df)):
+            if i < 21:
+                continue
+            
+            current_day = df.iloc[i]
+            avg_drop = current_day['RollingAvgDrop']
+            breadth = current_day['BreadthRatio']
+            
+            if avg_drop <= 0 or pd.isna(breadth) or breadth > breadth_threshold:
+                continue
+            
+            open_price = current_day['Open']
+            low_price = current_day['Low']
+            close_price = current_day['Close']
+            
+            desired_entry = open_price - avg_drop
+            
+            if low_price <= desired_entry:
+                entry_price = desired_entry
+                exit_price = close_price
+                profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+                trades.append(profit_loss)
+        
+        if trades:
+            profit = sum(trades)
+            success_rate = sum(1 for t in trades if t > 0) / len(trades)
+            
+            if success_rate > best_results['success_rate']:
+                best_results = {
+                    'threshold': breadth_threshold,
+                    'trades': len(trades),
+                    'profit': profit,
+                    'success_rate': success_rate
+                }
+    
+    return best_results
+
+def opt_intraday_momentum(df, initial_investment=16000):
+    """Trade when opening 30min shows weakness."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['IntradayRange'] = df['High'] - df['Low']
+    df['OpenToLow'] = df['Open'] - df['Low']
+    df['WeakOpen'] = df['OpenToLow'] > (df['IntradayRange'] * 0.6)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        weak_open = current_day['WeakOpen']
+        
+        if avg_drop <= 0 or not weak_open:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Weak Opening',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_seasonal_pattern(df, initial_investment=16000):
+    """Trade based on quarterly seasonal patterns."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['Quarter'] = df['Date'].dt.quarter
+    
+    best_results = {'quarter': 0, 'trades': 0, 'profit': 0, 'success_rate': 0}
+    
+    for quarter in [1, 2, 3, 4]:
+        trades = []
+        
+        for i in range(len(df)):
+            if i < 21:
+                continue
+            
+            current_day = df.iloc[i]
+            avg_drop = current_day['RollingAvgDrop']
+            day_quarter = current_day['Quarter']
+            
+            if avg_drop <= 0 or day_quarter != quarter:
+                continue
+            
+            open_price = current_day['Open']
+            low_price = current_day['Low']
+            close_price = current_day['Close']
+            
+            desired_entry = open_price - avg_drop
+            
+            if low_price <= desired_entry:
+                entry_price = desired_entry
+                exit_price = close_price
+                profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+                trades.append(profit_loss)
+        
+        if trades:
+            profit = sum(trades)
+            success_rate = sum(1 for t in trades if t > 0) / len(trades)
+            
+            if success_rate > best_results['success_rate']:
+                best_results = {
+                    'quarter': quarter,
+                    'trades': len(trades),
+                    'profit': profit,
+                    'success_rate': success_rate
+                }
+    
+    return best_results
+
+def opt_volume_spike(df, initial_investment=16000):
+    """Trade on days with volume spikes."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['AvgVolume'] = df['Volume'].rolling(window=20).mean()
+    df['VolumeRatio'] = df['Volume'] / df['AvgVolume']
+    
+    best_results = {'ratio': 0, 'trades': 0, 'profit': 0, 'success_rate': 0}
+    
+    for volume_ratio in [1.5, 2.0, 2.5, 3.0]:
+        trades = []
+        
+        for i in range(len(df)):
+            if i < 21:
+                continue
+            
+            current_day = df.iloc[i]
+            avg_drop = current_day['RollingAvgDrop']
+            vol_ratio = current_day['VolumeRatio']
+            
+            if avg_drop <= 0 or pd.isna(vol_ratio) or vol_ratio < volume_ratio:
+                continue
+            
+            open_price = current_day['Open']
+            low_price = current_day['Low']
+            close_price = current_day['Close']
+            
+            desired_entry = open_price - avg_drop
+            
+            if low_price <= desired_entry:
+                entry_price = desired_entry
+                exit_price = close_price
+                profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+                trades.append(profit_loss)
+        
+        if trades:
+            profit = sum(trades)
+            success_rate = sum(1 for t in trades if t > 0) / len(trades)
+            
+            if success_rate > best_results['success_rate']:
+                best_results = {
+                    'ratio': volume_ratio,
+                    'trades': len(trades),
+                    'profit': profit,
+                    'success_rate': success_rate
+                }
+    
+    return best_results
+
+def opt_support_level(df, initial_investment=16000):
+    """Trade when price approaches recent support levels."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['Support20'] = df['Low'].rolling(window=20).min()
+    df['NearSupport'] = (df['Low'] - df['Support20']) / df['Support20'] < 0.02
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        near_support = current_day['NearSupport']
+        
+        if avg_drop <= 0 or not near_support:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Near Support',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_volatility_expansion(df, initial_investment=16000):
+    """Trade when volatility expands significantly."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['Returns'] = df['Close'].pct_change()
+    df['Volatility'] = df['Returns'].rolling(window=20).std()
+    df['VolMA'] = df['Volatility'].rolling(window=20).mean()
+    df['VolExpansion'] = df['Volatility'] > (df['VolMA'] * 1.5)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 40:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        vol_expansion = current_day['VolExpansion']
+        
+        if avg_drop <= 0 or not vol_expansion:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Volatility Expansion',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_options_expiry(df, initial_investment=16000):
+    """Trade around monthly options expiry dates."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['DayOfWeek'] = df['Date'].dt.dayofweek
+    df['DayOfMonth'] = df['Date'].dt.day
+    df['IsThirdWeek'] = (df['DayOfMonth'] >= 15) & (df['DayOfMonth'] <= 21)
+    df['IsFriday'] = df['DayOfWeek'] == 4
+    df['NearExpiry'] = df['IsThirdWeek']  # Simplified - week of expiry
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        near_expiry = current_day['NearExpiry']
+        
+        if avg_drop <= 0 or not near_expiry:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Options Expiry Week',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_trend_strength(df, initial_investment=16000):
+    """Trade based on trend strength using ADX concept."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['MA50'] = df['Close'].rolling(window=50).mean()
+    df['MA200'] = df['Close'].rolling(window=200).mean()
+    df['StrongUptrend'] = (df['MA50'] > df['MA200']) & (df['Close'] > df['MA50'])
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 200:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        strong_uptrend = current_day['StrongUptrend']
+        
+        if avg_drop <= 0 or not strong_uptrend:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Strong Uptrend',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_put_call_ratio(df, vix_df, initial_investment=16000):
+    """Trade based on fear indicators (using VIX as proxy)."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df = pd.merge(df, vix_df[['Date', 'VIX_Open']], on='Date', how='left')
+    df['VIX_Open'].fillna(method='ffill', inplace=True)
+    
+    df['HighFear'] = df['VIX_Open'] > 25
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        high_fear = current_day['HighFear']
+        
+        if avg_drop <= 0 or not high_fear:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'High Fear (VIX>25)',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_relative_strength(df, initial_investment=16000):
+    """Trade when SPY shows relative strength."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['Returns'] = df['Close'].pct_change()
+    df['CumReturns'] = (1 + df['Returns']).cumprod()
+    df['RS_Ratio'] = df['CumReturns'] / df['CumReturns'].rolling(window=20).mean()
+    df['StrongRS'] = df['RS_Ratio'] > 1.02
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        strong_rs = current_day['StrongRS']
+        
+        if avg_drop <= 0 or not strong_rs:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Strong Relative Strength',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_news_sentiment(df, initial_investment=16000):
+    """Trade after extreme daily moves (news-driven)."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['DailyMove'] = ((df['Close'] - df['Open']) / df['Open'] * 100).abs()
+    df['BigNewsDay'] = df['DailyMove'].shift(1) > 2.0
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        big_news = current_day['BigNewsDay']
+        
+        if avg_drop <= 0 or not big_news:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'After Big Moves',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_opening_range(df, initial_investment=16000):
+    """Trade when price breaks below opening range."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['OpeningRangeHigh'] = df['High'].rolling(window=5).max()
+    df['OpeningRangeLow'] = df['Low'].rolling(window=5).min()
+    df['OpeningRange'] = df['OpeningRangeHigh'] - df['OpeningRangeLow']
+    df['BreakLower'] = df['Low'] < (df['OpeningRangeLow'] - df['OpeningRange'] * 0.1)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        break_lower = current_day['BreakLower']
+        
+        if avg_drop <= 0 or not break_lower:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Opening Range Break',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_dollar_volume(df, initial_investment=16000):
+    """Trade on high dollar volume days."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['DollarVolume'] = df['Volume'] * df['Close']
+    df['AvgDollarVolume'] = df['DollarVolume'].rolling(window=20).mean()
+    df['HighDollarVolume'] = df['DollarVolume'] > (df['AvgDollarVolume'] * 1.5)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        high_dollar_vol = current_day['HighDollarVolume']
+        
+        if avg_drop <= 0 or not high_dollar_vol:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'High Dollar Volume',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_candle_patterns(df, initial_investment=16000):
+    """Trade on bullish reversal candle patterns."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['Body'] = abs(df['Close'] - df['Open'])
+    df['UpperWick'] = df['High'] - df[['Open', 'Close']].max(axis=1)
+    df['LowerWick'] = df[['Open', 'Close']].min(axis=1) - df['Low']
+    df['Range'] = df['High'] - df['Low']
+    
+    df['Hammer'] = (df['Body'] < df['Range'] * 0.3) & (df['LowerWick'] > df['Body'] * 2)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        hammer = current_day['Hammer']
+        
+        if avg_drop <= 0 or not hammer:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Hammer Pattern',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_inside_days(df, initial_investment=16000):
+    """Trade after volatility contraction (inside days)."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['PrevHigh'] = df['High'].shift(1)
+    df['PrevLow'] = df['Low'].shift(1)
+    df['InsideDay'] = (df['High'] < df['PrevHigh']) & (df['Low'] > df['PrevLow'])
+    df['ConsecutiveInside'] = df['InsideDay'].rolling(window=2).sum() >= 2
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        consecutive_inside = current_day['ConsecutiveInside']
+        
+        if avg_drop <= 0 or not consecutive_inside:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Consecutive Inside Days',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_vwap_distance(df, initial_investment=16000):
+    """Trade when price is far below VWAP."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['TypicalPrice'] = (df['High'] + df['Low'] + df['Close']) / 3
+    df['VWAP'] = (df['TypicalPrice'] * df['Volume']).rolling(window=20).sum() / df['Volume'].rolling(window=20).sum()
+    df['VWAPDistance'] = (df['Low'] - df['VWAP']) / df['VWAP']
+    df['FarBelowVWAP'] = df['VWAPDistance'] < -0.02
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        far_below = current_day['FarBelowVWAP']
+        
+        if avg_drop <= 0 or not far_below:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Far Below VWAP',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_fibonacci(df, initial_investment=16000):
+    """Trade at Fibonacci retracement levels."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['High20'] = df['High'].rolling(window=20).max()
+    df['Low20'] = df['Low'].rolling(window=20).min()
+    df['Range20'] = df['High20'] - df['Low20']
+    df['Fib618'] = df['High20'] - (df['Range20'] * 0.618)
+    df['NearFib618'] = abs(df['Low'] - df['Fib618']) / df['Fib618'] < 0.01
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        near_fib = current_day['NearFib618']
+        
+        if avg_drop <= 0 or not near_fib:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Fibonacci 61.8%',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_range_expansion(df, initial_investment=16000):
+    """Trade on days with range expansion."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['DailyRange'] = df['High'] - df['Low']
+    df['AvgRange'] = df['DailyRange'].rolling(window=20).mean()
+    df['RangeExpansion'] = df['DailyRange'] > (df['AvgRange'] * 1.5)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        range_expansion = current_day['RangeExpansion']
+        
+        if avg_drop <= 0 or not range_expansion:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Range Expansion',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def opt_index_rebalancing(df, initial_investment=16000):
+    """Trade around index rebalancing periods."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df)
+    
+    df['MonthEnd'] = df['Date'].dt.is_month_end
+    df['QuarterEnd'] = df['Date'].dt.is_quarter_end
+    df['RebalancePeriod'] = df['MonthEnd'] | df['QuarterEnd']
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 21:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        rebalance = current_day['RebalancePeriod']
+        
+        if avg_drop <= 0 or not rebalance:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            trades.append(profit_loss)
+    
+    profit = sum(trades) if trades else 0
+    success_rate = sum(1 for t in trades if t > 0) / len(trades) if trades else 0
+    
+    return {
+        'filter': 'Index Rebalancing',
+        'trades': len(trades),
+        'profit': profit,
+        'success_rate': success_rate
+    }
+
+def main():
+    """Run all optimizations and display results."""
+    print("Loading data...")
+    df = load_data('../7J0OK1VR.csv')
+    vix_df = load_vix_data('../VIX_History.csv')
+    
+    print("\nRunning base strategy...")
+    base_trades = run_base_strategy(df)
+    base_profit = sum(t['Profit/Loss'] for t in base_trades)
+    base_success = sum(1 for t in base_trades if t['Profit/Loss'] > 0) / len(base_trades) if base_trades else 0
+    
+    print(f"\nBase Strategy Results:")
+    print(f"Total Trades: {len(base_trades)}")
+    print(f"Success Rate: {base_success:.2%}")
+    print(f"Total Profit: ${base_profit:,.2f}")
+    
+    print("\n" + "="*60)
+    print("RUNNING ALL OPTIMIZATIONS")
+    print("="*60)
+    
+    results = []
+    
+    optimizations = [
+        ("Overnight Gap Filter", opt_overnight_gap),
+        ("Market Breadth", opt_market_breadth),
+        ("Intraday Momentum", opt_intraday_momentum),
+        ("Seasonal Pattern", opt_seasonal_pattern),
+        ("Volume Spike", opt_volume_spike),
+        ("Support Level Bounce", opt_support_level),
+        ("Volatility Expansion", opt_volatility_expansion),
+        ("Options Expiry", opt_options_expiry),
+        ("Trend Strength", opt_trend_strength),
+        ("Put/Call Ratio", lambda df: opt_put_call_ratio(df, vix_df)),
+        ("Relative Strength", opt_relative_strength),
+        ("News Sentiment", opt_news_sentiment),
+        ("Opening Range", opt_opening_range),
+        ("Dollar Volume", opt_dollar_volume),
+        ("Candle Patterns", opt_candle_patterns),
+        ("Inside Days", opt_inside_days),
+        ("VWAP Distance", opt_vwap_distance),
+        ("Fibonacci Levels", opt_fibonacci),
+        ("Range Expansion", opt_range_expansion),
+        ("Index Rebalancing", opt_index_rebalancing)
+    ]
+    
+    for name, opt_func in optimizations:
+        print(f"\nRunning {name}...")
+        try:
+            result = opt_func(df)
+            result['name'] = name
+            results.append(result)
+            print(f"Success Rate: {result['success_rate']:.2%}")
+            print(f"Total Trades: {result['trades']}")
+            print(f"Total Profit: ${result['profit']:,.2f}")
+        except Exception as e:
+            print(f"Error in {name}: {e}")
+    
+    print("\n" + "="*60)
+    print("OPTIMIZATION SUMMARY")
+    print("="*60)
+    
+    sorted_by_success = sorted(results, key=lambda x: x['success_rate'], reverse=True)
+    
+    print("\nTop 5 by Success Rate:")
+    for i, r in enumerate(sorted_by_success[:5]):
+        print(f"{i+1}. {r['name']}: {r['success_rate']:.2%} ({r['trades']} trades, ${r['profit']:,.2f})")
+    
+    sorted_by_profit = sorted(results, key=lambda x: x['profit'], reverse=True)
+    
+    print("\nTop 5 by Total Profit:")
+    for i, r in enumerate(sorted_by_profit[:5]):
+        print(f"{i+1}. {r['name']}: ${r['profit']:,.2f} ({r['success_rate']:.2%}, {r['trades']} trades)")
+    
+    print("\n" + "="*60)
+    best_overall = sorted_by_success[0]
+    print(f"BEST OVERALL STRATEGY: {best_overall['name']}")
+    print(f"Success Rate: {best_overall['success_rate']:.2%}")
+    print(f"Total Trades: {best_overall['trades']}")
+    print(f"Total Profit: ${best_overall['profit']:,.2f}")
+
+if __name__ == "__main__":
+    main()

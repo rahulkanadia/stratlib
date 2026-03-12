@@ -1,0 +1,242 @@
+
+> 策略名称
+
+大中小三周期跃迁策略V20_现货
+
+> 策略作者
+
+区班量化
+
+> 策略描述
+
+大中小三周期跃迁策略。总的来说，就是大周期指明了市场方向，中周期是当前的操作周期，小周期指出了趋势止步信号。当你进场时，只要你参看了大中小三周期的状态，就可如诸葛亮一般，采取千变万化的策略来应付复杂的市场。如果你的操作周期频率是一天几次，那大周期可以选择日线，中周期可以选择4小时，小周期可以选择30分钟；如果你的操作周期频率是一天几十次，那大周期可以选择4小时，中周期可以选择30分钟，小周期可以选择5分钟；上一个周期始终和下一个周期相差6倍到8倍。
+然后我们再把每个周期的K线与布林线的关系罗列出来，一共有8种状态，三个周期就有8*8*8=512种状态，这512种状态足以应付所有可能出现的盘面，技术能力强的程序员可以把每一种状态的最佳下单点位和止损点位预先设计出来。为了大家有一个讨论的基础，区班主也在发明者平台把策略公开了，欢迎大家在此基础上进行完善。
+然后我们来回测一下，我们可以看到年化29，回撤有点高，达到36%。我们把日志下载下来，并针对回撤进行分析，这就是发明者平台的优势。
+ ![IMG](https:
+  ![IMG](https:
+  ![IMG](https:
+分析下来，主要有以下几个原因：
+1、大中小周期架构虽然比较好，但是小周期对中周期怎样影响的策略不好构思，可以先简化，后面再补上；
+2、行情走空时，应该坚决抛弃仓位
+3、5日均线的指向作用很重要，在策略里没有体现
+4、布林线之外的快速下跌，应该抛售
+5、上涨理由跌破时，应该及时止盈和止损
+ ![IMG](https:
+经过有针对性的改进后，迭代了几十次，我们终于把年化率做到了210，回撤为16.4，交易次数也降了下来。
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|Interval|10|轮询周期(秒)|
+
+
+> 源码 (javascript)
+
+``` javascript
+
+
+
+var midStatus = 0; 
+var bigStatus = 0; 
+var beforeBigStatus = 0; 
+var operPrice;
+var markTime=0;
+
+function mySell(rate){
+   var account = _C(exchange.GetAccount);
+   var ticker = _C(exchange.GetTicker);
+   var nowPrice=ticker.Sell;
+     
+   
+   var allAmount=account.Balance+account.Stocks*ticker.Sell; 
+   var cashRatio=account.Balance*100/allAmount;
+   
+   if(cashRatio<90){  
+      if(rate==1){ 
+          if(cashRatio<80){
+              $.Sell(allAmount*0.1/nowPrice);
+              Log("现金比率",cashRatio+10);
+          }else{
+              $.Sell(allAmount*0.05/nowPrice);
+              Log("现金比率",cashRatio+5);
+          }
+      }else{
+          if(cashRatio<75){
+              $.Sell(allAmount*0.2/nowPrice);
+              Log("现金比率",cashRatio+20);
+          }else{
+              $.Sell(allAmount*0.1/nowPrice);
+              Log("现金比率",cashRatio+10);
+          }
+      }
+   }
+}
+
+function myBuy(rate){
+   var account = _C(exchange.GetAccount);
+   var ticker = _C(exchange.GetTicker);
+   var nowPrice=ticker.Sell;
+     
+   
+   var allAmount=account.Balance+account.Stocks*ticker.Sell; 
+   var cashRatio=account.Balance*100/allAmount;
+   
+   if(cashRatio>10){  
+      if(rate==1){ 
+          if(cashRatio>20){
+              $.Buy(allAmount*0.1/nowPrice);
+              Log("现金比率",cashRatio-10);
+          }else{
+              $.Buy(allAmount*0.05/nowPrice);
+              Log("现金比率",cashRatio-5);
+          }
+      }else{
+          if(cashRatio>25){
+              $.Buy(allAmount*0.2/nowPrice);
+              Log("现金比率",cashRatio-20);
+          }else{
+              $.Buy(allAmount*0.1/nowPrice);
+              Log("现金比率",cashRatio-10);
+          }
+      }
+   }
+}
+
+function oper(){
+    var ticker = _C(exchange.GetTicker);
+    var nowPrice=ticker.Sell;
+   
+    var h1records = exchange.GetRecords(PERIOD_H1);
+    var h1boll;var h1upLine;var h1midLine;var h1downLine;
+    var h1bw;
+    if(h1records && h1records.length > 20) {
+        h1boll = TA.BOLL(h1records, 20, 2);
+        h1upLine = h1boll[0][h1records.length-1];
+        h1midLine = h1boll[1][h1records.length-1];
+        h1downLine = h1boll[2][h1records.length-1];
+    }
+    
+    var drecords = exchange.GetRecords(PERIOD_D1);
+    var dboll;var dupLine;var dmidLine;var ddownLine;
+    var dbw;var beforePrice;
+    if(drecords && drecords.length > 20) {
+        dboll = TA.BOLL(drecords, 20, 2);
+        dupLine = dboll[0][drecords.length-1];
+        dmidLine = dboll[1][drecords.length-1];
+        ddownLine = dboll[2][drecords.length-1];
+        dbw=dupLine-dmidLine;
+        beforePrice=(drecords[drecords.length-2].Open+drecords[drecords.length-2].Close)/2;
+    }
+    
+    if(ticker.Time-markTime<15*60*1000){ 
+        return;
+    }else{
+        markTime=ticker.Time;
+    }
+    
+    if(h1records && h1records.length > 20 && drecords && drecords.length > 20) {
+        if(nowPrice>dupLine+dbw*0.1){
+            bigStatus=0;
+        }else if(nowPrice>dupLine-dbw*0.1){
+            bigStatus=1;
+        }else if(nowPrice>dmidLine+dbw*0.1){
+            bigStatus=2;
+        }else if(nowPrice>dmidLine){
+            bigStatus=3;
+        }else if(nowPrice>dmidLine-dbw*0.1){
+            bigStatus=4;
+        }else if(nowPrice>ddownLine+dbw*0.1){
+            bigStatus=5;
+        }else if(nowPrice>ddownLine-dbw*0.1){
+            bigStatus=6;
+        }else{
+            bigStatus=7;
+        }
+        
+        if(beforePrice>dupLine+dbw*0.1){
+            beforeBigStatus=0;
+        }else if(beforePrice>dupLine-dbw*0.1){
+            beforeBigStatus=1;
+        }else if(beforePrice>dmidLine+dbw*0.1){
+            beforeBigStatus=2;
+        }else if(beforePrice>dmidLine){
+            beforeBigStatus=3;
+        }else if(beforePrice>dmidLine-dbw*0.1){
+            beforeBigStatus=4;
+        }else if(beforePrice>ddownLine+dbw*0.1){
+            beforeBigStatus=5;
+        }else if(beforePrice>ddownLine-dbw*0.1){
+            beforeBigStatus=6;
+        }else{
+            beforeBigStatus=7;
+        }
+        
+        if(nowPrice>h1upLine+h1bw*0.1){
+            midStatus=0;
+        }else if(nowPrice>h1upLine-h1bw*0.1){
+            midStatus=1;
+        }else if(nowPrice>h1midLine+h1bw*0.1){
+            midStatus=2;
+        }else if(nowPrice>h1midLine){
+            midStatus=3;
+        }else if(nowPrice>h1midLine-h1bw*0.1){
+            midStatus=4;
+        }else if(nowPrice>h1downLine+h1bw*0.1){
+            midStatus=5;
+        }else if(nowPrice>h1downLine-h1bw*0.1){
+            midStatus=6;
+        }else{
+            midStatus=7;
+        }
+        
+        if(bigStatus-beforeBigStatus>0){ 
+            if(midStatus==6||midStatus==7){
+                
+                
+                mySell(2);
+            }else if(midStatus==3||midStatus==4){
+                
+                
+                mySell(1);
+            }else{
+                
+            }
+        }else if(bigStatus-beforeBigStatus<0){  
+            if(midStatus==6||midStatus==7){
+                
+                
+                myBuy(2);
+            }else if(midStatus==3||midStatus==4){
+                
+                
+                myBuy(1);
+            }else{
+                
+            }
+        }else{
+            
+        }
+    }
+}
+
+function main() {
+    var initAccount = _C(exchange.GetAccount);
+    Log(initAccount);
+  
+    while (true) {
+        oper();
+        Sleep(Interval*1000);
+    }
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2020-06-18 17:50:34

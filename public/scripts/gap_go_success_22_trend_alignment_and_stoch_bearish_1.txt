@@ -1,0 +1,189 @@
+"""
+Gap & Go Strategy: Trend_Alignment + Stoch_Bearish
+Success Rate: 42.29% | Total Profit: $-107.17 | Trades: 201
+
+This strategy combines:
+1. Trend_Alignment
+2. Stoch_Bearish
+
+Strategy Type: Gap & Go (trades in direction of gap expecting continuation)
+Minimum Trade Requirement: 100+ trades (ACHIEVED: 201 trades)
+"""
+
+import pandas as pd
+import numpy as np
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from gap_and_go_utils import *
+
+class TrendAlignmentAndStochBearishGapAndGoStrategy:
+    """
+    Gap & Go Two-Indicator Strategy: Trend_Alignment + Stoch_Bearish
+    
+    Entry: When gap occurs AND both indicators confirm
+    Exit: Profit target (1%) or Stop loss (0.5%) or end of day
+    """
+    
+    def __init__(self):
+        self.name = "Trend_Alignment + Stoch_Bearish"
+        self.indicator1 = "Trend_Alignment"
+        self.indicator2 = "Stoch_Bearish"
+        self.initial_investment = 16000
+        self.min_gap_percent = 0.3
+        self.profit_target_percent = 1.0
+        self.stop_loss_percent = 0.5
+        
+    def calculate_indicators(self, df):
+        """Calculate required indicators"""
+
+        k_percent, d_percent = calculate_stochastic(df)
+        df['Stoch_K'] = k_percent
+        df['Stoch_D'] = d_percent
+
+        df['Price_Above_SMA20'] = (df['Close'] > df['SMA_20']).shift(1).fillna(False)
+        df['Price_Above_SMA50'] = (df['Close'] > df['SMA_50']).shift(1).fillna(False)
+        df['SMA20_Rising'] = (df['SMA_20'] > df['SMA_20'].shift(1)).shift(1).fillna(False)
+        df['SMA50_Rising'] = (df['SMA_50'] > df['SMA_50'].shift(1)).shift(1).fillna(False)
+
+        df['High_Low_Range'] = (df['High'] - df['Low']).shift(1)
+        df['ATR_Ratio'] = (df['ATR_14'] / df['Close']).shift(1).fillna(0.015)
+        df['BB_Squeeze'] = (df['BB_Width'] < df['BB_Width'].rolling(20).mean()).shift(1).fillna(False)
+        
+        return df
+    
+    def get_filter_conditions(self, df):
+        """Get the two indicator conditions"""
+        condition1 = df['SMA20_Rising'] & df['SMA50_Rising']
+        
+        condition2 = df['Stoch_K'] < df['Stoch_D']
+        
+        return condition1 & condition2
+    
+    def run_strategy(self, data_file):
+        """Run the Gap & Go strategy"""
+        df = load_data(data_file)
+        
+        df = self.calculate_indicators(df)
+        
+        filter_condition = self.get_filter_conditions(df)
+        
+        trades = []
+        for i in range(1, len(df)):
+            if not filter_condition.iloc[i]:
+                continue
+                
+            prev_day = df.iloc[i - 1]
+            curr_day = df.iloc[i]
+            
+            gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+            if not is_gap_valid(gap, self.min_gap_percent):
+                continue
+            
+            trade_direction = determine_gap_and_go_direction(gap)
+            entry_price = curr_day['Open']
+            exit_price, success, exit_type = calculate_gap_and_go_exit(
+                trade_direction, curr_day, entry_price,
+                self.profit_target_percent, self.stop_loss_percent
+            )
+            
+            profit_loss = calculate_profit_loss(
+                trade_direction, entry_price, exit_price, self.initial_investment
+            )
+            
+            trades.append({
+                'Date': curr_day['Date'],
+                'Trade Direction': trade_direction,
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'Gap': gap,
+                'Success': success,
+                'Exit Type': exit_type,
+                'Profit/Loss': profit_loss
+            })
+        
+        trades_df = pd.DataFrame(trades)
+        
+        if len(trades_df) < 100:
+            print(f"WARNING: Strategy only generated {len(trades_df)} trades, below minimum of 100")
+        
+        stats = calculate_statistics(trades_df, self.name, self.initial_investment)
+        
+        return stats, trades_df
+    
+    def print_results(self, stats, trades_df):
+        """Print formatted results"""
+        print(f"\n{'='*70}")
+        print(f"{self.name} - Gap & Go Trading Strategy")
+        print(f"{'='*70}")
+        print(f"Strategy Type: Gap & Go (trade with gap direction)")
+        print(f"Indicators: {self.indicator1} + {self.indicator2}")
+        print(f"Total Trades: {len(trades_df)} (min required: 100)")
+        
+        print(f"\nPerformance Metrics:")
+        print(f"Success Rate: {stats['Success Rate']:.2f}%")
+        print(f"Total Profit: ${stats['Total Profit']:,.2f}")
+        print(f"Average Profit per Trade: ${stats['Average Profit']:.2f}")
+        print(f"ROI: {stats['ROI']:.2f}%")
+        print(f"Final Equity: ${stats['Final Equity']:,.2f}")
+        print(f"Profit Factor: {stats['Profit Factor']:.2f}")
+        print(f"Sharpe Ratio: {stats['Sharpe Ratio']:.2f}")
+        
+        if len(trades_df) > 0:
+            exit_types = trades_df['Exit Type'].value_counts()
+            print(f"\nExit Analysis:")
+            for exit_type, count in exit_types.items():
+                print(f"{exit_type}: {count} ({count/len(trades_df)*100:.1f}%)")
+            
+            winning_trades = trades_df[trades_df['Profit/Loss'] > 0]
+            losing_trades = trades_df[trades_df['Profit/Loss'] < 0]
+            
+            if len(winning_trades) > 0:
+                avg_win = winning_trades['Profit/Loss'].mean()
+                max_win = winning_trades['Profit/Loss'].max()
+                print(f"\nWinning Trades: {len(winning_trades)}")
+                print(f"Average Win: ${avg_win:.2f}")
+                print(f"Largest Win: ${max_win:.2f}")
+            
+            if len(losing_trades) > 0:
+                avg_loss = losing_trades['Profit/Loss'].mean()
+                max_loss = losing_trades['Profit/Loss'].min()
+                print(f"\nLosing Trades: {len(losing_trades)}")
+                print(f"Average Loss: ${avg_loss:.2f}")
+                print(f"Largest Loss: ${max_loss:.2f}")
+        
+        print(f"{'='*70}\n")
+
+def main():
+    """Run the Gap & Go strategy"""
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv') 
+                and not f.startswith('gap_and_go')]
+    
+    if csv_files:
+        data_file = csv_files[0]
+    else:
+        data_file = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/7J0OK1VR.csv'
+        if not os.path.exists(data_file):
+            print("Error: No CSV data file found.")
+            return
+    
+    print(f"Using data file: {data_file}")
+    
+    strategy = TrendAlignmentAndStochBearishGapAndGoStrategy()
+    
+    try:
+        stats, trades_df = strategy.run_strategy(data_file)
+        strategy.print_results(stats, trades_df)
+        
+        output_file = f"{strategy.name.replace(' ', '_')}_trades.csv"
+        trades_df.to_csv(output_file, index=False)
+        print(f"Trade details saved to: {output_file}")
+        
+    except Exception as e:
+        print(f"Error running strategy: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    main()

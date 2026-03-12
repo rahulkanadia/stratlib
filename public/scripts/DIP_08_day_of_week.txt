@@ -1,0 +1,122 @@
+import pandas as pd
+import numpy as np
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_rolling_average_drop(df, window=21):
+    """Calculate rolling average of drops on red days."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=window).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def analyze_dip_by_day_of_week(df, initial_investment=16000, rolling_window=21, target_day=1):
+    """Implement DIP strategy only on specific day of week (0=Monday, 4=Friday)."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df, window=rolling_window)
+    
+    df['DayOfWeek'] = df['Date'].dt.dayofweek
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i == 0:
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        day_of_week = current_day['DayOfWeek']
+        
+        if avg_drop <= 0:
+            continue
+        
+        if day_of_week != target_day:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            trades.append({
+                'Date': current_day['Date'],
+                'Day': day_of_week,
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'Profit/Loss': profit_loss
+            })
+    
+    return pd.DataFrame(trades)
+
+def optimize_day_of_week(file_name, initial_investment=16000):
+    """Find best day of week for DIP strategy."""
+    df = load_data(file_name)
+    
+    best_day = None
+    best_success_rate = 0
+    results = []
+    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+    
+    for day_num in range(5):
+        trades_df = analyze_dip_by_day_of_week(df, initial_investment, 21, day_num)
+        
+        total_trades = len(trades_df)
+        if total_trades >= 20:  # Lower threshold for day-specific trading
+            winning_trades = len(trades_df[trades_df['Profit/Loss'] > 0])
+            success_rate = winning_trades / total_trades if total_trades > 0 else 0
+            total_profit = trades_df['Profit/Loss'].sum()
+            avg_profit = trades_df['Profit/Loss'].mean()
+            
+            results.append({
+                'Day': days[day_num],
+                'Day Number': day_num,
+                'Total Trades': total_trades,
+                'Success Rate': success_rate,
+                'Total Profit': total_profit,
+                'Avg Profit': avg_profit
+            })
+            
+            if total_trades >= 100 and success_rate > best_success_rate:
+                best_success_rate = success_rate
+                best_day = day_num
+    
+    results_df = pd.DataFrame(results)
+    print("=== Day of Week Optimization Results ===")
+    print(results_df.sort_values('Success Rate', ascending=False))
+    
+    if best_day is not None:
+        print(f"\nBest Day: {days[best_day]}")
+        print(f"Best Success Rate: {best_success_rate:.2%}")
+        
+        final_trades = analyze_dip_by_day_of_week(df, initial_investment, 21, best_day)
+        print(f"\nFinal Results trading only on {days[best_day]}:")
+        print(f"Total Trades: {len(final_trades)}")
+        print(f"Total Profit: ${final_trades['Profit/Loss'].sum():,.2f}")
+    else:
+        print("\nNo day had 100+ trades")
+    
+    return best_day, best_success_rate
+
+if __name__ == "__main__":
+    file_name = "../7J0OK1VR.csv"
+    initial_investment = 16000
+    best_day, best_rate = optimize_day_of_week(file_name, initial_investment)

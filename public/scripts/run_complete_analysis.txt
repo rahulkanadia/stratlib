@@ -1,0 +1,91 @@
+"""
+Master script to run the complete two-indicator analysis with minimal file I/O
+"""
+
+import subprocess
+import sys
+import os
+from datetime import datetime
+
+def run_step(step_name, command):
+    """Run a step and report status"""
+    print(f"\n{'='*60}")
+    print(f"STEP: {step_name}")
+    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}")
+    
+    try:
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"✓ {step_name} completed successfully")
+            if result.stdout:
+                print("Output:", result.stdout[-500:] if len(result.stdout) > 500 else result.stdout)
+        else:
+            print(f"✗ {step_name} failed")
+            if result.stderr:
+                print("Error:", result.stderr)
+        return result.returncode == 0
+    except Exception as e:
+        print(f"✗ Exception in {step_name}: {e}")
+        return False
+
+def main():
+    """Run the complete two-indicator analysis"""
+    print("="*80)
+    print("TWO-INDICATOR GAP TRADING STRATEGY - COMPLETE ANALYSIS")
+    print(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*80)
+    
+    print("\nThis analysis will test 4,950 two-indicator combinations.")
+    print("Expected duration: 15-30 minutes depending on system performance.")
+    
+    if not run_step("Generate and Test All Combinations", 
+                    f"{sys.executable} two_indicator_strategy_generator.py"):
+        print("\nAnalysis failed at strategy generation step!")
+        return
+    
+    print("\nCreating individual Python files for top performers...")
+    if not run_step("Create Top Strategy Files", 
+                    f"{sys.executable} create_top_strategy_files.py"):
+        print("\nWarning: Could not create individual strategy files")
+    
+    print("\nGenerating comprehensive RTF report...")
+    if not run_step("Generate RTF Summary Report", 
+                    f"{sys.executable} generate_rtf_summary.py"):
+        print("\nWarning: Could not generate RTF summary")
+    
+    print("\n" + "="*80)
+    print("ANALYSIS COMPLETE!")
+    print("="*80)
+    
+    print("\nGenerated Files:")
+    files_to_check = [
+        "two_indicator_all_results.csv",
+        "two_indicator_top100_success_rate.csv",
+        "two_indicator_top100_profit.csv",
+        "two_indicator_top100_roi.csv",
+        "TWO_INDICATOR_STRATEGIES_SUMMARY.rtf"
+    ]
+    
+    for file in files_to_check:
+        if os.path.exists(file):
+            size = os.path.getsize(file) / 1024  # KB
+            print(f"✓ {file} ({size:.1f} KB)")
+        else:
+            print(f"✗ {file} (not found)")
+    
+    success_files = [f for f in os.listdir('.') if f.startswith('success_')]
+    profit_files = [f for f in os.listdir('.') if f.startswith('profit_')]
+    
+    print(f"\nIndividual Strategy Files:")
+    print(f"✓ Top 10 by Success Rate: {len(success_files)} files")
+    print(f"✓ Top 10 by Profit: {len(profit_files)} files")
+    
+    print(f"\nEnd Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("\nNext steps:")
+    print("1. Review TWO_INDICATOR_STRATEGIES_SUMMARY.rtf for detailed results")
+    print("2. Test individual strategies using the generated Python files")
+    print("3. Consider combining complementary strategies for diversification")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,69 @@
+
+> 策略名称
+
+Engulfing-Candles
+
+> 策略作者
+
+张超
+
+> 策略描述
+
+This script shows you where a candle is either bullish or bearish engulfing the previous candle.
+
+A GREEN triangle below the bar pointing UP indicates that the candle is BULLISH engulfing the previous candle
+A RED triangle ABOVE the bar pointing DOWN indicates that the candle is BEARISH engulfing the previous candle
+
+**backtest**
+
+ ![IMG](https:
+
+
+
+> 源码 (PineScript)
+
+``` javascript
+
+
+
+study("Engulfing Candles", overlay = true)
+
+
+openBarPrevious = open[1]
+closeBarPrevious = close[1]
+openBarCurrent = open
+closeBarCurrent = close
+
+
+bullishEngulfing = (openBarCurrent <= closeBarPrevious) and (openBarCurrent < openBarPrevious) and (closeBarCurrent > openBarPrevious)
+
+bearishEngulfing = (openBarCurrent >= closeBarPrevious) and (openBarCurrent > openBarPrevious) and (closeBarCurrent < openBarPrevious)
+
+
+
+
+alertcondition(bullishEngulfing, title = "Bullish Engulfing", message = "[CurrencyPair] [TimeFrame], Bullish candle engulfing previous candle")
+alertcondition(bearishEngulfing, title = "Bearish Engulfing", message = "[CurrencyPair] [TimeFrame], Bearish candle engulfing previous candle")
+
+
+
+
+
+
+
+
+
+
+if bullishEngulfing
+    strategy.entry("Enter Long", strategy.long)
+else if bearishEngulfing
+    strategy.entry("Enter Short", strategy.short)
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2022-05-08 10:57:57

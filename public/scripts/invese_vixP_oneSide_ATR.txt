@@ -1,0 +1,328 @@
+import pandas as pd
+import numpy as np
+import warnings
+import os
+from itertools import product
+from multiprocessing import Pool, cpu_count
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+pd.set_option('display.max_colwidth', None)
+
+def load_data(file_name):
+    """
+    Loads the CSV file into a DataFrame, sorts it by date, and resets the index.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    """
+    Loads the VIX data from a CSV file into a DataFrame, sorts it by date, and resets the index.
+    Ensures that the 'Date' column is in datetime format.
+    """
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'], dayfirst=True, errors='coerce')
+    vix_df.dropna(subset=['Date'], inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+def calculate_day_range(day):
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    """
+    For the 'inverse' Gap & Go condition:
+    - Gap of >= $0.20
+    - gap_percentage < 0.15 OR gap_percentage > 0.85
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return gap_percentage < 0.15 or gap_percentage > 0.85
+
+def determine_trade_direction(gap):
+    return 'Long' if gap > 0 else 'Short'
+
+def determine_exit_price(curr_day):
+    return curr_day['Close']
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    number_of_shares = position_size / entry_price
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:
+        profit_loss = number_of_shares * (entry_price - exit_price)
+    return profit_loss
+
+def compute_vix_jump(vix_df):
+    """
+    Compute the day-to-next-day jump in VIX as a percentage:
+      VIX_Jump(t+1) = (VIX_Open(t+1) - VIX_Close(t)) / VIX_Close(t)
+    """
+    vix_df = vix_df.sort_values('Date').reset_index(drop=True)
+    
+    vix_df['VIX_Jump'] = np.nan
+    
+    vix_df['VIX_Open_next'] = vix_df['OPEN'].shift(-1)
+    
+    for i in range(len(vix_df) - 1):
+        close_t = vix_df.loc[i, 'CLOSE']
+        open_t1 = vix_df.loc[i+1, 'OPEN']
+        if close_t == 0 or pd.isna(close_t) or pd.isna(open_t1):
+            jump_pct = np.nan
+        else:
+            jump_pct = (open_t1 - close_t) / close_t
+        vix_df.loc[i, 'VIX_Jump'] = jump_pct
+    
+    vix_df.drop(columns=['VIX_Open_next'], inplace=True)
+    return vix_df
+
+def precompute_trades(df, vix_df, initial_investment):
+    """
+    Identical to the old logic for generating trades, except now we'll attach
+    the 'VIX_Jump' (computed day-to-next-day).
+    """
+    trades = []
+    total_days = len(df)
+
+    vix_df = compute_vix_jump(vix_df)
+
+    vix_jump_dict = {}
+    vix_dates = set(vix_df['Date'])
+    min_vix_date = vix_df['Date'].min()
+
+    for current_date in df['Date']:
+        prev_date = current_date - pd.Timedelta(days=1)
+        while prev_date not in vix_dates and prev_date > min_vix_date:
+            prev_date -= pd.Timedelta(days=1)
+        if prev_date in vix_dates:
+            jump_val = vix_df.loc[vix_df['Date'] == prev_date, 'VIX_Jump'].values[0]
+            vix_jump_dict[current_date] = jump_val
+        else:
+            vix_jump_dict[current_date] = np.nan
+
+    for i_day in range(1, total_days):
+        prev_day = df.iloc[i_day - 1]
+        curr_day = df.iloc[i_day]
+        current_date = curr_day['Date']
+
+        vix_jump = vix_jump_dict.get(current_date, np.nan)
+        if pd.isna(vix_jump):
+            continue  # skip if no VIX jump data
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+        entry_price = curr_day['Open']
+        exit_price = determine_exit_price(curr_day)
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+
+        trades.append({
+            'Date': current_date,
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'VIX_Jump': vix_jump,
+            'Profit/Loss': profit_loss
+        })
+
+    trades_df = pd.DataFrame(trades)
+    return trades_df
+
+def find_best_vix_jump_ranges(trades_df, jump_min=-0.4, jump_max=0.4, jump_step=0.01, min_occurrence_count=0):
+    """
+    Now we find the best ranges for the VIX_Jump.
+    - We define ranges (low, high) of the jump percentage
+    - For each (low, high) pair where low < high, we filter trades whose VIX_Jump is in (low, high)
+    - Then compute success rate, occurrence, total profit, etc.
+    - Sort results by success rate
+    """
+    jump_values = np.round(np.arange(jump_min, jump_max + jump_step, jump_step), 3)  # or 2 decimals if you prefer
+    i_grid, j_grid = np.meshgrid(jump_values, jump_values)
+    i_flat = i_grid.flatten()
+    j_flat = j_grid.flatten()
+    
+    valid_pairs_mask = i_flat < j_flat
+    i_valid = i_flat[valid_pairs_mask]
+    j_valid = j_flat[valid_pairs_mask]
+
+    jump_array = trades_df['VIX_Jump'].values
+    profit_loss_array = trades_df['Profit/Loss'].values
+
+    results = []
+    for low_jump, high_jump in zip(i_valid, j_valid):
+        cond = (jump_array > low_jump) & (jump_array < high_jump)
+        occurrence_count = cond.sum()
+        if occurrence_count > 0:
+            subset_profits = profit_loss_array[cond]
+            success_count = (subset_profits > 0).sum()
+            success_rate = success_count / occurrence_count
+            total_profit = subset_profits.sum()
+        else:
+            success_count = 0
+            success_rate = 0.0
+            total_profit = 0.0
+
+        results.append((low_jump, high_jump, occurrence_count, success_count, success_rate, total_profit))
+
+    results_df = pd.DataFrame(results, columns=[
+        'Jump_Low', 'Jump_High', 'OccurrenceCount', 'SuccessCount', 'SuccessRate', 'TotalProfit'
+    ])
+
+    results_df = results_df[results_df['OccurrenceCount'] >= min_occurrence_count]
+
+    results_df_sorted = results_df.sort_values(
+        by=['SuccessRate', 'OccurrenceCount', 'TotalProfit'],
+        ascending=[False, False, False]
+    ).reset_index(drop=True)
+
+    if not results_df_sorted.empty:
+        best_low_jump = results_df_sorted.loc[0, 'Jump_Low']
+        best_high_jump = results_df_sorted.loc[0, 'Jump_High']
+        best_occurrence_count = results_df_sorted.loc[0, 'OccurrenceCount']
+        best_success_count = results_df_sorted.loc[0, 'SuccessCount']
+        best_success_rate = results_df_sorted.loc[0, 'SuccessRate']
+        best_profit = results_df_sorted.loc[0, 'TotalProfit']
+    else:
+        best_low_jump = None
+        best_high_jump = None
+        best_occurrence_count = 0
+        best_success_count = 0
+        best_success_rate = 0.0
+        best_profit = 0.0
+
+    print(f"\n=== VIX Jump Optimization Complete (Success-Based) with min_occurrence_count={min_occurrence_count} ===")
+    if best_low_jump is not None:
+        print(f"Best VIX Jump Range: {best_low_jump} to {best_high_jump}")
+        print(f"Occurrences: {best_occurrence_count}, Successes: {best_success_count}, "
+              f"Success Rate: {best_success_rate:.2f}, Total Profit: ${best_profit:,.2f}\n")
+    else:
+        print("No valid jump range found given the minimum occurrence threshold.\n")
+
+    print("Top 10 VIX Jump Ranges (by SuccessRate, then OccurrenceCount, then TotalProfit):")
+    if not results_df_sorted.empty:
+        print(results_df_sorted.head(10).to_string(index=False))
+    else:
+        print("No conditions to display.")
+
+    return best_low_jump, best_high_jump, results_df_sorted
+
+def run_full_vix_jump_optimization(df, vix_df, initial_investment, 
+                                   jump_min=-0.4, jump_max=0.4, jump_step=0.01, 
+                                   min_occurrence_count=30):
+    """
+    A combined function to:
+     1) Precompute trades
+     2) Optimize based on VIX jump ranges
+    """
+    print(f"\n--- Running VIX Jump Optimization with min_occurrence_count={min_occurrence_count} ---\n")
+
+    trades_df = precompute_trades(df, vix_df, initial_investment)
+    if trades_df.empty:
+        print("No valid trades found based on initial Gap & Go criteria.")
+        return None, None, None
+
+    print(f"Total Valid Trades: {len(trades_df)}")
+
+    best_low_jump, best_high_jump, all_jump_results = find_best_vix_jump_ranges(
+        trades_df=trades_df,
+        jump_min=jump_min,
+        jump_max=jump_max,
+        jump_step=jump_step,
+        min_occurrence_count=min_occurrence_count
+    )
+
+    if best_low_jump is None or best_high_jump is None:
+        print("No suitable jump conditions found.")
+        return None, None, None
+
+    trades_best_jump = trades_df[(trades_df['VIX_Jump'] > best_low_jump) & (trades_df['VIX_Jump'] < best_high_jump)]
+    if trades_best_jump.empty:
+        print("No trades found for the best VIX jump range.")
+        return best_low_jump, best_high_jump, None
+
+    total_profit = trades_best_jump['Profit/Loss'].sum()
+    occurrence_count = len(trades_best_jump)
+    success_count = (trades_best_jump['Profit/Loss'] > 0).sum()
+    success_rate = success_count / occurrence_count if occurrence_count > 0 else 0.0
+
+    print(f"\nFinal Results (Jump Range = [{best_low_jump}, {best_high_jump}]) with min_occurrence_count={min_occurrence_count}:")
+    print(f"Occurrences: {occurrence_count}, Successes: {success_count}, "
+          f"Success Rate: {success_rate:.2f}, Total Profit: ${total_profit:,.2f}")
+
+    num_winning_trades = trades_best_jump[trades_best_jump['Profit/Loss'] > 0].shape[0]
+    num_losing_trades = trades_best_jump[trades_best_jump['Profit/Loss'] < 0].shape[0]
+
+    print(f"\nNumber of Winning Trades: {num_winning_trades}")
+    print(f"Number of Losing Trades: {num_losing_trades}")
+
+    print("\nTrade Details:")
+    if not trades_best_jump.empty:
+        print(trades_best_jump.to_string(index=False))
+    else:
+        print("No trades meet the final jump range condition.")
+
+    all_jump_results.to_csv(f'vix_jump_optimization_results_{min_occurrence_count}.csv', index=False)
+
+    print("\n=== VIX Jump Optimization Summary ===")
+    print(f"Optimal Jump Range (Success-Based): {best_low_jump} to {best_high_jump}")
+    print(f"Occurrences: {occurrence_count}, Successes: {success_count}, Success Rate: {success_rate:.2f}, "
+          f"Total Profit: ${total_profit:,.2f}")
+
+    return best_low_jump, best_high_jump, total_profit
+
+def analyze_spy_gaps_with_vix_jump(main_file, vix_file, initial_investment,
+                                   jump_min=-0.4, jump_max=0.4, jump_step=0.01):
+    """
+    Main function that loads data, runs the VIX jump-based strategy, 
+    and tries different min_occurrence_count thresholds for demonstration.
+    """
+    print("Loading main data...")
+    df = load_data(main_file)
+    print("Loading VIX data...")
+    vix_df = load_vix_data(vix_file)
+
+    run_full_vix_jump_optimization(df, vix_df, initial_investment,
+                                   jump_min=jump_min, jump_max=jump_max, jump_step=jump_step,
+                                   min_occurrence_count=30)
+    
+    run_full_vix_jump_optimization(df, vix_df, initial_investment,
+                                   jump_min=jump_min, jump_max=jump_max, jump_step=jump_step,
+                                   min_occurrence_count=50)
+
+if __name__ == "__main__":
+    initial_investment = 16000
+    main_file = '7J0OK1VR.csv'
+    vix_file = 'VIX_History.csv'
+
+    if not os.path.exists(main_file):
+        print(f"Error: Main data file '{main_file}' not found.")
+    elif not os.path.exists(vix_file):
+        print(f"Error: VIX data file '{vix_file}' not found.")
+    else:
+        analyze_spy_gaps_with_vix_jump(
+            main_file=main_file,
+            vix_file=vix_file,
+            initial_investment=initial_investment,
+            jump_min=-0.4,
+            jump_max=0.4,
+            jump_step=0.01
+        )

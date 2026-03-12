@@ -1,0 +1,69 @@
+import pandas as pd
+import numpy as np
+from base_strategy import GapStrategy
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from gap_utils import *
+
+class PriceBelowBBLowerStrategy(GapStrategy):
+    """
+    Price Below Bollinger Band Lower Strategy
+    Success Rate: 78.85% | Total Profit: $4,118.45 | Trades: 52
+    
+    This strategy trades gaps when the previous close is below the lower Bollinger Band,
+    indicating an oversold condition that's likely to bounce.
+    """
+    
+    def __init__(self):
+        super().__init__(
+            name="Price Below BB Lower",
+            description="Fade gaps when price closed below lower Bollinger Band"
+        )
+        self.bb_period = 20
+        self.bb_std = 2
+    
+    def calculate_indicators(self, df):
+        """Calculate Bollinger Bands"""
+        upper_bb, middle_bb, lower_bb = calculate_bollinger_bands(
+            df, period=self.bb_period, std_dev=self.bb_std
+        )
+        df['BB_Upper'] = upper_bb
+        df['BB_Middle'] = middle_bb
+        df['BB_Lower'] = lower_bb
+        
+        return df
+    
+    def get_filter_condition(self, df):
+        """Price must be below lower Bollinger Band"""
+        return df['Close'].shift(1) < df['BB_Lower']
+
+def main():
+    """Run the strategy"""
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv') and f not in ['gap_strategies_all_results.csv', 'gap_strategies_top10_profit.csv', 'gap_strategies_top10_success_rate.csv']]
+    
+    if csv_files:
+        data_file = csv_files[0]
+        print(f"Using data file: {data_file}")
+    else:
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_file = os.path.join(parent_dir, '..', '7J0OK1VR.csv')
+        if not os.path.exists(data_file):
+            print("Error: No CSV data file found. Please place a CSV file in the current directory.")
+            return
+    
+    strategy = PriceBelowBBLowerStrategy()
+    
+    try:
+        stats, trades_df = strategy.run_strategy(data_file)
+        strategy.print_results(stats, trades_df)
+        
+        output_file = f"{strategy.name.replace(' ', '_')}_trades.csv"
+        trades_df.to_csv(output_file, index=False)
+        print(f"Trade details saved to: {output_file}")
+        
+    except Exception as e:
+        print(f"Error running strategy: {e}")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,74 @@
+"""
+Download SPY historical data from 2000 to present
+"""
+import yfinance as yf
+import pandas as pd
+from datetime import datetime
+
+print("=" * 80)
+print("DOWNLOADING SPY HISTORICAL DATA (2000-2025)")
+print("=" * 80)
+print()
+
+ticker = "SPY"
+start_date = "2000-01-01"
+end_date = datetime.now().strftime("%Y-%m-%d")
+
+print(f"Ticker: {ticker}")
+print(f"Start Date: {start_date}")
+print(f"End Date: {end_date}")
+print()
+
+print("Downloading data... (this may take a minute)")
+spy_data = yf.download(ticker, start=start_date, end=end_date, progress=True)
+
+if len(spy_data) == 0:
+    print("ERROR: No data downloaded!")
+else:
+    spy_data.reset_index(inplace=True)
+
+    if isinstance(spy_data.columns, pd.MultiIndex):
+        spy_data.columns = spy_data.columns.get_level_values(0)
+
+    spy_data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+
+    print()
+    print(f"✓ Downloaded {len(spy_data)} trading days")
+    print(f"✓ Date Range: {spy_data['Date'].min()} to {spy_data['Date'].max()}")
+    print()
+
+    start_year = spy_data['Date'].min().year
+    end_year = spy_data['Date'].max().year
+    years = end_year - start_year + 1
+    print(f"✓ Years Covered: {years} years ({start_year}-{end_year})")
+    print()
+
+    print("First 5 rows:")
+    print(spy_data.head())
+    print()
+
+    print("Last 5 rows:")
+    print(spy_data.tail())
+    print()
+
+    output_file = "SPY_2000_2025_complete.csv"
+    spy_data.to_csv(output_file, index=False)
+    print(f"✓ Data saved to: {output_file}")
+    print()
+
+    spy_data['Year'] = pd.to_datetime(spy_data['Date']).dt.year
+    yearly_summary = spy_data.groupby('Year').agg({
+        'Date': 'count',
+        'Open': 'first',
+        'Close': 'last',
+    }).rename(columns={'Date': 'Trading Days', 'Open': 'Year Open', 'Close': 'Year Close'})
+
+    yearly_summary['YoY Return %'] = ((yearly_summary['Year Close'] - yearly_summary['Year Open']) /
+                                       yearly_summary['Year Open'] * 100).round(2)
+
+    print("=" * 80)
+    print("YEARLY SUMMARY")
+    print("=" * 80)
+    print(yearly_summary.to_string())
+    print()
+    print("=" * 80)

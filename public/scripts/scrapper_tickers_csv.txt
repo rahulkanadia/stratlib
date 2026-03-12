@@ -1,0 +1,85 @@
+import time
+import pandas as pd
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+def scrape_yahoo_historical_data_selenium(ticker):
+    url = (f"https://finance.yahoo.com/quote/{ticker}/history?"
+           f"period1=1609459200&period2=1672531200&interval=1d&filter=history&frequency=1d&includeAdjustedClose=true")
+
+    options = Options()
+    options.add_argument('--headless')
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+                         AppleWebKit/537.36 (KHTML, like Gecko) \
+                         Chrome/108.0.0.0 Safari/537.36")
+
+    driver = webdriver.Chrome(options=options)
+    driver.get(url)
+
+    try:
+        try:
+            accept_button = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, '//*[contains(text(), "Accept")]'))
+            )
+            accept_button.click()
+        except:
+            pass  # אם לא הופיע כפתור תוך 5 שניות, ממשיכים הלאה
+
+        driver.execute_script("window.scrollTo(0, 2000);")
+        time.sleep(2)  # השהיה קצרה כדי לאפשר הטעינה
+
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'table[data-test="historical-prices"]'))
+        )
+
+        html = driver.page_source
+        soup = BeautifulSoup(html, "html.parser")
+
+        table = soup.find("table", attrs={"data-test": "historical-prices"})
+        if not table:
+            print(f"{ticker}: לא נמצאה טבלת historical-prices ב-HTML.")
+            return []
+
+        rows = table.find("tbody").find_all("tr")
+        data = []
+        for row in rows:
+            cols = row.find_all("td")
+            if len(cols) < 7:
+                continue
+            data.append({
+                "Date": cols[0].get_text(strip=True),
+                "Open": cols[1].get_text(strip=True),
+                "High": cols[2].get_text(strip=True),
+                "Low": cols[3].get_text(strip=True),
+                "Close": cols[4].get_text(strip=True),
+                "Adj Close": cols[5].get_text(strip=True),
+                "Volume": cols[6].get_text(strip=True),
+            })
+        return data
+
+    finally:
+        driver.quit()
+
+
+if __name__ == "__main__":
+    df = pd.read_csv("QQQ.csv")
+    tickers = df["Ticker"].dropna().unique()
+
+    all_data = {}
+    for ticker in tickers:
+        print(f"Scraping {ticker} ...")
+        data = scrape_yahoo_historical_data_selenium(ticker)
+        print(f"{ticker}: מספר רשומות היסטוריות שהתקבלו: {len(data)}")
+
+        all_data[ticker] = data
+
+    for ticker, rows in all_data.items():
+        df_ticker = pd.DataFrame(rows)
+        df_ticker.to_csv(f"{ticker}_historical_data.csv", index=False, encoding="utf-8-sig")
+
+    print("סיום תהליך הסקרייפינג עבור כל הטיקרים.")

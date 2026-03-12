@@ -1,0 +1,171 @@
+"""
+Top Strategy #01 Strategy
+
+Optimized gap trading with Price Above Bb Upper
+
+Strategy Type: Gap Close Optimization
+Category: top_strategies
+
+This is a standalone, beginner-friendly implementation.
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+current_file = Path(os.path.abspath(__file__))
+project_root = current_file.parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from utils.base_strategy_fixed import BaseStrategy
+
+class TopStrategy01(BaseStrategy):
+    """
+    Top Strategy #01 Implementation
+    
+    Trades gaps with specific focus on Price Above Bb Upper
+    """
+    
+    def __init__(self, data_path=None):
+        super().__init__(
+            name="Top Strategy #01",
+            description="Gap trading - Price Above Bb Upper",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        )
+        
+        self.min_gap_size = 0.20  # Minimum gap in dollars
+        self.bb_period = 20
+        self.bb_std = 2
+        
+        if data_path:
+            self.load_data(data_path)
+    
+    def calculate_indicators(self):
+        """Calculate required indicators"""
+        df = self.data.copy()
+        
+        df['Gap'] = df['Open'] - df['Close'].shift(1)
+        df['Gap_Percent'] = (df['Gap'] / df['Close'].shift(1)) * 100
+        
+        df['BB_Middle'] = df['Close'].rolling(window=self.bb_period).mean()
+        bb_std = df['Close'].rolling(window=self.bb_period).std()
+        df['BB_Upper'] = df['BB_Middle'] + (bb_std * self.bb_std)
+        df['BB_Lower'] = df['BB_Middle'] - (bb_std * self.bb_std)
+        
+        return df
+    
+    def calculate_signals(self):
+        """Generate trading signals based on strategy rules"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.calculate_indicators()
+        signals = []
+        
+        for i in range(max(20, self.bb_period if hasattr(self, 'bb_period') else 20), len(df)):
+            curr_day = df.iloc[i]
+            prev_day = df.iloc[i-1]
+            
+            gap = curr_day['Gap']
+            if pd.isna(gap) or abs(gap) < self.min_gap_size:
+                continue
+            
+            trade_signal = False
+            
+            trade_signal = True
+            direction = 'SHORT' if gap > 0 else 'LONG'
+            
+            if trade_signal:
+                entry_price = curr_day['Open']
+                
+                if direction == 'LONG':
+                    target = prev_day['Close'] if gap < 0 else entry_price + abs(gap)
+                    if curr_day['High'] >= target:
+                        exit_price = target
+                    else:
+                        exit_price = curr_day['Close']
+                else:  # SHORT
+                    target = prev_day['Close'] if gap > 0 else entry_price - abs(gap)
+                    if curr_day['Low'] <= target:
+                        exit_price = target
+                    else:
+                        exit_price = curr_day['Close']
+                
+                signal = {
+                    'date': curr_day['Date'],
+                    'direction': direction,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'gap_size': gap,
+                    'signal_strength': 1.0
+                }
+                signals.append(signal)
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+    
+    def run_backtest(self, initial_capital=10000, position_size=1.0):
+        """Run backtest simulation"""
+        return super().run_backtest(initial_capital, position_size)
+    
+    def get_summary_metrics(self):
+        """Get performance metrics with strategy-specific additions"""
+        if self.performance_metrics is None:
+            return None
+        
+        metrics = self.performance_metrics.copy()
+        
+        
+        
+        return metrics
+
+def main():
+    """Run the strategy with example usage"""
+    print("=" * 60)
+    print("TOP STRATEGY #01 STRATEGY")
+    print("=" * 60)
+    print("\nOptimized gap trading focusing on Price Above Bb Upper")
+    print("=" * 60)
+    
+    data_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    
+    strategy = TopStrategy01(data_path)
+    
+    print("\nSearching for trading opportunities...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} trading signals")
+    
+    if len(signals) > 0:
+        print(f"\nFirst signal example:")
+        first_signal = signals.iloc[0]
+        print(f"  Date: {first_signal['date']}")
+        print(f"  Direction: {first_signal.get('direction', 'N/A')}")
+        print(f"  Entry: ${first_signal.get('entry_price', 0):.2f}")
+    
+    print("\nRunning backtest with $10,000 initial capital...")
+    strategy.run_backtest(initial_capital=10000)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\n" + "=" * 60)
+    print("STRATEGY RESULTS")
+    print("=" * 60)
+    if metrics:
+        print(f"Total Trades: {metrics['total_trades']}")
+        print(f"Win Rate: {metrics['win_rate']:.1f}%")
+        print(f"Total Profit/Loss: ${metrics['total_profit']:.2f}")
+        print(f"Sharpe Ratio: {metrics.get('sharpe_ratio', 0):.2f}")
+        print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+        print(f"Win/Loss Ratio: {metrics.get('win_loss_ratio', 0):.2f}")
+    else:
+        print("No trades executed. Check strategy parameters.")
+    
+    print("\n" + "=" * 60)
+    print("💡 TIP: Adjust parameters in __init__ to optimize performance")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,238 @@
+"""
+Gap & Go Strategy: RSI Bearish + Bollinger Band Squeeze
+-------------------------------------------------------
+This strategy trades gaps in the direction of the gap when RSI is bearish
+and Bollinger Bands are in a squeeze condition.
+
+Entry Conditions:
+- Gap >= 0.3% from previous close
+- RSI(14) < 50 (bearish momentum)
+- Bollinger Band squeeze active (volatility contraction)
+- Trade in the direction of the gap
+
+Exit Conditions:
+- Profit target: 1% gain
+- Stop loss: 0.5% loss
+- Market close if neither hit
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utils import BaseStrategy, calculate_rsi, calculate_bollinger_bands, calculate_gap
+
+
+class GapGoRSIBBSqueezeStrategy(BaseStrategy):
+    """Gap & Go strategy using RSI and Bollinger Band Squeeze."""
+    
+    def __init__(self, initial_investment=16000):
+        super().__init__("Gap & Go: RSI Bearish + BB Squeeze", initial_investment)
+        self.min_gap_percent = 0.3
+        self.profit_target_percent = 1.0
+        self.stop_loss_percent = 0.5
+        self.rsi_period = 14
+        self.bb_period = 20
+        self.bb_std = 2
+        
+    def calculate_indicators(self, df):
+        """Calculate RSI and Bollinger Band indicators."""
+        df['Prev_Close'] = df['Close'].shift(1)
+        
+        df['Gap_Percent'] = calculate_gap(df['Open'], df['Prev_Close'])
+        df['Gap_Up'] = df['Gap_Percent'] > self.min_gap_percent
+        df['Gap_Down'] = df['Gap_Percent'] < -self.min_gap_percent
+        
+        df['RSI'] = calculate_rsi(df['Close'], period=self.rsi_period)
+        df['RSI_Bearish'] = df['RSI'] < 50
+        
+        bb_middle, bb_upper, bb_lower, bb_width = calculate_bollinger_bands(
+            df['Close'], window=self.bb_period, num_std=self.bb_std
+        )
+        df['BB_Upper'] = bb_upper
+        df['BB_Middle'] = bb_middle
+        df['BB_Lower'] = bb_lower
+        df['BB_Width'] = bb_width
+        
+        df['BB_Width_MA'] = df['BB_Width'].rolling(window=20).mean()
+        df['BB_Squeeze'] = df['BB_Width'] < df['BB_Width_MA']
+        
+        indicator_cols = ['RSI_Bearish', 'BB_Squeeze']
+        for col in indicator_cols:
+            df[col] = df[col].shift(1)
+        
+        return df
+    
+    def get_entry_conditions(self, df):
+        """Define entry conditions for the strategy."""
+        entry_signals = (
+            ((df['Gap_Up']) | (df['Gap_Down'])) &
+            (df['RSI_Bearish']) &
+            (df['BB_Squeeze'])
+        )
+        
+        return entry_signals
+    
+    def calculate_exit_price(self, entry_price, high, low, close, direction):
+        """
+        Calculate exit price based on profit target, stop loss, or close.
+        
+        Parameters:
+        -----------
+        entry_price : float
+            Entry price
+        high : float
+            High price of the day
+        low : float
+            Low price of the day
+        close : float
+            Close price of the day
+        direction : str
+            'Long' or 'Short'
+            
+        Returns:
+        --------
+        tuple
+            (exit_price, exit_reason)
+        """
+        if direction == 'Long':
+            profit_target = entry_price * (1 + self.profit_target_percent / 100)
+            stop_loss = entry_price * (1 - self.stop_loss_percent / 100)
+            
+            if high >= profit_target:
+                return profit_target, 'Profit Target'
+            elif low <= stop_loss:
+                return stop_loss, 'Stop Loss'
+            else:
+                return close, 'Market Close'
+        else:  # Short
+            profit_target = entry_price * (1 - self.profit_target_percent / 100)
+            stop_loss = entry_price * (1 + self.stop_loss_percent / 100)
+            
+            if low <= profit_target:
+                return profit_target, 'Profit Target'
+            elif high >= stop_loss:
+                return stop_loss, 'Stop Loss'
+            else:
+                return close, 'Market Close'
+    
+    def run_backtest(self, data_file):
+        """Custom backtest for gap and go strategy."""
+        self.df = pd.read_csv(data_file, parse_dates=['Date'])
+        self.df.sort_values('Date', inplace=True)
+        self.df.reset_index(drop=True, inplace=True)
+        
+        self.df = self.calculate_indicators(self.df)
+        
+        entry_signals = self.get_entry_conditions(self.df)
+        
+        trades = []
+        capital = self.initial_investment
+        
+        for i in range(1, len(self.df)):  # Start from 1 to have previous day
+            if entry_signals.iloc[i]:
+                entry_row = self.df.iloc[i]
+                entry_price = entry_row['Open']
+                
+                if entry_row['Gap_Up']:
+                    trade_type = 'Long'
+                else:  # Gap down
+                    trade_type = 'Short'
+                
+                position = self.calculate_position_size(capital, entry_price)
+                
+                exit_price, exit_reason = self.calculate_exit_price(
+                    entry_price, 
+                    entry_row['High'], 
+                    entry_row['Low'],
+                    entry_row['Close'],
+                    trade_type
+                )
+                
+                if trade_type == 'Long':
+                    profit = (exit_price - entry_price) * position
+                else:  # Short
+                    profit = (entry_price - exit_price) * position
+                
+                capital += profit
+                
+                trades.append({
+                    'Entry Date': entry_row['Date'],
+                    'Entry Price': entry_price,
+                    'Exit Date': entry_row['Date'],  # Same day exit
+                    'Exit Price': exit_price,
+                    'Type': trade_type,
+                    'Gap %': entry_row['Gap_Percent'],
+                    'RSI': entry_row['RSI'],
+                    'Shares': position,
+                    'Profit': profit,
+                    'Exit Reason': exit_reason,
+                    'Capital After': capital
+                })
+        
+        trades_df = pd.DataFrame(trades)
+        
+        if len(trades_df) > 0:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(trades_df, self.initial_investment)
+            
+            exit_analysis = trades_df['Exit Reason'].value_counts()
+            statistics['profit_target_exits'] = exit_analysis.get('Profit Target', 0)
+            statistics['stop_loss_exits'] = exit_analysis.get('Stop Loss', 0)
+            statistics['close_exits'] = exit_analysis.get('Market Close', 0)
+            statistics['avg_gap_size'] = trades_df['Gap %'].abs().mean()
+        else:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(pd.DataFrame(), self.initial_investment)
+            statistics['profit_target_exits'] = 0
+            statistics['stop_loss_exits'] = 0
+            statistics['close_exits'] = 0
+            statistics['avg_gap_size'] = 0
+        
+        return trades_df, statistics
+    
+    def print_results(self, trades_df=None, statistics=None):
+        """Print strategy results with gap & go specific information."""
+        if statistics is not None:
+            print(f"\n{'='*50}")
+            print(f"{self.name} - Performance Summary")
+            print(f"{'='*50}")
+            print(f"Total Trades:      {statistics['total_trades']}")
+            print(f"Win Rate:          {statistics['win_rate']}%")
+            print(f"Total Profit:      ${statistics['total_profit']:,.2f}")
+            print(f"ROI:               {statistics['roi']}%")
+            print(f"Sharpe Ratio:      {statistics['sharpe_ratio']}")
+            print(f"Max Drawdown:      {statistics['max_drawdown']}%")
+            print(f"Win/Loss Ratio:    {statistics['win_loss_ratio']}")
+            print(f"Avg Gap Size:      {statistics['avg_gap_size']:.2f}%")
+            
+            print(f"\nExit Analysis:")
+            print(f"Profit Target:     {statistics['profit_target_exits']} trades")
+            print(f"Stop Loss:         {statistics['stop_loss_exits']} trades")
+            print(f"Market Close:      {statistics['close_exits']} trades")
+            print(f"{'='*50}\n")
+
+
+def main():
+    """Run the Gap & Go RSI BB Squeeze strategy."""
+    strategy = GapGoRSIBBSqueezeStrategy(initial_investment=16000)
+    
+    data_file = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        'data', '7J0OK1VR.csv'
+    )
+    
+    trades_df, statistics = strategy.run(data_file, save_results=True, 
+                                       output_dir='../../results')
+    
+    if statistics['total_trades'] < 100:
+        print(f"⚠️  WARNING: Strategy only generated {statistics['total_trades']} trades, "
+              f"below recommended minimum of 100 trades for statistical significance.")
+    
+    return trades_df, statistics
+
+
+if __name__ == "__main__":
+    main()

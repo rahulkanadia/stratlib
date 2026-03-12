@@ -1,0 +1,182 @@
+"""
+SPY Gap Fade Strategy
+--------------------
+This strategy trades SPY gaps by taking positions opposite to the gap direction.
+- Gap up: Take short position
+- Gap down: Take long position
+
+Entry Conditions:
+- Gap must be at least $0.20
+- Gap must be between 15% and 85% of previous day's range
+
+Exit Conditions:
+- Exit when gap closes (price reaches previous close)
+- If gap doesn't close, exit at market close
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utils import BaseStrategy, calculate_gap
+
+
+class SPYGapFadeStrategy(BaseStrategy):
+    """SPY Gap Fade Strategy implementation."""
+    
+    def __init__(self, initial_investment=16000):
+        super().__init__("SPY Gap Fade", initial_investment)
+        self.min_gap_size = 0.20  # Minimum gap size in dollars
+        self.gap_range_min = 0.15  # Minimum gap as % of previous day's range
+        self.gap_range_max = 0.85  # Maximum gap as % of previous day's range
+        
+    def calculate_indicators(self, df):
+        """Calculate gap and day range indicators."""
+        df['Prev_Close'] = df['Close'].shift(1)
+        
+        df['Day_Range'] = df['High'] - df['Low']
+        df['Prev_Day_Range'] = df['Day_Range'].shift(1)
+        
+        df['Gap'] = df['Open'] - df['Prev_Close']
+        df['Gap_Abs'] = df['Gap'].abs()
+        df['Gap_Percent_Range'] = df['Gap_Abs'] / df['Prev_Day_Range']
+        
+        df['Gap_Up'] = df['Gap'] > 0
+        df['Gap_Down'] = df['Gap'] < 0
+        
+        return df
+    
+    def get_entry_conditions(self, df):
+        """Define entry conditions for the strategy."""
+        valid_gap = (
+            (df['Gap_Abs'] >= self.min_gap_size) &  # Minimum gap size
+            (df['Gap_Percent_Range'] >= self.gap_range_min) &  # Min % of range
+            (df['Gap_Percent_Range'] <= self.gap_range_max) &  # Max % of range
+            (df['Prev_Day_Range'] > 0)  # Avoid division by zero
+        )
+        
+        return valid_gap
+    
+    def get_exit_conditions(self, df, entry_index):
+        """
+        Exit when gap closes or at market close.
+        
+        For gap fade:
+        - Short positions (gap up): Exit when price reaches or falls below previous close
+        - Long positions (gap down): Exit when price reaches or exceeds previous close
+        """
+        entry_row = df.iloc[entry_index]
+        prev_close = entry_row['Prev_Close']
+        
+        if entry_row['Gap_Up']:
+            if entry_row['Low'] <= prev_close:
+                return entry_index, prev_close, 'Gap Closed'
+            else:
+                return entry_index, entry_row['Close'], 'Market Close'
+        else:
+            if entry_row['High'] >= prev_close:
+                return entry_index, prev_close, 'Gap Closed'
+            else:
+                return entry_index, entry_row['Close'], 'Market Close'
+    
+    def run_backtest(self, data_file):
+        """Custom backtest for gap fade strategy."""
+        self.df = pd.read_csv(data_file, parse_dates=['Date'])
+        self.df.sort_values('Date', inplace=True)
+        self.df.reset_index(drop=True, inplace=True)
+        
+        self.df = self.calculate_indicators(self.df)
+        
+        entry_signals = self.get_entry_conditions(self.df)
+        
+        trades = []
+        capital = self.initial_investment
+        
+        for i in range(1, len(self.df)):  # Start from 1 to have previous day
+            if entry_signals.iloc[i]:
+                entry_row = self.df.iloc[i]
+                entry_price = entry_row['Open']
+                
+                if entry_row['Gap_Up']:
+                    trade_type = 'Short'
+                else:
+                    trade_type = 'Long'
+                
+                position = self.calculate_position_size(capital, entry_price)
+                
+                exit_index, exit_price, exit_reason = self.get_exit_conditions(self.df, i)
+                
+                if trade_type == 'Long':
+                    profit = (exit_price - entry_price) * position
+                else:  # Short
+                    profit = (entry_price - exit_price) * position
+                
+                capital += profit
+                
+                trades.append({
+                    'Entry Date': entry_row['Date'],
+                    'Entry Price': entry_price,
+                    'Exit Date': entry_row['Date'],  # Same day exit
+                    'Exit Price': exit_price,
+                    'Type': trade_type,
+                    'Gap Size': entry_row['Gap'],
+                    'Shares': position,
+                    'Profit': profit,
+                    'Exit Reason': exit_reason,
+                    'Capital After': capital
+                })
+        
+        trades_df = pd.DataFrame(trades)
+        
+        if len(trades_df) > 0:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(trades_df, self.initial_investment)
+            
+            gap_closed_trades = trades_df[trades_df['Exit Reason'] == 'Gap Closed']
+            statistics['gap_close_rate'] = len(gap_closed_trades) / len(trades_df) * 100 if len(trades_df) > 0 else 0
+            statistics['avg_gap_size'] = trades_df['Gap Size'].abs().mean()
+        else:
+            from utils import calculate_statistics
+            statistics = calculate_statistics(pd.DataFrame(), self.initial_investment)
+            statistics['gap_close_rate'] = 0
+            statistics['avg_gap_size'] = 0
+        
+        return trades_df, statistics
+    
+    def print_results(self, trades_df=None, statistics=None):
+        """Print strategy results with gap-specific information."""
+        if statistics is not None:
+            print(f"\n{'='*50}")
+            print(f"{self.name} - Performance Summary")
+            print(f"{'='*50}")
+            print(f"Total Trades:    {statistics['total_trades']}")
+            print(f"Win Rate:        {statistics['win_rate']}%")
+            print(f"Gap Close Rate:  {statistics['gap_close_rate']:.2f}%")
+            print(f"Total Profit:    ${statistics['total_profit']:,.2f}")
+            print(f"ROI:             {statistics['roi']}%")
+            print(f"Sharpe Ratio:    {statistics['sharpe_ratio']}")
+            print(f"Max Drawdown:    {statistics['max_drawdown']}%")
+            print(f"Win/Loss Ratio:  {statistics['win_loss_ratio']}")
+            print(f"Avg Gap Size:    ${statistics['avg_gap_size']:.2f}")
+            print(f"{'='*50}\n")
+
+
+def main():
+    """Run the SPY Gap Fade strategy."""
+    strategy = SPYGapFadeStrategy(initial_investment=16000)
+    
+    data_file = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        '7J0OK1VR.csv'
+    )
+    
+    trades_df, statistics = strategy.run(data_file, save_results=True, 
+                                       output_dir='../../results')
+    
+    return trades_df, statistics
+
+
+if __name__ == "__main__":
+    main()

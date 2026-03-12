@@ -1,0 +1,385 @@
+"""
+Batch Convert DIP Strategies
+----------------------------
+This script helps convert all DIP optimization strategies to the new format.
+It identifies patterns and generates clean, standardized versions.
+"""
+
+import os
+import re
+import ast
+import pandas as pd
+
+
+def extract_dip_strategy_info(file_path):
+    """Extract key information from a DIP strategy file."""
+    info = {
+        'file_name': os.path.basename(file_path),
+        'optimization_type': 'unknown',
+        'description': '',
+        'parameters': {},
+        'filters': []
+    }
+    
+    filename = os.path.basename(file_path)
+    patterns = {
+        'window': r'window|basic',
+        'multiplier': r'multiplier',
+        'vix': r'vix',
+        'atr': r'atr',
+        'volume': r'volume',
+        'day_of_week': r'day.*week',
+        'time_of_day': r'time.*day',
+        'rsi': r'rsi',
+        'move': r'move',
+        'consecutive': r'consecutive',
+        'gap': r'gap',
+        'range': r'range',
+        'price_level': r'price.*level',
+        'month': r'month',
+        'volatility': r'volatility',
+        'momentum': r'momentum',
+        'bollinger': r'bollinger|bb',
+        'candle': r'candle'
+    }
+    
+    for opt_type, pattern in patterns.items():
+        if re.search(pattern, filename.lower()):
+            info['optimization_type'] = opt_type
+            break
+    
+    try:
+        with open(file_path, 'r') as f:
+            content = f.read()
+        
+        docstring_match = re.search(r'"""(.*?)"""', content, re.DOTALL)
+        if docstring_match:
+            info['description'] = docstring_match.group(1).strip()
+        
+        window_match = re.search(r'window\s*=\s*(\d+)', content, re.IGNORECASE)
+        if window_match:
+            info['parameters']['window'] = int(window_match.group(1))
+        
+        mult_match = re.search(r'multiplier\s*=\s*([\d.]+)', content, re.IGNORECASE)
+        if mult_match:
+            info['parameters']['multiplier'] = float(mult_match.group(1))
+        
+        vix_matches = re.findall(r'vix.*?([<>]=?)\s*([\d.]+)', content, re.IGNORECASE)
+        if vix_matches:
+            info['parameters']['vix_conditions'] = vix_matches
+        
+        filter_keywords = [
+            'vix', 'atr', 'volume', 'rsi', 'macd', 'bollinger', 
+            'momentum', 'volatility', 'gap', 'range'
+        ]
+        for keyword in filter_keywords:
+            if keyword in content.lower():
+                info['filters'].append(keyword.upper())
+                
+    except Exception as e:
+        print(f"Error reading {file_path}: {e}")
+    
+    return info
+
+
+def generate_dip_strategy(info):
+    """Generate a clean DIP strategy based on extracted info."""
+    
+    class_name = f"DIP{info['optimization_type'].title().replace('_', '')}Strategy"
+    
+    params = []
+    if 'window' in info['parameters']:
+        params.append(f"window={info['parameters']['window']}")
+    if 'multiplier' in info['parameters']:
+        params.append(f"multiplier={info['parameters']['multiplier']}")
+    
+    filter_desc = ""
+    if info['filters']:
+        filter_desc = f"\nFilters: {', '.join(info['filters'])}"
+    
+    template = f'''"""
+DIP Strategy with {info['optimization_type'].replace('_', ' ').title()} Optimization
+{'-' * (len(info['optimization_type']) + 35)}
+{info['description'] if info['description'] else 'Buys dips based on rolling average of drops with additional filters.'}
+
+Entry Conditions:
+- Calculate rolling average of drops on red days
+- Enter long when price dips to (Open - Average Drop * Multiplier){filter_desc}
+
+Exit Conditions:
+- Exit at market close
+
+Parameters:
+- window: Rolling window size (default: 21)
+- multiplier: Multiplier for entry threshold (default: 1.0)
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utils import BaseStrategy, calculate_atr, calculate_rsi
+
+
+class {class_name}(BaseStrategy):
+    """DIP Strategy with {info['optimization_type'].replace('_', ' ')} optimization."""
+    
+    def __init__(self, {', '.join(params) if params else 'window=21, multiplier=1.0'}, initial_investment=16000):
+        super().__init__(f"DIP {info['optimization_type'].replace('_', ' ').title()}", initial_investment)
+        self.window = window
+        self.multiplier = multiplier
+        
+    def calculate_indicators(self, df):
+        """Calculate rolling average drop and additional indicators."""
+        df['IsRedDay'] = df['Close'] < df['Open']
+        df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+        df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=self.window).mean().shift(1)
+        df['RollingAvgDrop'].fillna(0.0, inplace=True)
+        df['DesiredEntry'] = df['Open'] - (df['RollingAvgDrop'] * self.multiplier)
+        
+'''
+    
+    if info['optimization_type'] == 'vix':
+        template += '''        # VIX filter
+        
+'''
+    elif info['optimization_type'] == 'atr':
+        template += '''        # ATR calculations
+        df['ATR'] = calculate_atr(df['High'], df['Low'], df['Close'])
+        df['ATR_Ratio'] = df['ATR'] / df['Close']
+        
+'''
+    elif info['optimization_type'] == 'rsi':
+        template += '''        # RSI calculations
+        df['RSI'] = calculate_rsi(df['Close'], period=14)
+        df['RSI_Oversold'] = df['RSI'] < 30
+        
+'''
+    elif info['optimization_type'] == 'volume':
+        template += '''        # Volume calculations
+        df['Volume_MA'] = df['Volume'].rolling(window=20).mean()
+        df['Volume_Ratio'] = df['Volume'] / df['Volume_MA']
+        df['High_Volume'] = df['Volume_Ratio'] > 1.5
+        
+'''
+    
+    template += '''        return df
+    
+    def get_entry_conditions(self, df):
+        """Define entry conditions for the strategy."""
+        entry_signals = (
+            (df['RollingAvgDrop'] > 0) &
+            (df['Low'] <= df['DesiredEntry'])
+        )
+        
+'''
+    
+    if info['optimization_type'] == 'atr':
+        template += '''        # Add ATR filter
+        
+'''
+    elif info['optimization_type'] == 'rsi':
+        template += '''        # Add RSI filter
+        
+'''
+    elif info['optimization_type'] == 'volume':
+        template += '''        # Add volume filter
+        
+'''
+    
+    template += '''        return entry_signals
+    
+    def get_exit_conditions(self, df, entry_index):
+        """Exit at market close."""
+        entry_row = df.iloc[entry_index]
+        return entry_index, entry_row['Close'], 'Market Close'
+
+
+def main():
+    """Run the DIP {optimization_type} strategy."""
+    strategy = {class_name}(initial_investment=16000)
+    
+    data_file = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        'data', '7J0OK1VR.csv'
+    )
+    
+    trades_df, statistics = strategy.run(data_file, save_results=True, 
+                                       output_dir='../../results')
+    
+    return trades_df, statistics
+
+
+if __name__ == "__main__":
+    main()
+'''.replace('{optimization_type}', info['optimization_type'].replace('_', ' ').title())
+    
+    return template
+
+
+def batch_convert_dip_strategies():
+    """Convert all DIP strategies to the new format."""
+    dip_dir = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/DIP_Optimizations'
+    
+    output_dir = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/clean_strategies/strategies/dip_strategies'
+    
+    dip_files = [f for f in os.listdir(dip_dir) if f.endswith('.py') and f.startswith('DIP_')]
+    
+    print(f"Found {len(dip_files)} DIP strategy files")
+    print("="*70)
+    
+    summary = {
+        'total': len(dip_files),
+        'converted': 0,
+        'skipped': 0,
+        'errors': 0,
+        'by_type': {}
+    }
+    
+    for i, filename in enumerate(dip_files, 1):
+        file_path = os.path.join(dip_dir, filename)
+        print(f"\n[{i}/{len(dip_files)}] Processing: {filename}")
+        
+        try:
+            info = extract_dip_strategy_info(file_path)
+            
+            opt_type = info['optimization_type']
+            summary['by_type'][opt_type] = summary['by_type'].get(opt_type, 0) + 1
+            
+            new_filename = f"dip_{opt_type}.py"
+            
+            output_path = os.path.join(output_dir, new_filename)
+            if os.path.exists(output_path):
+                print(f"  → Skipped (already exists): {new_filename}")
+                summary['skipped'] += 1
+                continue
+            
+            strategy_code = generate_dip_strategy(info)
+            
+            with open(output_path, 'w') as f:
+                f.write(strategy_code)
+            
+            print(f"  ✓ Converted to: {new_filename}")
+            print(f"    Type: {opt_type}")
+            print(f"    Filters: {', '.join(info['filters'])}")
+            
+            summary['converted'] += 1
+            
+        except Exception as e:
+            print(f"  ✗ Error: {e}")
+            summary['errors'] += 1
+    
+    print("\n" + "="*70)
+    print("CONVERSION SUMMARY")
+    print("="*70)
+    print(f"Total files:     {summary['total']}")
+    print(f"Converted:       {summary['converted']}")
+    print(f"Skipped:         {summary['skipped']}")
+    print(f"Errors:          {summary['errors']}")
+    
+    print("\nBy optimization type:")
+    for opt_type, count in sorted(summary['by_type'].items()):
+        print(f"  {opt_type:20} {count:3} files")
+    
+    print("\n" + "="*70)
+    print("NEXT STEPS:")
+    print("="*70)
+    print("1. Review generated strategies in strategies/dip_strategies/")
+    print("2. Fill in specific filter logic marked with comments")
+    print("3. Test each strategy with run_all.py")
+    print("4. Fine-tune parameters as needed")
+    
+    return summary
+
+
+def create_dip_index():
+    """Create an index file listing all DIP strategies."""
+    output_dir = '/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/clean_strategies/strategies/dip_strategies'
+    
+    index_content = '''"""
+DIP Strategies Index
+-------------------
+Overview of all DIP (Dip Into Profit) strategy variations.
+"""
+
+
+- **dip_basic.py** - Basic DIP with optimizable window size
+- **dip_window.py** - Window size optimization
+- **dip_multiplier.py** - Entry multiplier optimization
+
+- **dip_vix.py** - VIX level filter
+- **dip_atr.py** - ATR (volatility) filter
+- **dip_volume.py** - Volume spike filter
+- **dip_volatility.py** - Volatility percentile filter
+
+- **dip_rsi.py** - RSI oversold filter
+- **dip_bollinger.py** - Bollinger Bands filter
+- **dip_momentum.py** - Momentum filter
+- **dip_macd.py** - MACD filter
+
+- **dip_day_of_week.py** - Day of week filter
+- **dip_time_of_day.py** - Intraday time filter
+- **dip_month.py** - Month/seasonality filter
+
+- **dip_gap.py** - Gap filter
+- **dip_range.py** - Daily range filter
+- **dip_consecutive.py** - Consecutive red days filter
+- **dip_candle.py** - Candlestick pattern filter
+
+- **dip_price_level.py** - Support/resistance levels
+- **dip_distance_from_high.py** - Distance from recent high
+
+
+To compare all DIP strategies:
+```python
+cd ../..
+python run_all.py --filter "dip_"
+```
+
+
+1. **Window Size**: Typically 10-30 days work best
+2. **Multiplier**: 0.5-2.0 range, with 1.0 as baseline
+3. **Filters**: Combine 2-3 filters max to avoid overfitting
+4. **Backtesting**: Ensure at least 100 trades for significance
+
+
+Use the base template:
+```python
+from utils import BaseStrategy
+
+class DIPNewFilterStrategy(BaseStrategy):
+    def __init__(self, window=21, multiplier=1.0):
+        super().__init__("DIP New Filter")
+        
+    def calculate_indicators(self, df):
+        return df
+        
+    def get_entry_conditions(self, df):
+        return entry_signals
+```
+'''
+    
+    index_path = os.path.join(output_dir, 'README.md')
+    with open(index_path, 'w') as f:
+        f.write(index_content)
+    
+    print(f"\nCreated DIP strategies index at: {index_path}")
+
+
+def main():
+    """Main function to run batch conversion."""
+    print("="*70)
+    print("BATCH CONVERTING DIP STRATEGIES")
+    print("="*70)
+    
+    summary = batch_convert_dip_strategies()
+    
+    create_dip_index()
+    
+    print("\nConversion complete! Check the strategies/dip_strategies/ folder.")
+
+
+if __name__ == "__main__":
+    main()

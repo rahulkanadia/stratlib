@@ -1,0 +1,215 @@
+"""Fix all indicator conditions in the high-frequency strategy files"""
+
+import os
+import re
+
+def get_all_condition_mappings():
+    """Complete mapping of all 100 indicators to their conditions"""
+    return {
+        "MA5_Above": "df['Close'].shift(1) > df['SMA_5']",
+        "MA10_Above": "df['Close'].shift(1) > df['SMA_10']",
+        "MA20_Above": "df['Close'].shift(1) > df['SMA_20']",
+        "MA50_Above": "df['Close'].shift(1) > df['SMA_50']",
+        "MA100_Above": "df['Close'].shift(1) > df['SMA_100']",
+        "MA200_Above": "df['Close'].shift(1) > df['SMA_200']",
+        "MA_5_10_Cross": "df['SMA_5'] > df['SMA_10']",
+        "MA_10_20_Cross": "df['SMA_10'] > df['SMA_20']",
+        "MA_20_50_Cross": "df['SMA_20'] > df['SMA_50']",
+        "MA_50_200_Cross": "df['SMA_50'] > df['SMA_200']",
+        
+        "EMA5_Above": "df['Close'].shift(1) > df['EMA_5']",
+        "EMA10_Above": "df['Close'].shift(1) > df['EMA_10']",
+        "EMA20_Above": "df['Close'].shift(1) > df['EMA_20']",
+        "EMA50_Above": "df['Close'].shift(1) > df['EMA_50']",
+        "EMA_5_10_Cross": "df['EMA_5'] > df['EMA_10']",
+        "EMA_10_20_Cross": "df['EMA_10'] > df['EMA_20']",
+        "Price_Above_All_EMAs": "(df['Close'].shift(1) > df['EMA_5']) & (df['Close'].shift(1) > df['EMA_10']) & (df['Close'].shift(1) > df['EMA_20'])",
+        "Price_Below_All_EMAs": "(df['Close'].shift(1) < df['EMA_5']) & (df['Close'].shift(1) < df['EMA_10']) & (df['Close'].shift(1) < df['EMA_20'])",
+        "EMA_Ribbon_Bullish": "(df['EMA_5'] > df['EMA_10']) & (df['EMA_10'] > df['EMA_20']) & (df['EMA_20'] > df['EMA_50'])",
+        "EMA_Ribbon_Bearish": "(df['EMA_5'] < df['EMA_10']) & (df['EMA_10'] < df['EMA_20']) & (df['EMA_20'] < df['EMA_50'])",
+        
+        "RSI_Oversold_30": "df['RSI'] < 30",
+        "RSI_Oversold_35": "df['RSI'] < 35",
+        "RSI_Overbought_70": "df['RSI'] > 70",
+        "RSI_Overbought_65": "df['RSI'] > 65",
+        "RSI_Neutral_40_60": "(df['RSI'] > 40) & (df['RSI'] < 60)",
+        "RSI_Rising": "df['RSI'] > df['RSI'].shift(1)",
+        "RSI_Falling": "df['RSI'] < df['RSI'].shift(1)",
+        "RSI_5_Oversold": "df['RSI_5'] < 30",
+        "RSI_21_Oversold": "df['RSI_21'] < 40",
+        "RSI_Divergence": "(df['Close'].shift(1) < df['Close'].shift(5)) & (df['RSI'] > df['RSI'].shift(5))",
+        
+        "High_ATR": "df['ATR'] > df['ATR'].rolling(20).mean().shift(1)",
+        "Low_ATR": "df['ATR'] < df['ATR'].rolling(20).mean().shift(1)",
+        "ATR_Expanding": "df['ATR'] > df['ATR'].shift(1)",
+        "ATR_Contracting": "df['ATR'] < df['ATR'].shift(1)",
+        "High_Range_Day": "df['High_Low_Range'] > df['High_Low_Range'].rolling(20).mean().shift(1)",
+        "Low_Range_Day": "df['High_Low_Range'] < df['High_Low_Range'].rolling(20).mean().shift(1)",
+        "BB_Squeeze": "(df['BB_Upper'] - df['BB_Lower']) < (df['BB_Upper'] - df['BB_Lower']).rolling(20).mean().shift(1)",
+        "BB_Expansion": "(df['BB_Upper'] - df['BB_Lower']) > (df['BB_Upper'] - df['BB_Lower']).rolling(20).mean().shift(1)",
+        "Price_Below_BB_Lower": "df['Close'].shift(1) < df['BB_Lower']",
+        "Price_Above_BB_Upper": "df['Close'].shift(1) > df['BB_Upper']",
+        
+        "High_Volume": "df['Volume_Ratio'] > 1.5",
+        "Low_Volume": "df['Volume_Ratio'] < 0.5",
+        "Volume_Spike": "df['Volume_Ratio'] > 2.0",
+        "Volume_Drought": "df['Volume_Ratio'] < 0.3",
+        "Rising_Volume": "df['Volume'].shift(1) > df['Volume'].shift(2)",
+        "Falling_Volume": "df['Volume'].shift(1) < df['Volume'].shift(2)",
+        "OBV_Rising": "df['OBV'] > df['OBV'].shift(5)",
+        "OBV_Falling": "df['OBV'] < df['OBV'].shift(5)",
+        "Volume_Price_Confirmation": "((df['Close'].shift(1) > df['Close'].shift(2)) & (df['Volume'].shift(1) > df['Volume'].shift(2)))",
+        "Volume_Price_Divergence": "((df['Close'].shift(1) > df['Close'].shift(2)) & (df['Volume'].shift(1) < df['Volume'].shift(2)))",
+        
+        "Monday": "df['DayOfWeek'] == 0",
+        "Tuesday": "df['DayOfWeek'] == 1",
+        "Wednesday": "df['DayOfWeek'] == 2",
+        "Thursday": "df['DayOfWeek'] == 3",
+        "Friday": "df['DayOfWeek'] == 4",
+        "Early_Week": "df['DayOfWeek'].isin([0, 1])",
+        "Mid_Week": "df['DayOfWeek'].isin([2, 3])",
+        "Late_Week": "df['DayOfWeek'] == 4",
+        "Not_Monday": "df['DayOfWeek'] != 0",
+        "Not_Friday": "df['DayOfWeek'] != 4",
+        
+        "After_Red_Day": "df['PrevDayRed']",
+        "After_Green_Day": "~df['PrevDayRed']",
+        "After_2_Red_Days": "df['Prev2DaysRed']",
+        "After_3_Red_Days": "df['Prev3DaysRed']",
+        "After_Gap_Up": "df['GapUp']",
+        "After_Gap_Down": "df['GapDown']",
+        "Large_Prev_Range": "df['High_Low_Range'] > df['ATR'] * 1.5",
+        "Small_Prev_Range": "df['High_Low_Range'] < df['ATR'] * 0.5",
+        "Bullish_Engulfing": "(df['Close'].shift(1) > df['Open'].shift(1)) & (df['Close'].shift(2) < df['Open'].shift(2)) & (df['Open'].shift(1) < df['Close'].shift(2)) & (df['Close'].shift(1) > df['Open'].shift(2))",
+        "Bearish_Engulfing": "(df['Close'].shift(1) < df['Open'].shift(1)) & (df['Close'].shift(2) > df['Open'].shift(2)) & (df['Open'].shift(1) > df['Close'].shift(2)) & (df['Close'].shift(1) < df['Open'].shift(2))",
+        
+        "MACD_Bullish": "df['MACD'] > df['MACD_Signal']",
+        "MACD_Bearish": "df['MACD'] < df['MACD_Signal']",
+        "MACD_Cross_Up": "(df['MACD'] > df['MACD_Signal']) & (df['MACD'].shift(1) <= df['MACD_Signal'].shift(1))",
+        "MACD_Cross_Down": "(df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))",
+        "Stoch_Oversold": "df['Stoch_K'] < 20",
+        "Stoch_Overbought": "df['Stoch_K'] > 80",
+        "Stoch_K_Above_D": "df['Stoch_K'] > df['Stoch_D']",
+        "Stoch_K_Below_D": "df['Stoch_K'] < df['Stoch_D']",
+        "Stoch_Rising": "df['Stoch_K'] > df['Stoch_K'].shift(1)",
+        "Stoch_Falling": "df['Stoch_K'] < df['Stoch_K'].shift(1)",
+        
+        "Price_Rising": "df['Close'].shift(1) > df['Close'].shift(2)",
+        "Price_Falling": "df['Close'].shift(1) < df['Close'].shift(2)",
+        "Up_3_Days": "(df['Close'].shift(1) > df['Close'].shift(2)) & (df['Close'].shift(2) > df['Close'].shift(3)) & (df['Close'].shift(3) > df['Close'].shift(4))",
+        "Down_3_Days": "(df['Close'].shift(1) < df['Close'].shift(2)) & (df['Close'].shift(2) < df['Close'].shift(3)) & (df['Close'].shift(3) < df['Close'].shift(4))",
+        "Above_VWAP": "df['Close'].shift(1) > df['VWAP']",
+        "Below_VWAP": "df['Close'].shift(1) < df['VWAP']",
+        "Strong_Close": "(df['Close'].shift(1) - df['Low'].shift(1)) > (df['High'].shift(1) - df['Low'].shift(1)) * 0.7",
+        "Weak_Close": "(df['Close'].shift(1) - df['Low'].shift(1)) < (df['High'].shift(1) - df['Low'].shift(1)) * 0.3",
+        "Oversold_Bounce": "(df['RSI'].shift(1) < 30) & (df['Close'].shift(1) > df['Close'].shift(2))",
+        "Overbought_Reversal": "(df['RSI'].shift(1) > 70) & (df['Close'].shift(1) < df['Close'].shift(2))",
+        
+        "VIX_Low": "df.get('OPEN_VIX', pd.Series([20]*len(df))) < 20",
+        "VIX_Medium": "(df.get('OPEN_VIX', pd.Series([20]*len(df))) >= 20) & (df.get('OPEN_VIX', pd.Series([20]*len(df))) < 30)",
+        "VIX_High": "df.get('OPEN_VIX', pd.Series([30]*len(df))) >= 30",
+        "VIX_Rising": "df.get('OPEN_VIX', pd.Series([20]*len(df))) > df.get('OPEN_VIX', pd.Series([20]*len(df))).shift(1)",
+        "VIX_Falling": "df.get('OPEN_VIX', pd.Series([20]*len(df))) < df.get('OPEN_VIX', pd.Series([20]*len(df))).shift(1)",
+        "VIX_Spike": "df.get('OPEN_VIX', pd.Series([20]*len(df))) > df.get('OPEN_VIX', pd.Series([20]*len(df))).rolling(20).mean() * 1.2",
+        "VIX_Drop": "df.get('OPEN_VIX', pd.Series([20]*len(df))) < df.get('OPEN_VIX', pd.Series([20]*len(df))).rolling(20).mean() * 0.8",
+        "VIX_Contango": "df.get('CLOSE_VIX', pd.Series([20]*len(df))) > df.get('OPEN_VIX', pd.Series([20]*len(df)))",
+        "VIX_Above_Avg": "df.get('OPEN_VIX', pd.Series([20]*len(df))) > df.get('OPEN_VIX', pd.Series([20]*len(df))).rolling(50).mean()",
+        "VIX_Below_Avg": "df.get('OPEN_VIX', pd.Series([20]*len(df))) < df.get('OPEN_VIX', pd.Series([20]*len(df))).rolling(50).mean()",
+        
+        "Mean_Reversion": "(df['Close'].shift(1) < df['SMA_20'] * 0.98)",
+        "Oversold_High_Volume": "(df['RSI'] < 30) & (df['Volume_Ratio'] > 1.5)",
+        "Trend_Following": "(df['SMA_5'] > df['SMA_10']) & (df['SMA_10'] > df['SMA_20'])",
+    }
+
+
+def fix_strategy_file(filepath, indicator1, indicator2):
+    """Fix a single strategy file to use proper indicator conditions"""
+    
+    conditions_map = get_all_condition_mappings()
+    
+    with open(filepath, 'r') as f:
+        content = f.read()
+    
+    condition1_pattern = r"# Condition 1: .*?\n\s*condition1 = .*?\n"
+    condition1_code = conditions_map.get(indicator1, f"pd.Series([True]*len(df))  # WARNING: Unknown indicator {indicator1}")
+    condition1_replacement = f"# Condition 1: {indicator1}\n        condition1 = {condition1_code}\n"
+    content = re.sub(condition1_pattern, condition1_replacement, content)
+    
+    condition2_pattern = r"# Condition 2: .*?\n\s*condition2 = .*?\n"
+    condition2_code = conditions_map.get(indicator2, f"pd.Series([True]*len(df))  # WARNING: Unknown indicator {indicator2}")
+    condition2_replacement = f"# Condition 2: {indicator2}\n        condition2 = {condition2_code}\n"
+    content = re.sub(condition2_pattern, condition2_replacement, content)
+    
+    with open(filepath, 'w') as f:
+        f.write(content)
+    
+    return True
+
+
+def main():
+    """Fix all strategy files in the directory"""
+    
+    files_to_fix = [f for f in os.listdir('.') if f.startswith('hf_') and f.endswith('.py')]
+    
+    print(f"Found {len(files_to_fix)} strategy files to fix")
+    
+    fixed_count = 0
+    for filename in files_to_fix:
+        parts = filename.replace('hf_profit_', '').replace('hf_success_', '').replace('.py', '').split('_and_')
+        
+        if len(parts) >= 2:
+            
+            with open(filename, 'r') as f:
+                content = f.read()
+                
+            indicator1_match = re.search(r'1\. (.+?)\n', content)
+            indicator2_match = re.search(r'2\. (.+?)\n', content)
+            
+            if indicator1_match and indicator2_match:
+                indicator1 = indicator1_match.group(1)
+                indicator2 = indicator2_match.group(1)
+                
+                print(f"Fixing {filename}: {indicator1} + {indicator2}")
+                
+                if fix_strategy_file(filename, indicator1, indicator2):
+                    fixed_count += 1
+            else:
+                print(f"Could not extract indicators from {filename}")
+    
+    print(f"\nFixed {fixed_count} strategy files")
+    
+    create_updated_generator()
+
+
+def create_updated_generator():
+    """Create an updated version of the strategy file generator with all conditions"""
+    
+    with open('create_high_frequency_strategy_files.py', 'r') as f:
+        content = f.read()
+    
+    conditions_map = get_all_condition_mappings()
+    
+    new_function = '''def get_condition_code(indicator):
+    """Get the condition code for a specific indicator"""
+    conditions_map = {
+'''
+    
+    for key, value in conditions_map.items():
+        new_function += f'        "{key}": "{value}",\n'
+    
+    new_function += '''    }
+    
+    return conditions_map.get(indicator, "pd.Series([True]*len(df))")
+'''
+    
+    pattern = r'def get_condition_code\(indicator\):.*?return conditions_map\.get\(indicator, "pd\.Series\(\[True\]\*len\(df\)\)"\)'
+    content = re.sub(pattern, new_function.strip(), content, flags=re.DOTALL)
+    
+    with open('create_high_frequency_strategy_files_fixed.py', 'w') as f:
+        f.write(content)
+    
+    print("Created updated generator: create_high_frequency_strategy_files_fixed.py")
+
+
+if __name__ == "__main__":
+    main()

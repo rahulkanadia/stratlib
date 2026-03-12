@@ -1,0 +1,50 @@
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from bs4 import BeautifulSoup
+import time
+
+def scrape_yahoo_historical_data_selenium(url):
+    options = Options()
+    options.add_argument('--headless')
+    driver = webdriver.Chrome(options=options)  # Make sure chromedriver is in PATH
+    
+    try:
+        driver.get(url)
+        
+        time.sleep(5)
+        
+        html = driver.page_source
+        soup = BeautifulSoup(html, "html.parser")
+        
+        table = soup.find("table", attrs={"data-test": "historical-prices"})
+        if not table:
+            print("Could not find the historical prices table in HTML.")
+            return []
+        
+        rows = table.find("tbody").find_all("tr")
+        data = []
+        for row in rows:
+            cols = row.find_all("td")
+            if len(cols) < 7:
+                continue
+            data.append({
+                "Date": cols[0].get_text(strip=True),
+                "Open": cols[1].get_text(strip=True),
+                "High": cols[2].get_text(strip=True),
+                "Low": cols[3].get_text(strip=True),
+                "Close": cols[4].get_text(strip=True),
+                "Adj Close": cols[5].get_text(strip=True),
+                "Volume": cols[6].get_text(strip=True),
+            })
+        return data
+        
+    finally:
+        driver.quit()
+
+if __name__ == "__main__":
+    url = "https://finance.yahoo.com/quote/F/history/?period1=1423008000&period2=1738659661"
+    stock_data = scrape_yahoo_historical_data_selenium(url)
+    if stock_data:
+        print("Found", len(stock_data), "rows.")
+    else:
+        print("No data found.")

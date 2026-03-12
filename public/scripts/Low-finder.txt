@@ -1,0 +1,64 @@
+
+> 策略名称
+
+Low-finder
+
+> 策略作者
+
+Zer3192
+
+
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|v_input_1|21|length|
+|v_input_2|false|Highdetector|
+
+
+> 源码 (PineScript)
+
+``` javascript
+
+
+
+
+
+study(title = "Low finder ", overlay = true)
+length=input(21)
+
+p = close
+vrsi = rsi(p, length)
+pp=ema(vrsi,length)
+d=(vrsi-pp)*5
+cc=(vrsi+d+pp)/2
+
+low1=crossover(cc,0)
+plotshape(low1 , title="Low", text="Low", color=color.green, style=shape.labelup, location=location.belowbar, size=size.small, textcolor=color.white, transp=0) 
+
+alertcondition(low1,title="Low detected")
+
+bb=(vrsi-d+pp)/2
+
+Highdetector=input(false)
+high1=crossunder(bb,90)
+plotshape(Highdetector and high1, title="High", text="High", color=color.red, style=shape.labeldown, location=location.abovebar, size=size.small, textcolor=color.white, transp=0)
+
+alertcondition(high1,title="High detected")
+if low1
+   strategy.entry("buy", strategy.long)
+else if  high1
+    strategy.entry("sell", strategy.short)
+
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2022-05-29 07:41:54

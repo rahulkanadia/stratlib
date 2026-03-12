@@ -1,0 +1,131 @@
+
+
+
+study("Bollinger Bands Winner IND [Alorse]", shorttitle="BB Winner IND [Alorse]", overlay=true) 
+
+txtVer = "2.0.8"
+version = input(title="Version", type=input.string, defval=txtVer, options=[txtVer], tooltip="This is informational only, nothing will change.")
+
+
+bbGroup = "Bollindger Bands"
+src = input(title="Source", type=input.source, defval=close, group=bbGroup)
+length = input(20, title="Length", group=bbGroup)
+mult = input(2.0, title="StdDev", minval=0.001, maxval=5, group=bbGroup)
+
+basis = sma(src, length)
+dev = mult * stdev(src, length)
+upper = basis + dev
+lower = basis - dev
+
+
+rsiGroup = "RSI Filter"
+hasRSI = input(true, title="╔══════   Use RSI   ══════╗", group=rsiGroup, tooltip="Long: Only when RSI is below 45\nShort: Only when RSI is above 55")
+aboveRSI = input(45, title="Above", inline="Above", group=rsiGroup)
+srcRSI = input(close, title="Source", type=input.source, group=rsiGroup)
+lenRSI = input(14, title="Length", minval=1, group=rsiGroup)
+belowRSI = input(55, title="Below", inline="Above", group=rsiGroup)
+RSI = rsi(srcRSI, lenRSI)
+
+
+aroonGroup = "Aroon Filter"
+hasAroon = input(false, title="╔══════ Use Aroon ══════╗", group=aroonGroup, tooltip="Aroon plays a key role in this strategy. It acts as a confirmation that the asset is currently in an uptrend. On the other hand, it acts as a stop if market conditions deteriorate. The strategy uses an Aroon Indicator set to 288 periods to provide a longer-term view on market conditions, not being heavily dependent on short-term volatility.")
+lengthAr = input(288, title="Periods", minval=1, group=aroonGroup)
+Confirmation = input(90, title="Confirmation", group=aroonGroup, inline="Above")
+Stop = input(70, title="Stop", group=aroonGroup, inline="Above")
+AroonUP = 100 * (highestbars(high, lengthAr+1) + lengthAr)/lengthAr
+
+buyAroonFilter = hasAroon ? AroonUP > Confirmation : true
+sellAroonFilter = hasAroon ? AroonUP < Stop : true
+
+
+maGroup = "Moving Average"
+hasMa = input(true, title="╔══════   Use MA   ══════╗", group=maGroup, tooltip="asd")
+maType = input(title="Moving Average Type", type=input.string, defval="EMA", options=["EMA", "SMA"], group=maGroup)
+maLen = input(200, minval=1, title="Moving Average length", group=maGroup)
+ma = maType == "EMA" ? ema(src, maLen) : sma(src, maLen)
+
+buyMaFilter = hasMa ? close > ma : true
+sellMaFilter = hasMa ? close < ma : true
+
+
+stratGroup = "Strategy"
+candleper = input(title="Candle %", type=input.integer, minval=0, maxval=100, defval=30, group=stratGroup, tooltip="When the candle's body passes the Bollinger Bands in this percentage, a new entry will open in the opposite direction.") * 0.01
+cbSize = input(false, title="Include shadow as part of the body", group=stratGroup)
+showLong = input(true, title="Long entries", group=stratGroup)
+showShort = input(false, title="Short entries", group=stratGroup)
+
+closeEarly = input(true, title="Close position early", group=stratGroup, tooltip="The position will be closed when the price touches the Bollinger Bands in the opposite direction and trade is in profit.")
+candle_size = cbSize ? high-low : close > open ? close - open : open - close
+buyzone = (candle_size*candleper) + low
+sellzone = high - (candle_size*candleper)
+
+body_size = close > open ? close - open : open - close
+bs60 = body_size*0.6
+bsBuy = low + bs60
+bsSell = high - bs60
+seBuy = true 
+seSell = true 
+
+buyRSIFilter = hasRSI ? RSI < aboveRSI : true
+sellRSIFilter = hasRSI ? RSI > belowRSI : true
+
+
+
+
+
+
+
+buy = buyzone < lower and close < open and buyRSIFilter and buyAroonFilter and buyMaFilter and seBuy
+sell = sellzone > upper and close > open and sellRSIFilter and sellAroonFilter and sellMaFilter and seSell
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+buyExit = RSI < 70 and buyzone > upper ? false : buyzone > upper
+sellExit = RSI > 30 and sellzone < lower ? false : sellzone < lower
+
+    
+plotshape(showLong and buy, location=location.belowbar, text="Long", style=shape.arrowup, color=color.blue)
+    
+    
+    
+    
+    
+    
+plotshape(showLong and not showShort and buyExit, location=location.abovebar, text="Exit", style=shape.arrowdown, color=color.fuchsia)
+
+    
+plotshape(showShort and buy, location=location.abovebar, text="Exit", style=shape.arrowdown, color=color.red)
+    
+    
+    
+    
+    
+    
+plotshape(showShort and not showLong and sellExit, location=location.belowbar, text="Exit", style=shape.arrowdown, color=color.fuchsia)

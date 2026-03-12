@@ -1,0 +1,126 @@
+import pandas as pd
+import numpy as np
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_rolling_average_drop(df, window=21):
+    """Calculate rolling average of drops on red days."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=window).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    return df
+
+def calculate_moving_average(df, period=50):
+    """Calculate simple moving average."""
+    df[f'MA{period}'] = df['Close'].rolling(window=period).mean()
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def analyze_dip_with_ma_filter(df, initial_investment=16000, rolling_window=21, ma_period=50, above_ma=True):
+    """Implement DIP strategy with MA filter."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df, window=rolling_window)
+    df = calculate_moving_average(df, period=ma_period)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < ma_period:  # Need enough data for MA
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        close_price = current_day['Close']
+        ma_value = current_day[f'MA{ma_period}']
+        
+        if avg_drop <= 0 or pd.isna(ma_value):
+            continue
+        
+        if above_ma and close_price <= ma_value:
+            continue
+        elif not above_ma and close_price >= ma_value:
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            trades.append({
+                'Date': current_day['Date'],
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                f'MA{ma_period}': ma_value,
+                'Above MA': close_price > ma_value,
+                'Profit/Loss': profit_loss
+            })
+    
+    return pd.DataFrame(trades)
+
+def optimize_ma_filter(file_name, initial_investment=16000):
+    """Optimize MA period and position for best success rate."""
+    df = load_data(file_name)
+    
+    best_params = None
+    best_success_rate = 0
+    results = []
+    
+    for ma_period in [20, 50, 100, 200]:
+        for above_ma in [True, False]:
+            trades_df = analyze_dip_with_ma_filter(df, initial_investment, 21, ma_period, above_ma)
+            
+            if len(trades_df) >= 100:  # Only consider if we have at least 100 trades
+                total_trades = len(trades_df)
+                winning_trades = len(trades_df[trades_df['Profit/Loss'] > 0])
+                success_rate = winning_trades / total_trades if total_trades > 0 else 0
+                total_profit = trades_df['Profit/Loss'].sum()
+                
+                results.append({
+                    'MA Period': ma_period,
+                    'Position': 'Above MA' if above_ma else 'Below MA',
+                    'Total Trades': total_trades,
+                    'Success Rate': success_rate,
+                    'Total Profit': total_profit
+                })
+                
+                if success_rate > best_success_rate:
+                    best_success_rate = success_rate
+                    best_params = (ma_period, above_ma)
+    
+    results_df = pd.DataFrame(results)
+    print("=== MA Filter Optimization Results ===")
+    print(results_df.sort_values('Success Rate', ascending=False))
+    
+    if best_params:
+        position_text = 'Above' if best_params[1] else 'Below'
+        print(f"\nBest MA Filter: {position_text} MA{best_params[0]}")
+        print(f"Best Success Rate: {best_success_rate:.2%}")
+        
+        final_trades = analyze_dip_with_ma_filter(df, initial_investment, 21, best_params[0], best_params[1])
+        print(f"\nFinal Results with {position_text} MA{best_params[0]}:")
+        print(f"Total Trades: {len(final_trades)}")
+        print(f"Total Profit: ${final_trades['Profit/Loss'].sum():,.2f}")
+    
+    return best_params, best_success_rate
+
+if __name__ == "__main__":
+    file_name = "../7J0OK1VR.csv"
+    initial_investment = 16000
+    best_params, best_rate = optimize_ma_filter(file_name, initial_investment)

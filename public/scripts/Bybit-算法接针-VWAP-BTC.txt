@@ -1,0 +1,416 @@
+
+> 策略名称
+
+Bybit-算法接针-VWAP-BTC
+
+> 策略作者
+
+扁豆子
+
+> 策略描述
+
+在这里开始分享Bybit原始版本的接针策略~
+主要原因是什么呢
+ ![IMG](https:
+ 
+ 这就很气了不是...
+ 你说好好的开源, 都没有不知道情况下被卖生气...
+ 希望小老哥别在这样了~
+ 在这里直接开源,
+ 本身也不是什么牛逼的策略...
+ 
+ 大家随意玩耍叭~
+ 不要花钱买我的辣鸡源码了~
+ 咱直接用!! 走起!!
+ 
+ 顺便广告一发~
+ 更多亏钱攻略请关注公众号 "扁豆子的量化日志"
+ WX: wangxiaoba
+ 
+ (●'◡'●)
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|start_balance|false|初始金额|
+|long_qty|true|单次做多USD|
+|short_qty|true|单次做空USD|
+|maxPosition|500000|最大下单量|
+|take_profit|45|初始止盈(USD)|
+|trailing_profit|true|追踪止盈USD|
+|stop_loss|9|止损百分比|
+|long_vwap_offset|2.5|VWAP上界百分比|
+|short_vwap_offset|2.5|VWAP下界百分比|
+|GG|3|杠杆倍数 (2x-7x为宜, 杠杆越大风险越大)|
+|stop_step|3600|止损后停止时间(s)|
+
+
+> 源码 (javascript)
+
+``` javascript
+
+function user_auth() {
+    user_list = [775536, 783571, 789086, 819490, 1265698, 1294567, 1299150]
+    user_id = account.Info.result[0].user_id
+    
+    if (user_list.indexOf(user_id) == -1) {
+        throw new Error('用户认证错误, 请联系微信: wangxiaoba')
+    }
+}
+
+
+function VWAP() {
+    
+    if (records.length > 1440) {
+        records.splice(0, 1);
+    }
+    var n = records.length - 1
+    
+    var total_sum = 0.0
+    var volume_sum = 0
+    vwap_arr = []
+    vwap_up_arr = []
+    vwap_dw_arr = []
+    for (var i = 0; i < n + 1; i++) {
+        var high_price = records[i].High
+        
+        var low_price = records[i].Low
+        var close_price = records[i].Close
+        
+        var price = (high_price + low_price + close_price) / 3
+        
+        var volume = records[i].Volume
+        
+        total_sum += price * volume
+        
+        volume_sum += volume
+        
+        var re = total_sum / volume_sum
+        var re_up = re * (1 + long_vwap_offset / 100)
+        var re_dw = re * (1 - short_vwap_offset / 100)
+        vwap_arr.push(re)
+        vwap_up_arr.push(re_up)
+        vwap_dw_arr.push(re_dw)
+        
+    }
+    if (vwap_arr.length > 2000) {
+        vwap_arr.splice(0, 1);
+    }
+    if (vwap_up_arr.length > 2000) {
+        vwap_up_arr.splice(0, 1);
+    }
+    if (vwap_dw_arr.length > 2000) {
+        vwap_dw_arr.splice(0, 1);
+    }
+    vwap = vwap_arr[vwap_arr.length - 1]
+    vwap_up = vwap_up_arr[vwap_arr.length - 1]
+    vwap_dw = vwap_dw_arr[vwap_arr.length - 1]
+    
+}
+
+
+function PlotMA_Kline(records, isFirst) {
+    $.PlotRecords(records, "K")
+    if (isFirst) {
+        for (var i = records.length - 1; i >= 0; i--) {
+            if (vwap_arr[i] !== null) {
+                $.PlotLine("vwap", vwap_arr[i], records[i].Time)
+                $.PlotLine("vwap_up", vwap_up_arr[i], records[i].Time)
+                $.PlotLine("vwap_dw", vwap_dw_arr[i], records[i].Time)
+            }
+        }
+        PreBarTime = records[records.length - 1].Time
+    } else {
+        if (PreBarTime !== records[records.length - 1].Time) {
+            $.PlotLine("vwap", vwap_arr[vwap_arr.length - 2], records[records.length - 2].Time)
+            $.PlotLine("vwap_up", vwap_up_arr[vwap_up_arr.length - 2], records[records.length - 2].Time)
+            $.PlotLine("vwap_dw", vwap_dw_arr[vwap_dw_arr.length - 2], records[records.length - 2].Time)
+            PreBarTime = records[records.length - 1].Time
+        }
+        $.PlotLine("vwap", vwap_arr[vwap_arr.length - 1], records[records.length - 1].Time)
+        $.PlotLine("vwap_up", vwap_up_arr[vwap_up_arr.length - 1], records[records.length - 1].Time)
+        $.PlotLine("vwap_dw", vwap_dw_arr[vwap_dw_arr.length - 1], records[records.length - 1].Time)
+    }
+}
+
+
+
+function buy(Price, Amount, dec) {
+    exchange.SetDirection("buy");
+    var orderId = null;
+    orderId = exchange.Buy(Price, Amount, dec, '@');
+    while (!orderId && typeof(orderId) != "undefined" && orderId != 0) {
+        Log(orderId);
+        Sleep(100);
+        orderId = exchange.Buy(Price, Amount, dec, '@');
+
+    }
+    return orderId;
+}
+
+
+function sell(Price, Amount, dec) {
+    exchange.SetDirection("sell");
+    var orderId = null;
+    orderId = exchange.Sell(Price, Amount, dec, '@');
+    while (!orderId && typeof(orderId) != "undefined" && orderId != 0) {
+        Log(orderId);
+        Sleep(100);
+        orderId = exchange.Sell(Price, Amount, dec, '@');
+
+    }
+    return orderId;
+}
+
+
+function AccountInfo() {
+    
+    var AccountTab = {
+        type: "table",
+        title: "资产信息",
+        cols: ["仓位", "持仓方向", "持仓均价", "当前价格", "爆仓点位", "杠杆倍数", "仓位盈亏", "起始资产值", "总资产", "净资产", "总盈亏"],
+        rows: [],
+    }
+    AccountTab.rows.push([account.Info.result[0].size, CW, account.Info.result[0].entry_price, ticker.Last, account.Info.result[0].liq_price, account.Info.result[0].leverage, account.Info.result[0].unrealised_pnl, start_balance, account.Info.result[0].wallet_balance, jzc, pt])
+    LogStatus(_D() + '   STATUS: ' + CW + '\n' +
+        '总计可下单量(*杠杆): ' + yue + '\n' +
+        'index: ' + index + '\n' +
+        'VWAP: ' + vwap + '\n' +
+        'VWAP_UP: ' + vwap_up + '\n' +
+        'VWAP_DW: ' + vwap_dw + '\n' +
+        'N: ' + records.length + '\n' +
+        'WX: wangxiaoba' + '\n' +
+        '`' + JSON.stringify([AccountTab]) + '`' + '\n');
+}
+
+
+function Status() {
+    if (account.Info.result[0].side === "Buy") {
+        status = PD_LONG;
+        CW = "LONG";
+    } else if (account.Info.result[0].side === "Sell") {
+        status = PD_SHORT;
+        CW = "SHORT";
+    } else {
+        status = idle;
+        CW = "IDLE";
+    }
+}
+
+
+function TP() {
+    var TP_first_long = account.Info.result[0].entry_price + take_profit
+    var TP_trailing_long = TP_HH - trailing_profit
+    var TP_first_short = account.Info.result[0].entry_price - take_profit
+    var TP_trailing_short = TP_LL + trailing_profit
+    
+    if ((status === PD_LONG) && (ticker.Last > TP_first_long)) {
+        
+        TP_status = true
+        
+        if (TP_status === true && TP_HH == 0) {
+            Log('触发追踪止盈, 未初始化开仓最大价格 -> 开仓后最大价格更新为现价', TP_HH)
+            TP_HH = ticker.Last
+        }
+        
+        else if (TP_status === true && TP_HH != 0 && ticker.Last > TP_HH) {
+            Log('触发追踪止盈, 已有开仓后最大价格, 现价大于开仓后最大价格 -> 开仓后最大价格更新为现价', TP_HH)
+            TP_HH = ticker.Last
+        }
+        
+        else if (TP_status === true && TP_HH != 0 && ticker.Last < TP_trailing_long) {
+            Log('触发追踪止盈, 已有开仓后最大价格, 现价小于 (开仓后最大价格减 - 回撤USD) -> 开空平仓止盈', TP_HH)
+            sell(-1, account.Info.result[0].size, "在" + ticker.Last + "止赢平多仓!! 开仓价格: " + account.Info.result[0].entry_price + "数量: " + account.Info.result[0].size)
+            status = idle
+            $.PlotFlag(new Date().getTime(), 'Close_Long', 'PT_L')
+            TP_status = false
+            TP_HH = 0
+            LogProfit(pt, pt * ticker.Last)
+        }
+    }
+    
+    else if ((status === PD_SHORT) && (ticker.Last < TP_first_short)) {
+        
+        TP_status = true
+        
+        if (TP_status === true && TP_LL == 0) {
+            Log('触发追踪止盈, 未初始化开仓最大价格 -> 开仓后最小价格更新为现价', TP_LL)
+            TP_LL = ticker.Last
+        }
+        
+        else if (TP_status === true && TP_LL != 0 && ticker.Last < TP_LL) {
+            Log('触发追踪止盈, 已有开仓后最小价格, 现价小于开仓后最小价格 -> 开仓后最小价格更新为现价', TP_LL)
+            TP_LL = ticker.Last
+        }
+        
+        else if (TP_status === true && TP_LL != 0 && ticker.Last > TP_trailing_short) {
+            Log('触发追踪止盈, 已有开仓后最小价格, 现价大于 (开仓后最小价格减 + 回撤USD) -> 开多平仓止盈', TP_LL)
+            buy(-1, account.Info.result[0].size, "在" + ticker.Last + "止赢平空仓!! 开仓价格: " + account.Info.result[0].entry_price + "数量: " + account.Info.result[0].size)
+            status = idle
+            $.PlotFlag(new Date().getTime(), 'Close_Short', 'PT_S')
+            TP_status = false
+            TP_LL = 0
+            LogProfit(pt, pt * ticker.Last)
+        }
+    }
+}
+
+
+function Stoploss() {
+    
+    if ((status === PD_LONG) && (ticker.Last < account.Info.result[0].entry_price - (ticker.Last * stop_loss / 100))) {
+        Log('当多仓时, 现价小于开仓-止损价, 做空平多')
+        sell(-1, account.Info.result[0].size, "在" + ticker.Last + "止损平多仓!! 开仓价格: " + account.Info.result[0].entry_price + " 数量: " + account.Info.result[0].size)
+        status = idle
+        isstoploss = true
+        $.PlotFlag(new Date().getTime(), 'Close_Long', 'ST_L')
+        LogProfit(pt, pt * ticker.Last)
+    }
+    
+    else if ((status === PD_SHORT) && (ticker.Last > account.Info.result[0].entry_price + (ticker.Last * stop_loss / 100))) {
+        Log('当空仓时, 现价大于开仓+止损价, 做多平空')
+        buy(-1, account.Info.result[0].size, "在" + ticker.Last + "止损平空仓!! 开仓价格: " + account.Info.result[0].entry_price + " 数量: " + account.Info.result[0].size)
+        status = idle
+        isstoploss = true
+        $.PlotFlag(new Date().getTime(), 'Close_Short', 'ST_S')
+        LogProfit(pt, pt * ticker.Last)
+    }
+}
+
+function AtrIndex() {
+    if (records && records.length > 14) {
+        var atr = TA.ATR(records, 14)
+    }
+    if (atr && atr.length > 20) {
+        var eamatr = TA.EMA(atr, 20)
+        
+    }
+    if (eamatr){
+        var temp = 0
+        for(var i=0; i<eamatr.length; i++){
+            temp += atr[atr.length - 1]/eamatr[eamatr.length - 1]
+        }
+    }
+    index = _N((temp/eamatr.length), 4)
+}
+
+
+
+function PT_log() {
+    time = new Date().getTime();
+    if (time >= (timep + 7200000)) {
+        LogProfit(pt, pt * ticker.Last);
+        timep = time;
+    }
+}
+
+
+function main() {
+    
+    PreBarTime = 0
+    isFirst = true
+    exchange.SetMarginLevel(GG)
+    exchange.SetContractType('swap');
+    _CDelay(100);
+    idle = -1;
+    status = idle;
+    CW = 0;
+    timep = 0;
+    TP_status = false 
+    TP_HH = 0
+    TP_LL = 0
+    isstoploss = false
+    index = 0
+    
+    var param = {
+        "op": "subscribe",
+        "args": "liquidation"
+    }
+    var client = Dial("wss:
+    client.write('{"op": "subscribe", "args": "liquidation"}')
+    while (1) {
+        
+        account = _C(exchange.GetAccount)
+        records_5m = _C(exchange.GetRecords, PERIOD_M5)
+        records = _C(exchange.GetRecords, PERIOD_M1)
+        ticker = _C(exchange.GetTicker)
+        yue = account.Info.result[0].wallet_balance * ticker.Last * GG; 
+        jzc = account.Info.result[0].wallet_balance + account.Info.result[0].unrealised_pnl; 
+        pt = jzc - start_balance; 
+        
+        
+        Status()
+        
+        
+        
+        
+        
+        AtrIndex()
+        VWAP()
+        
+        if (records) {
+            PlotMA_Kline(records_5m, isFirst)
+            
+            isFirst = false
+        }
+        
+        bitmexData = client.read(-1)
+        obj = null
+        
+        if (bitmexData) {
+            obj = JSON.parse(bitmexData)
+            
+        }
+        
+        
+        
+        
+        if (obj) {
+            if (obj.table == "liquidation" && obj.action == "insert" && obj.data[0].symbol == "XBTUSD") {
+                
+                
+                
+                if (obj.data[0].side == "Buy" && obj.data[0].leavesQty > 250000 && ticker.Last > vwap_up && account.Info.result[0].size < maxPosition) {
+                    Log('判断大小方向, 空')
+                    sell(-1, short_qty, "在" + ticker.Last + "- 做空 " + short_qty + "|")
+                    $.PlotFlag(new Date().getTime(), 'Sell', 'SK')
+                }
+                
+                else if (obj.data[0].side == "Sell" && obj.data[0].leavesQty > 250000 && ticker.Last < vwap_dw && account.Info.result[0].size < maxPosition) {
+                    Log('判断大小方向, 多')
+                    buy(-1, long_qty, "在" + ticker.Last + "- 做多 " + long_qty + "|")
+                    $.PlotFlag(new Date().getTime(), 'Buy', 'BK')
+                }
+            }
+        }
+        
+        Stoploss()
+        if (isstoploss === true) {
+            Log("触发止损, 止损后暂停!! " + stop_step + "s!!!")
+            AccountInfo()
+            Sleep(stop_step * 1000)
+            isstoploss = false
+        }
+        
+        
+        TP()
+        
+        
+        AccountInfo()
+        
+        
+        Sleep(600);
+    }
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2021-01-29 10:44:37

@@ -1,0 +1,430 @@
+import pandas as pd
+import numpy as np
+from itertools import product
+import warnings
+from multiprocessing import Pool, cpu_count
+import os
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+pd.set_option('display.max_colwidth', None)
+
+def load_daily_data(file_name):
+    """
+    Loads the daily CSV file (e.g., SPY) into a DataFrame, sorts by date, and resets the index.
+    Expects columns like [Date, Open, High, Low, Close, Volume].
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_5min_data(file_name_5min):
+    """
+    Loads the 5-minute CSV data, parses 'Time', and creates 'Date_only'.
+    Example columns: [Time, Open, High, Low, Last, Volume, ...]
+    """
+    df_5 = pd.read_csv(file_name_5min)
+    df_5['Time'] = pd.to_datetime(df_5['Time'], format='%m/%d/%Y %H:%M', errors='coerce')
+    df_5.dropna(subset=['Time'], inplace=True)
+    df_5.sort_values('Time', inplace=True)
+    df_5.reset_index(drop=True, inplace=True)
+    df_5['Date_only'] = df_5['Time'].dt.date
+    return df_5
+
+def calculate_day_range(day):
+    """Calculates the trading range of a day (High - Low)."""
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """Calculates the gap between the previous day's close and the current day's open."""
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    """
+    'Inverse Gap & Go' logic:
+      - Gap must be >= $0.20
+      - gap_percentage < 0.15 of previous day's range
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return gap_percentage < 0.15 or gap_percentage > 0.15
+
+def determine_trade_direction(gap):
+    """Gap up => Long, Gap down => Short."""
+    return 'Long' if gap > 0 else 'Short'
+
+def check_gap_closure(trade_direction, day_data, prev_close):
+    """
+    Checks intraday closure of previous day's close:
+      - If Short and day_data['Low'] <= prev_close => gap closed intraday
+      - If Long and day_data['High'] >= prev_close => gap closed intraday
+      Else exit at daily close.
+    """
+    if trade_direction == 'Short':
+        if day_data['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = day_data['Close']
+            gap_closed = False
+    else:  # Long
+        if day_data['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = day_data['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """Computes profit or loss using position_size / entry_price as share count."""
+    if entry_price == 0:
+        return 0.0
+    shares = position_size / entry_price
+    if trade_direction == 'Long':
+        return shares * (exit_price - entry_price)
+    else:  # Short
+        return shares * (entry_price - exit_price)
+
+def precompute_trades(df_daily, df_5min, initial_investment):
+    """
+    1) Identify valid trades based on daily gap logic.
+    2) Merge with first 5-min candle for entry price/volume.
+    3) Check gap closure intraday, finalize exit, compute P/L.
+    """
+    potential_trades = []
+    total_days = len(df_daily)
+
+    for i in range(1, total_days):
+        prev_day = df_daily.iloc[i - 1]
+        curr_day = df_daily.iloc[i]
+        current_date = curr_day['Date']
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        direction = determine_trade_direction(gap)
+
+        potential_trades.append({
+            'Date': current_date,
+            'Trade Direction': direction,
+            'Previous Close': prev_day['Close'],
+            'High': curr_day['High'],
+            'Low': curr_day['Low'],
+            'Close': curr_day['Close']
+        })
+
+    if not potential_trades:
+        return pd.DataFrame()
+
+    trades_df = pd.DataFrame(potential_trades)
+    trades_df['Date_only'] = trades_df['Date'].dt.date
+
+    df_5_first_candle = df_5min.groupby('Date_only').first().reset_index()
+
+    merged = trades_df.merge(
+        df_5_first_candle[['Date_only', 'Last', 'Volume']],
+        on='Date_only',
+        how='left',
+        suffixes=('', '_5min')
+    )
+
+    finalized = []
+    for _, row in merged.iterrows():
+        direction = row['Trade Direction']
+        prev_close = row['Previous Close']
+
+        entry_price = row['Last'] if not pd.isna(row['Last']) else row['Close']
+
+        exit_price, gap_closed = check_gap_closure(direction, row, prev_close)
+        pl = calculate_profit_loss(direction, entry_price, exit_price, initial_investment)
+
+        finalized.append({
+            'Date': row['Date'],
+            'Trade Direction': direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed,
+            'Volume_5min': row['Volume'],  # 5-minute volume for that first candle
+            'Profit/Loss': pl
+        })
+
+    return pd.DataFrame(finalized)
+
+def calculate_atr(df, n):
+    """Calculates the Average True Range (ATR) over 'n' days in a daily DataFrame."""
+    df = df.copy()
+    df['Previous Close'] = df['Close'].shift(1)
+    df['High-Low'] = df['High'] - df['Low']
+    df['High-PrevClose'] = (df['High'] - df['Previous Close']).abs()
+    df['Low-PrevClose'] = (df['Low'] - df['Previous Close']).abs()
+    df['TR'] = df[['High-Low', 'High-PrevClose', 'Low-PrevClose']].max(axis=1)
+    df['ATR'] = df['TR'].rolling(window=n).mean()
+    return df
+
+def compute_atr_metrics(args):
+    """
+    For a given (n, T), filters trades by ATR >= T, computes occurrence_count, success_rate, total_profit.
+    """
+    trades_df, df_daily, n, T, position_size = args
+    df_atr = calculate_atr(df_daily.copy(), n)
+    merged = trades_df.merge(df_atr[['Date', 'ATR']], on='Date', how='left')
+    merged.dropna(subset=['ATR'], inplace=True)
+
+    filtered = merged[merged['ATR'] >= T]
+    occ_count = len(filtered)
+    if occ_count == 0:
+        return (n, T, 0, 0, 0.0, 0.0)
+
+    pl = filtered['Profit/Loss'].values
+    success_count = (pl > 0).sum()
+    success_rate = success_count / occ_count
+    total_profit = pl.sum()
+    return (n, T, occ_count, success_count, success_rate, total_profit)
+
+def optimize_atr(trades_df, df_daily, position_size, n_values, T_values, atr_min_occ=10):
+    """
+    Searches over (n, T) combos, returns combos with OccurrenceCount >= atr_min_occ,
+    sorted descending by (SuccessRate, OccurrenceCount, TotalProfit).
+    """
+    from multiprocessing import Pool, cpu_count
+
+    combos = list(product(n_values, T_values))
+    args_list = [
+        (trades_df.copy(), df_daily.copy(), n, T, position_size)
+        for n, T in combos
+    ]
+
+    with Pool(processes=cpu_count()) as pool:
+        results = pool.map(compute_atr_metrics, args_list)
+
+    df_res = pd.DataFrame(results, columns=[
+        'n', 'T', 'OccurrenceCount', 'SuccessCount', 'SuccessRate', 'TotalProfit'
+    ])
+    df_res = df_res[df_res['OccurrenceCount'] >= atr_min_occ]
+
+    df_res.sort_values(
+        by=['SuccessRate', 'OccurrenceCount', 'TotalProfit'],
+        ascending=[False, False, False],
+        inplace=True
+    )
+    df_res.reset_index(drop=True, inplace=True)
+    return df_res
+
+def find_best_volume_thresholds(trades_df, volume_min, volume_max, volume_step, min_occ_count):
+    """
+    One-dimensional volume threshold search. 
+    For each threshold in [volume_min, volume_max], filters trades by Volume_5min > threshold.
+    """
+    volume_values = np.arange(volume_min, volume_max + volume_step, volume_step)
+    vol_array = trades_df['Volume_5min'].values
+    pl_array = trades_df['Profit/Loss'].values
+
+    results = []
+    for vth in volume_values:
+        cond = (vol_array > vth)
+        occ_count = cond.sum()
+        if occ_count == 0:
+            results.append((vth, 0, 0, 0.0, 0.0))
+            continue
+
+        subset_pl = pl_array[cond]
+        success_count = (subset_pl > 0).sum()
+        success_rate = success_count / occ_count
+        total_profit = subset_pl.sum()
+        results.append((vth, occ_count, success_count, success_rate, total_profit))
+
+    df_res = pd.DataFrame(results, columns=[
+        'VolumeThreshold', 'OccurrenceCount', 'SuccessCount', 'SuccessRate', 'TotalProfit'
+    ])
+    df_res = df_res[df_res['OccurrenceCount'] >= min_occ_count]
+
+    df_res.sort_values(
+        by=['SuccessRate', 'OccurrenceCount', 'TotalProfit'],
+        ascending=[False, False, False],
+        inplace=True
+    )
+    df_res.reset_index(drop=True, inplace=True)
+    return df_res
+
+def run_volume_atr_optimization(df_daily, df_5min, initial_investment,
+                                volume_min, volume_max, volume_step,
+                                atr_n_min, atr_n_max, atr_T_min, atr_T_max, atr_T_step,
+                                min_occurrence_count):
+    """
+    1) Precompute trades with 5-min data for entry logic.
+    2) Find top 3 volume thresholds (1D).
+    3) For each threshold, run ATR optimization and pick top 3 combos.
+    4) Print a final 3×3 summary, mirroring Version One's style.
+    """
+    print(f"\n--- Running Volume + ATR Optimization (5-min) with min_occurrence_count={min_occurrence_count} ---\n")
+    trades_df = precompute_trades(df_daily, df_5min, initial_investment)
+    if trades_df.empty:
+        print("No valid trades found.")
+        return
+
+    print(f"Total Valid Trades: {len(trades_df)}")
+
+    volume_df_sorted = find_best_volume_thresholds(
+        trades_df, volume_min, volume_max, volume_step, min_occurrence_count
+    )
+    if volume_df_sorted.empty:
+        print("No volume thresholds passed min_occurrence_count filter.")
+        return
+
+    top_3_volume = volume_df_sorted.head(3)
+
+    final_summaries = []
+    for idx, row in top_3_volume.iterrows():
+        vol_thresh = row['VolumeThreshold']
+        occ_vol = row['OccurrenceCount']
+        sr_vol = row['SuccessRate']
+        profit_vol = row['TotalProfit']
+
+        print(f"\n>>> Volume condition #{idx+1}: Volume_5min > {vol_thresh:.0f}")
+        print(f"    (SuccessRate={sr_vol:.2f}, Occurrences={occ_vol}, TotalProfit={profit_vol:.2f})")
+
+        trades_filtered = trades_df[trades_df['Volume_5min'] > vol_thresh]
+        if trades_filtered.empty:
+            print("No trades found under this volume threshold.")
+            continue
+
+        n_values = range(atr_n_min, atr_n_max + 1)
+        T_values = np.round(np.arange(atr_T_min, atr_T_max + atr_T_step, atr_T_step), 2)
+
+        atr_res_sorted = optimize_atr(
+            trades_df=trades_filtered,
+            df_daily=df_daily,
+            position_size=initial_investment,
+            n_values=n_values,
+            T_values=T_values,
+            atr_min_occ=10  # Example value
+        )
+
+        if atr_res_sorted.empty:
+            print("No ATR combos passed OccurrenceCount >= 10.")
+            continue
+
+        top_3_atr = atr_res_sorted.head(3)
+        print("\nTop 3 ATR results for this Volume condition (Occ >= 10):")
+        print(top_3_atr.to_string(index=False))
+
+        for idx2, row_atr in top_3_atr.iterrows():
+            n_val = int(row_atr['n'])
+            t_val = row_atr['T']
+            occ_atr = row_atr['OccurrenceCount']
+            sr_atr = row_atr['SuccessRate']
+            profit_atr = row_atr['TotalProfit']
+
+            print(f"\n--- ATR condition #{idx2+1} for Volume_5min > {vol_thresh:.0f} ---")
+            print(f"n={n_val}, T={t_val}, Occ={occ_atr}, SuccessRate={sr_atr:.2f}, Profit={profit_atr:.2f}")
+
+            df_atr = calculate_atr(df_daily.copy(), n_val)
+            trades_final = trades_filtered.merge(df_atr[['Date', 'ATR']], on='Date', how='left')
+            trades_final.dropna(subset=['ATR'], inplace=True)
+            trades_final = trades_final[trades_final['ATR'] >= t_val]
+
+            if trades_final.empty:
+                occ_final = 0
+                succ_count_final = 0
+                sr_final = 0.0
+                profit_final = 0.0
+            else:
+                occ_final = len(trades_final)
+                pl_final = trades_final['Profit/Loss'].values
+                succ_count_final = (pl_final > 0).sum()
+                sr_final = succ_count_final / occ_final if occ_final else 0.0
+                profit_final = pl_final.sum()
+
+            print(f"Final (filtered) => Occ={occ_final}, Successes={succ_count_final}, "
+                  f"SuccessRate={sr_final:.2f}, TotalProfit={profit_final:.2f}\n")
+
+            final_summaries.append({
+                'VolumeThreshold': vol_thresh,
+                'n': n_val,
+                'T': t_val,
+                'Occ(Vol)': occ_vol,
+                'SR(Vol)': sr_vol,
+                'PL(Vol)': profit_vol,
+                'Occ(ATR)': occ_atr,
+                'SR(ATR)': sr_atr,
+                'PL(ATR)': profit_atr,
+                'Occ(Final)': occ_final,
+                'SR(Final)': sr_final,
+                'PL(Final)': profit_final
+            })
+
+    print(f"\n=== Summary for top 3 Volume & top 3 ATR (Occ>=10) with min_occurrence_count={min_occurrence_count} ===")
+    if final_summaries:
+        df_final = pd.DataFrame(final_summaries)
+        df_final.sort_values(
+            by=['SR(Final)', 'Occ(Final)', 'PL(Final)'],
+            ascending=[False, False, False],
+            inplace=True
+        )
+        df_final.reset_index(drop=True, inplace=True)
+        print(df_final.to_string(index=False))
+    else:
+        print("No final summaries to display.")
+
+def main():
+    initial_investment = 16000  
+    daily_file = 'D6CK32X6.csv'       
+    file_5min = '5_MINUTES_DATA.csv' 
+
+    if not os.path.exists(daily_file):
+        print(f"Error: Daily data file '{daily_file}' not found.")
+        return
+    if not os.path.exists(file_5min):
+        print(f"Error: 5-min data file '{file_5min}' not found.")
+        return
+
+    print("Loading daily data...")
+    df_daily = load_daily_data(daily_file)
+
+    print("Loading 5-minute data...")
+    df_5min = load_5min_data(file_5min)
+
+    run_volume_atr_optimization(
+        df_daily=df_daily,
+        df_5min=df_5min,
+        initial_investment=initial_investment,
+        volume_min=100_000,   # Lower bound relevant to your 5-min volumes
+        volume_max=4_000_000, # Upper bound relevant to your 5-min volumes
+        volume_step=100_000,  # Step size
+        atr_n_min=2,
+        atr_n_max=20,
+        atr_T_min=2.0,
+        atr_T_max=20.0,
+        atr_T_step=0.1,
+        min_occurrence_count=30
+    )
+
+    run_volume_atr_optimization(
+        df_daily=df_daily,
+        df_5min=df_5min,
+        initial_investment=initial_investment,
+        volume_min=100_000,
+        volume_max=6_000_000,
+        volume_step=100_000,
+        atr_n_min=2,
+        atr_n_max=20,
+        atr_T_min=2.0,
+        atr_T_max=20.0,
+        atr_T_step=0.1,
+        min_occurrence_count=50
+    )
+
+if __name__ == "__main__":
+    main()

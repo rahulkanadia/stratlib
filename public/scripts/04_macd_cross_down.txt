@@ -1,0 +1,78 @@
+import pandas as pd
+import numpy as np
+from base_strategy import GapStrategy
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from gap_utils import *
+
+class MACDCrossDownStrategy(GapStrategy):
+    """
+    MACD Cross Down Strategy
+    Success Rate: 75.51% | Total Profit: $1,709.82 | Trades: 49
+    
+    This strategy trades gaps when MACD crosses below its signal line,
+    indicating weakening momentum that often leads to gap fills.
+    """
+    
+    def __init__(self):
+        super().__init__(
+            name="MACD Cross Down",
+            description="Fade gaps after MACD bearish crossover"
+        )
+        self.fast_period = 12
+        self.slow_period = 26
+        self.signal_period = 9
+    
+    def calculate_indicators(self, df):
+        """Calculate MACD indicators"""
+        macd_line, signal_line = calculate_macd(
+            df, 
+            fast=self.fast_period, 
+            slow=self.slow_period, 
+            signal=self.signal_period
+        )
+        df['MACD'] = macd_line
+        df['MACD_Signal'] = signal_line
+        
+        df['MACD_Above'] = df['MACD'] > df['MACD_Signal']
+        df['MACD_Cross_Down'] = (
+            (~df['MACD_Above']) & 
+            (df['MACD_Above'].shift(1) == True)
+        ).fillna(False)
+        
+        return df
+    
+    def get_filter_condition(self, df):
+        """MACD must have crossed below signal line"""
+        return df['MACD_Cross_Down']
+
+def main():
+    """Run the strategy"""
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv') and f not in ['gap_strategies_all_results.csv', 'gap_strategies_top10_profit.csv', 'gap_strategies_top10_success_rate.csv']]
+    
+    if csv_files:
+        data_file = csv_files[0]
+        print(f"Using data file: {data_file}")
+    else:
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_file = os.path.join(parent_dir, '..', '7J0OK1VR.csv')
+        if not os.path.exists(data_file):
+            print("Error: No CSV data file found. Please place a CSV file in the current directory.")
+            return
+    
+    strategy = MACDCrossDownStrategy()
+    
+    try:
+        stats, trades_df = strategy.run_strategy(data_file)
+        strategy.print_results(stats, trades_df)
+        
+        output_file = f"{strategy.name.replace(' ', '_')}_trades.csv"
+        trades_df.to_csv(output_file, index=False)
+        print(f"Trade details saved to: {output_file}")
+        
+    except Exception as e:
+        print(f"Error running strategy: {e}")
+
+if __name__ == "__main__":
+    main()

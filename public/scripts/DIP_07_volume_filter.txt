@@ -1,0 +1,121 @@
+import pandas as pd
+import numpy as np
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_rolling_average_drop(df, window=21):
+    """Calculate rolling average of drops on red days."""
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=window).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def analyze_dip_with_volume_filter(df, initial_investment=16000, rolling_window=21, volume_multiplier=1.5):
+    """Implement DIP strategy with volume filter - only trade when volume > average."""
+    df = df.copy()
+    df = calculate_rolling_average_drop(df, window=rolling_window)
+    
+    df['AvgVolume'] = df['Volume'].rolling(window=20).mean().shift(1)
+    
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 20:  # Need at least 20 days for volume average
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        current_volume = current_day['Volume']
+        avg_volume = current_day['AvgVolume']
+        
+        if avg_drop <= 0 or pd.isna(avg_volume):
+            continue
+        
+        if current_volume <= (avg_volume * volume_multiplier):
+            continue
+        
+        open_price = current_day['Open']
+        low_price = current_day['Low']
+        close_price = current_day['Close']
+        
+        desired_entry = open_price - avg_drop
+        
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = close_price
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            trades.append({
+                'Date': current_day['Date'],
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'Volume': current_volume,
+                'Avg Volume': avg_volume,
+                'Volume Ratio': current_volume/avg_volume if avg_volume > 0 else 0,
+                'Profit/Loss': profit_loss
+            })
+    
+    return pd.DataFrame(trades)
+
+def optimize_volume_multiplier(file_name, initial_investment=16000):
+    """Optimize volume multiplier for best success rate."""
+    df = load_data(file_name)
+    
+    best_multiplier = None
+    best_success_rate = 0
+    results = []
+    
+    for multiplier in np.arange(1.0, 3.1, 0.1):
+        trades_df = analyze_dip_with_volume_filter(df, initial_investment, 21, multiplier)
+        
+        if len(trades_df) >= 100:  # Only consider if we have at least 100 trades
+            total_trades = len(trades_df)
+            winning_trades = len(trades_df[trades_df['Profit/Loss'] > 0])
+            success_rate = winning_trades / total_trades if total_trades > 0 else 0
+            total_profit = trades_df['Profit/Loss'].sum()
+            avg_vol_ratio = trades_df['Volume Ratio'].mean() if len(trades_df) > 0 else 0
+            
+            results.append({
+                'Volume Multiplier': round(multiplier, 1),
+                'Total Trades': total_trades,
+                'Success Rate': success_rate,
+                'Total Profit': total_profit,
+                'Avg Vol Ratio': avg_vol_ratio
+            })
+            
+            if success_rate > best_success_rate:
+                best_success_rate = success_rate
+                best_multiplier = multiplier
+    
+    results_df = pd.DataFrame(results)
+    print("=== Volume Multiplier Optimization Results ===")
+    print(results_df.sort_values('Success Rate', ascending=False).head(10))
+    
+    print(f"\nBest Volume Multiplier: {best_multiplier:.1f}")
+    print(f"Best Success Rate: {best_success_rate:.2%}")
+    
+    if best_multiplier:
+        final_trades = analyze_dip_with_volume_filter(df, initial_investment, 21, best_multiplier)
+        print(f"\nFinal Results with Volume>{best_multiplier:.1f}x Average:")
+        print(f"Total Trades: {len(final_trades)}")
+        print(f"Total Profit: ${final_trades['Profit/Loss'].sum():,.2f}")
+    
+    return best_multiplier, best_success_rate
+
+if __name__ == "__main__":
+    file_name = "../7J0OK1VR.csv"
+    initial_investment = 16000
+    best_mult, best_rate = optimize_volume_multiplier(file_name, initial_investment)

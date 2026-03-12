@@ -1,0 +1,98 @@
+
+> 策略名称
+
+传统均线指标与KD指标的交易策略Trading-Strategy-of-Traditional-MA-Index-and-KD-Index
+
+> 策略作者
+
+阿基米德的浴缸
+
+> 策略描述
+
+[trans]
+- 策略名称：传统均线指标与KD指标的交易策略
+- 数据周期：15M，30M等
+- 支持：商品期货、数字货币
+- 指标使用了EMA，KD线，其中KD线使用的是默认参数（指标参数固定3，3，9）
+- 官方网站：www.quantinfo.com
+
+![IMG](https:
+
+- 主图
+  EMA均线，公式：MAC^^EMA(C,N);
+
+
+- 副图
+
+  KD线中的K线，公式：K:SMA(RSV,M1,1);
+  KD线中的D线，公式：D:SMA(K,M2,1);
+
+||
+
+- Data Cycle: 15M, 30M, etc.
+- Support: Commodity Futures
+- Indicators are EMA, KD lines, and KD line use default parameters (index parameters fixed 3, 3, 9)
+
+  ![IMG](https:
+  ![IMG](https:
+
+- Main chart:
+  EMA mean, formula: MAC ^^ EMA (C, N);
+
+- Secondary chart:
+  K line in KD, formula: K: SMA (RSV, M1, 1); 
+  D line in KD, formula: D: SMA (K, M2, 1); 
+
+[/trans]
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|SLOSS|2|止损百分比|stop loss percentage|
+|N|120|EMA参数|EMA parameter|
+
+
+> 源码 (麦语言)
+
+``` pascal
+(*backtest
+start: 2018-04-01 00:00:00
+end: 2018-05-15 00:00:00
+period: 30m
+exchanges: [{"eid":"Futures_BitMEX","currency":"XBT_USD"}]
+args: [["TradeAmount",100,126961],["ContractType","XBTUSD",126961]]
+*)
+
+MAC^^EMA(C,N);
+
+NKD:=9;
+M1:=3;
+M2:=3;
+RSV:=(CLOSE-LLV(LOW,NKD))/(HHV(HIGH,NKD)-LLV(LOW,NKD))*100;  
+
+
+
+K:SMA(RSV,M1,1);     
+                     
+                     
+D:SMA(K,M2,1);       
+                     
+
+BARPOS>N AND C>MAC AND K<D,BK;
+BARPOS>N AND C<MAC AND K>D,SK;
+C<=BKPRICE*(1-SLOSS*0.01),SP(BKVOL);
+C>=SKPRICE*(1+SLOSS*0.01),BP(SKVOL);
+C>=BKPRICE*(1+SLOSS*0.01) AND C<MAC,SP(BKVOL);
+C<=SKPRICE*(1-SLOSS*0.01) AND C>MAC,BP(SKVOL);
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2019-08-20 10:30:47

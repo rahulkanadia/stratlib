@@ -1,0 +1,302 @@
+"""
+Moving Average Crossover Strategy
+---------------------------------
+Classic trend-following strategy using two moving averages.
+Enters long when fast MA crosses above slow MA, exits when opposite occurs.
+
+Entry Conditions:
+- Fast MA crosses above Slow MA (Golden Cross) → Long entry
+- Optional: Fast MA crosses below Slow MA (Death Cross) → Short entry
+
+Exit Conditions:
+- Opposite crossover occurs
+- Optional: Stop loss or trailing stop
+
+Parameters:
+- fast_period: Period for fast moving average (default: 10)
+- slow_period: Period for slow moving average (default: 30)
+- ma_type: 'SMA' or 'EMA' (default: 'SMA')
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utils import BaseStrategy, LongShortStrategy, calculate_sma, calculate_ema
+
+
+class MACrossoverStrategy(LongShortStrategy):
+    """Moving Average Crossover Strategy implementation."""
+    
+    def __init__(self, fast_period=10, slow_period=30, ma_type='SMA', 
+                 allow_short=False, initial_investment=16000):
+        name = f"MA Crossover ({ma_type} {fast_period}/{slow_period})"
+        super().__init__(name, initial_investment)
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+        self.ma_type = ma_type.upper()
+        self.allow_short = allow_short
+        
+        if fast_period >= slow_period:
+            raise ValueError("Fast period must be less than slow period")
+            
+    def calculate_indicators(self, df):
+        """Calculate moving averages and crossover signals."""
+        if self.ma_type == 'SMA':
+            df['MA_Fast'] = calculate_sma(df['Close'], self.fast_period)
+            df['MA_Slow'] = calculate_sma(df['Close'], self.slow_period)
+        elif self.ma_type == 'EMA':
+            df['MA_Fast'] = calculate_ema(df['Close'], self.fast_period)
+            df['MA_Slow'] = calculate_ema(df['Close'], self.slow_period)
+        else:
+            raise ValueError(f"Unknown MA type: {self.ma_type}")
+        
+        df['MA_Diff'] = df['MA_Fast'] - df['MA_Slow']
+        df['MA_Diff_Prev'] = df['MA_Diff'].shift(1)
+        
+        df['Golden_Cross'] = (
+            (df['MA_Diff'] > 0) & 
+            (df['MA_Diff_Prev'] <= 0)
+        )
+        
+        df['Death_Cross'] = (
+            (df['MA_Diff'] < 0) & 
+            (df['MA_Diff_Prev'] >= 0)
+        )
+        
+        df['Position'] = 0  # 0: No position, 1: Long, -1: Short
+        
+        df['Price_Above_Fast'] = df['Close'] > df['MA_Fast']
+        df['Price_Above_Slow'] = df['Close'] > df['MA_Slow']
+        
+        df['Trend_Strength'] = abs(df['MA_Diff']) / df['Close'] * 100
+        
+        return df
+    
+    def get_entry_conditions(self, df):
+        """Define entry conditions for both long and short trades."""
+        long_signals = df['Golden_Cross']
+        
+        if self.allow_short:
+            short_signals = df['Death_Cross']
+        else:
+            short_signals = pd.Series(False, index=df.index)
+        
+        return long_signals, short_signals
+    
+    def get_exit_conditions(self, df, entry_index):
+        """Exit on opposite crossover."""
+        entry_row = df.iloc[entry_index]
+        
+        for i in range(entry_index + 1, len(df)):
+            current_row = df.iloc[i]
+            
+            if entry_row.get('Position_Type') == 'long' and current_row['Death_Cross']:
+                return i, current_row['Close'], 'Death Cross'
+            
+            elif entry_row.get('Position_Type') == 'short' and current_row['Golden_Cross']:
+                return i, current_row['Close'], 'Golden Cross'
+        
+        return len(df) - 1, df.iloc[-1]['Close'], 'End of Data'
+    
+    def run_backtest_with_visualization(self, data_file):
+        """Run backtest and prepare data for visualization."""
+        trades_df, statistics = self.run_backtest(data_file)
+        
+        if len(trades_df) > 0:
+            entry_dates = pd.to_datetime(trades_df['Entry Date'])
+            exit_dates = pd.to_datetime(trades_df['Exit Date'])
+            
+            self.df['Trade_Entry'] = self.df['Date'].isin(entry_dates)
+            self.df['Trade_Exit'] = self.df['Date'].isin(exit_dates)
+            
+            self.df['Returns'] = self.df['Close'].pct_change()
+            self.df['Cumulative_Returns'] = (1 + self.df['Returns']).cumprod()
+            
+            equity = self.initial_investment
+            self.df['Strategy_Equity'] = equity
+            
+            for _, trade in trades_df.iterrows():
+                mask = (self.df['Date'] >= trade['Entry Date']) & \
+                       (self.df['Date'] <= trade['Exit Date'])
+                self.df.loc[mask, 'Strategy_Equity'] = trade['Capital After']
+        
+        return trades_df, statistics, self.df
+    
+    def print_results(self, trades_df=None, statistics=None):
+        """Print strategy results with MA-specific information."""
+        if statistics is not None:
+            print(f"\n{'='*50}")
+            print(f"{self.name} - Performance Summary")
+            print(f"{'='*50}")
+            print(f"MA Type:         {self.ma_type}")
+            print(f"Fast Period:     {self.fast_period} days")
+            print(f"Slow Period:     {self.slow_period} days")
+            print(f"Allow Shorts:    {'Yes' if self.allow_short else 'No'}")
+            print(f"\nPerformance Metrics:")
+            print(f"Total Trades:    {statistics['total_trades']}")
+            print(f"Win Rate:        {statistics['win_rate']}%")
+            print(f"Total Profit:    ${statistics['total_profit']:,.2f}")
+            print(f"ROI:             {statistics['roi']}%")
+            print(f"Sharpe Ratio:    {statistics['sharpe_ratio']}")
+            print(f"Max Drawdown:    {statistics['max_drawdown']}%")
+            print(f"Win/Loss Ratio:  {statistics['win_loss_ratio']}")
+            print(f"Profit Factor:   {statistics['profit_factor']}")
+            
+            if len(trades_df) > 0:
+                trades_df['Duration'] = (
+                    pd.to_datetime(trades_df['Exit Date']) - 
+                    pd.to_datetime(trades_df['Entry Date'])
+                ).dt.days
+                
+                print(f"\nTrade Duration:")
+                print(f"Average:         {trades_df['Duration'].mean():.1f} days")
+                print(f"Longest:         {trades_df['Duration'].max()} days")
+                print(f"Shortest:        {trades_df['Duration'].min()} days")
+                
+                if 'Type' in trades_df.columns:
+                    trade_types = trades_df['Type'].value_counts()
+                    print(f"\nTrade Direction:")
+                    for trade_type, count in trade_types.items():
+                        print(f"{trade_type}:           {count} trades")
+            
+            print(f"{'='*50}\n")
+
+
+def optimize_ma_periods(data_file, ma_type='SMA'):
+    """Optimize MA periods for best performance."""
+    results = []
+    
+    print(f"Optimizing {ma_type} periods...")
+    print("-" * 50)
+    
+    fast_periods = [5, 10, 15, 20]
+    slow_periods = [20, 30, 50, 100, 200]
+    
+    for fast in fast_periods:
+        for slow in slow_periods:
+            if fast >= slow:
+                continue
+                
+            try:
+                strategy = MACrossoverStrategy(
+                    fast_period=fast,
+                    slow_period=slow,
+                    ma_type=ma_type,
+                    allow_short=False,
+                    initial_investment=16000
+                )
+                
+                trades_df, statistics = strategy.run_backtest(data_file)
+                
+                if statistics['total_trades'] > 0:
+                    results.append({
+                        'Fast': fast,
+                        'Slow': slow,
+                        'Trades': statistics['total_trades'],
+                        'Win Rate': statistics['win_rate'],
+                        'Total Profit': statistics['total_profit'],
+                        'ROI': statistics['roi'],
+                        'Sharpe': statistics['sharpe_ratio'],
+                        'Max DD': statistics['max_drawdown']
+                    })
+                    
+                    if (fast == 10 and slow == 30) or (fast == 20 and slow == 50):
+                        print(f"{ma_type} {fast}/{slow}: {statistics['total_trades']} trades, "
+                              f"{statistics['win_rate']:.1f}% win rate, "
+                              f"${statistics['total_profit']:,.2f} profit")
+                              
+            except Exception as e:
+                print(f"Error with {fast}/{slow}: {e}")
+    
+    results_df = pd.DataFrame(results)
+    results_df = results_df.sort_values('Sharpe', ascending=False)
+    
+    print("\n" + "="*70)
+    print(f"Top 10 {ma_type} Period Combinations by Sharpe Ratio:")
+    print("="*70)
+    print(results_df.head(10).to_string(index=False))
+    
+    print("\n" + "="*70)
+    print(f"Top 5 {ma_type} Period Combinations by Total Profit:")
+    print("="*70)
+    print(results_df.nlargest(5, 'Total Profit').to_string(index=False))
+    
+    return results_df
+
+
+def compare_ma_types(data_file):
+    """Compare SMA vs EMA performance."""
+    print("\n" + "="*70)
+    print("COMPARING SMA vs EMA")
+    print("="*70)
+    
+    test_periods = [(10, 30), (20, 50), (50, 200)]
+    
+    for fast, slow in test_periods:
+        print(f"\nPeriods: {fast}/{slow}")
+        print("-" * 30)
+        
+        sma_strategy = MACrossoverStrategy(fast, slow, 'SMA')
+        sma_trades, sma_stats = sma_strategy.run_backtest(data_file)
+        
+        ema_strategy = MACrossoverStrategy(fast, slow, 'EMA')
+        ema_trades, ema_stats = ema_strategy.run_backtest(data_file)
+        
+        print(f"SMA: {sma_stats['total_trades']} trades, "
+              f"{sma_stats['win_rate']:.1f}% win rate, "
+              f"${sma_stats['total_profit']:,.2f} profit, "
+              f"Sharpe: {sma_stats['sharpe_ratio']:.3f}")
+              
+        print(f"EMA: {ema_stats['total_trades']} trades, "
+              f"{ema_stats['win_rate']:.1f}% win rate, "
+              f"${ema_stats['total_profit']:,.2f} profit, "
+              f"Sharpe: {ema_stats['sharpe_ratio']:.3f}")
+
+
+def main():
+    """Run the MA Crossover strategy with various tests."""
+    data_file = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        'data', '7J0OK1VR.csv'
+    )
+    
+    print("Running MA Crossover with default parameters...")
+    strategy = MACrossoverStrategy(
+        fast_period=10,
+        slow_period=30,
+        ma_type='SMA',
+        allow_short=False,
+        initial_investment=16000
+    )
+    
+    trades_df, statistics = strategy.run(data_file, save_results=True, 
+                                       output_dir='../../results')
+    
+    print("\n" + "="*70)
+    print("TESTING WITH SHORTS ALLOWED")
+    print("="*70)
+    strategy_short = MACrossoverStrategy(
+        fast_period=10,
+        slow_period=30,
+        ma_type='SMA',
+        allow_short=True,
+        initial_investment=16000
+    )
+    
+    trades_short, stats_short = strategy_short.run(data_file)
+    
+    print("\n" + "="*70)
+    print("PERIOD OPTIMIZATION")
+    print("="*70)
+    sma_optimization = optimize_ma_periods(data_file, 'SMA')
+    
+    compare_ma_types(data_file)
+    
+    return trades_df, statistics
+
+
+if __name__ == "__main__":
+    main()

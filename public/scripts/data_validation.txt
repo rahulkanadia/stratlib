@@ -1,0 +1,109 @@
+import pandas as pd
+import os
+import sys
+
+def validate_csv_data(file_path=None):
+    """Validate that CSV data has required columns and format"""
+    
+    print("="*60)
+    print("CSV DATA VALIDATION TOOL")
+    print("="*60)
+    
+    if not file_path:
+        csv_files = [f for f in os.listdir('.') if f.endswith('.csv') 
+                    and not f.endswith('_trades.csv')
+                    and not f.endswith('_results.csv')]
+        
+        if not csv_files:
+            print("❌ Error: No CSV data files found in current directory")
+            return False
+        
+        file_path = csv_files[0]
+        print(f"Found data file: {file_path}")
+    
+    try:
+        df = pd.read_csv(file_path)
+        print(f"\n✓ Successfully loaded {len(df)} rows of data")
+        
+        required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            print(f"\n❌ Missing required columns: {missing_columns}")
+            print(f"   Found columns: {list(df.columns)}")
+            return False
+        
+        print("\n✓ All required columns present")
+        
+        print("\nValidating data types...")
+        
+        try:
+            df['Date'] = pd.to_datetime(df['Date'])
+            print("✓ Date column: Valid datetime format")
+        except:
+            print("❌ Date column: Invalid format (should be parseable as datetime)")
+            return False
+        
+        numeric_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in numeric_cols:
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                print(f"❌ {col} column: Not numeric")
+                return False
+            print(f"✓ {col} column: Numeric")
+        
+        print("\nData quality checks...")
+        
+        null_counts = df[required_columns].isnull().sum()
+        if null_counts.any():
+            print("⚠️  Warning: Found null values:")
+            for col, count in null_counts[null_counts > 0].items():
+                print(f"   {col}: {count} nulls")
+        else:
+            print("✓ No null values found")
+        
+        invalid_high_low = (df['High'] < df['Low']).sum()
+        invalid_high = ((df['High'] < df['Open']) | (df['High'] < df['Close'])).sum()
+        invalid_low = ((df['Low'] > df['Open']) | (df['Low'] > df['Close'])).sum()
+        
+        if invalid_high_low > 0:
+            print(f"❌ Found {invalid_high_low} rows where High < Low")
+        else:
+            print("✓ High/Low relationship valid")
+        
+        if invalid_high > 0:
+            print(f"⚠️  Warning: {invalid_high} rows where High is not highest price")
+        
+        if invalid_low > 0:
+            print(f"⚠️  Warning: {invalid_low} rows where Low is not lowest price")
+        
+        if not df['Date'].is_monotonic_increasing:
+            print("⚠️  Warning: Dates are not in ascending order")
+        else:
+            print("✓ Dates are properly ordered")
+        
+        print("\nData Summary:")
+        print(f"Date range: {df['Date'].min().date()} to {df['Date'].max().date()}")
+        print(f"Price range: ${df['Low'].min():.2f} - ${df['High'].max():.2f}")
+        print(f"Average volume: {df['Volume'].mean():,.0f}")
+        
+        gaps = (df['Open'] - df['Close'].shift(1)).dropna()
+        valid_gaps = gaps[gaps.abs() >= 0.20]
+        
+        print(f"\nGap Analysis Preview:")
+        print(f"Total potential gaps: {len(gaps)}")
+        print(f"Gaps ≥ $0.20: {len(valid_gaps)} ({len(valid_gaps)/len(gaps)*100:.1f}%)")
+        print(f"Average gap size: ${gaps.abs().mean():.2f}")
+        print(f"Largest gap: ${gaps.abs().max():.2f}")
+        
+        print("\n✅ Data validation complete - ready for gap trading analysis!")
+        return True
+        
+    except Exception as e:
+        print(f"\n❌ Error validating data: {e}")
+        return False
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        validate_csv_data(sys.argv[1])
+    else:
+        validate_csv_data()

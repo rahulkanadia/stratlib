@@ -1,0 +1,257 @@
+import pandas as pd
+import numpy as np
+
+def load_data(file_name):
+    """
+    Loads the CSV file into a DataFrame, sorts it by date, and resets the index.
+    """
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_day_range(day):
+    """
+    Calculates the trading range of a day (High - Low).
+    """
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    """
+    Calculates the gap between the previous day's close and the current day's open.
+    """
+    return curr_open - prev_close
+
+def is_gap_valid_original(gap, prev_range):
+    """
+    Original Strategy Gap Validity:
+    Checks if the gap meets the specified conditions:
+    - At least $0.20
+    - Between 15% and 85% of the previous day's range
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def is_gap_valid_inverse(gap, prev_range):
+    """
+    Inverse (Gap & Go) Strategy Gap Validity:
+    Checks if the gap meets the specified conditions:
+    - At least $0.20
+    - Less than 15% or greater than 85% of the previous day's range
+    """
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return gap_percentage < 0.15 or gap_percentage > 0.85
+
+def determine_trade_direction_original(gap):
+    """
+    Original Strategy Trade Direction:
+    - Gap up: Short position
+    - Gap down: Long position
+    """
+    return 'Short' if gap > 0 else 'Long'
+
+def determine_trade_direction_inverse(gap):
+    """
+    Inverse (Gap & Go) Strategy Trade Direction:
+    - Gap up: Long position
+    - Gap down: Short position
+    """
+    return 'Long' if gap > 0 else 'Short'
+
+def check_gap_closure(trade_direction, curr_day, prev_close):
+    """
+    For the original strategy:
+    Checks if the gap is closed during the trading day and returns the exit price.
+    """
+    if trade_direction == 'Short':
+        if curr_day['Low'] <= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    else:  # Long position
+        if curr_day['High'] >= prev_close:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = curr_day['Close']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def determine_exit_price_inverse(curr_day):
+    """
+    For the inverse strategy:
+    The exit price is always the day's closing price.
+    """
+    return curr_day['Close']
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    """
+    Calculates the profit or loss of a trade.
+    """
+    number_of_shares = position_size / entry_price
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:  # Short position
+        profit_loss = number_of_shares * (entry_price - exit_price)
+    return profit_loss
+
+def analyze_trades_combined(df, strategy='original'):
+    """
+    Analyzes the DataFrame for valid trades based on the chosen strategy:
+    - strategy='original' uses the original strategy conditions.
+    - strategy='inverse' uses the inverse (Gap & Go) conditions.
+    """
+    trades = []
+    total_days = len(df)
+    
+    for i in range(1, total_days):
+        prev_day = df.iloc[i - 1]
+        curr_day = df.iloc[i]
+        
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue  # Avoid division by zero
+        
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+
+        if strategy == 'original':
+            if not is_gap_valid_original(gap, prev_range):
+                continue
+            trade_direction = determine_trade_direction_original(gap)
+            entry_price = curr_day['Open']
+            exit_price, gap_closed = check_gap_closure(trade_direction, curr_day, prev_day['Close'])
+            
+            trades.append({
+                'Date': curr_day['Date'],
+                'Trade Direction': trade_direction,
+                'Entry Price': entry_price,
+                'Exit Price': exit_price,
+                'Gap Closed': gap_closed
+            })
+        
+        elif strategy == 'inverse':
+            if not is_gap_valid_inverse(gap, prev_range):
+                continue
+            trade_direction = determine_trade_direction_inverse(gap)
+            entry_price = curr_day['Open']
+            exit_price = determine_exit_price_inverse(curr_day)
+            
+            trades.append({
+                'Date': curr_day['Date'],
+                'Trade Direction': trade_direction,
+                'Entry Price': entry_price,
+                'Exit Price': exit_price
+            })
+
+    return pd.DataFrame(trades)
+
+def calculate_statistics(trades_df):
+    """
+    Calculates and prints statistics for the trades:
+    - Average Gain per Trade (in dollars)
+    - Average Loss per Trade (in dollars)
+    - Maximum Gain per Trade and date
+    - Maximum Loss per Trade and date
+    """
+    if trades_df.empty:
+        print("No trades met the criteria.")
+        return
+
+    gains = trades_df[trades_df['Profit/Loss'] > 0]
+    losses = trades_df[trades_df['Profit/Loss'] < 0]
+
+    average_gain = gains['Profit/Loss'].mean() if not gains.empty else 0
+    average_loss = losses['Profit/Loss'].mean() if not losses.empty else 0
+    max_gain = gains['Profit/Loss'].max() if not gains.empty else 0
+    max_loss = losses['Profit/Loss'].min() if not losses.empty else 0
+
+    if not gains.empty:
+        max_gain_row = gains.loc[gains['Profit/Loss'].idxmax()]
+        max_gain_date = max_gain_row['Date']
+    else:
+        max_gain_date = None
+
+    if not losses.empty:
+        max_loss_row = losses.loc[losses['Profit/Loss'].idxmin()]
+        max_loss_date = max_loss_row['Date']
+    else:
+        max_loss_date = None
+
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Average Gain per Trade: ${average_gain:,.2f}")
+    print(f"Average Loss per Trade: ${average_loss:,.2f}")
+    if max_gain_date is not None:
+        print(f"Maximum Gain per Trade: ${max_gain:,.2f} on {max_gain_date.date()}")
+    else:
+        print("No gains to report.")
+    if max_loss_date is not None:
+        print(f"Maximum Loss per Trade: ${max_loss:,.2f} on {max_loss_date.date()}")
+    else:
+        print("No losses to report.")
+
+def simulate_trading(trades_df, initial_investment):
+    """
+    Simulates trading with a given initial investment and returns the final amount.
+    """
+    if trades_df.empty:
+        print("No trades to simulate.")
+        return initial_investment
+
+    current_amount = initial_investment
+    trade_results = []
+
+    for index, row in trades_df.iterrows():
+        trade_direction = row['Trade Direction']
+        entry_price = row['Entry Price']
+        exit_price = row['Exit Price']
+        
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, current_amount)
+        current_amount += profit_loss
+        trade_results.append(profit_loss)
+
+    total_profit_loss = sum(trade_results)
+    final_amount = current_amount
+
+    print(f"Initial Investment: ${initial_investment:,.2f}")
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Total Profit/Loss from All Trades: ${total_profit_loss:,.2f}")
+    print(f"Final Amount after All Trades: ${final_amount:,.2f}")
+
+    return final_amount
+
+def analyze_spy_gaps_combined(file_name, initial_investment, strategy='original'):
+    """
+    Main function that orchestrates the gap analysis and trading simulation for either strategy.
+    Strategy options: 'original' or 'inverse'
+    """
+    df = load_data(file_name)
+    trades_df = analyze_trades_combined(df, strategy=strategy)
+    
+    trades_df['Profit/Loss'] = trades_df.apply(
+        lambda row: calculate_profit_loss(
+            row['Trade Direction'],
+            row['Entry Price'],
+            row['Exit Price'],
+            initial_investment
+        ),
+        axis=1
+    )
+    
+    calculate_statistics(trades_df)
+    final_amount = simulate_trading(trades_df, initial_investment)
+    return trades_df, final_amount
+
+file_name = 'D6CK32X6.csv'
+initial_investment = 16000
+
+trades_original, final_amount_original = analyze_spy_gaps_combined(file_name, initial_investment, strategy='original')
+
+trades_inverse, final_amount_inverse = analyze_spy_gaps_combined(file_name, initial_investment, strategy='inverse')

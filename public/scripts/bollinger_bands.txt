@@ -1,0 +1,231 @@
+"""
+Bollinger Bands Technical Indicator Utilities
+
+This module provides tools for computing and analyzing Bollinger Bands, a volatility-based
+indicator showing price support/resistance levels. Bands are calculated as SMA ± k*StdDev,
+where k is typically 1.5 or 2.0.
+
+Primary Use Case:
+- Identify mean-reversion opportunities when price touches lower band
+- Filter out high-volatility regimes (wide bands) vs stable periods (narrow bands)
+- Analyze historical success rates for mean-reversion trades at band extremes
+
+Key Functions:
+- Bollinger Band calculation over rolling window (customizable period and multiplier)
+- Testing framework: historical backtest to check if lower band overshoots correlated with gains
+- Supports batch analysis across multiple stocks
+
+Note: Adapted from Project_Daniel.py for portfolio analytics and strategy development.
+
+Author: Daniel Peer
+"""
+
+import pandas as pd
+import numpy as np
+import statistics
+import glob
+import os
+
+
+def pd_frame_to_lists(data_frame1):
+    data_frame = pd.read_csv(data_frame1)
+    close_list = data_frame['Close'].values.tolist()
+    open_list = data_frame['Open'].values.tolist()
+    date_list = data_frame['Date'].values.tolist()
+    return close_list, open_list, date_list
+
+
+def data_frame_file_to_lists(file_name, path):
+    mypath = path
+    file_name =mypath+file_name
+    df = pd.read_csv(file_name, usecols=['Close'])
+    df2 = pd.read_csv(file_name, usecols=['Open'])
+    df3 = pd.read_csv(file_name, usecols=['Date'])
+    close_list = df.values.tolist()
+    open_list = df2.values.tolist()
+    date_list = df3.values.tolist()
+    return close_list, open_list, date_list
+
+
+def fix_list(raw_list):
+    tmp = []
+    for i in range(len(raw_list)):
+        tmp.append(raw_list[i][0])
+    return tmp
+
+
+def find_k_days_list(raw_list, k):
+    tmp_lst = []
+    for i in range(k):
+        tmp_lst.append(raw_list[i][0])
+    return tmp_lst
+
+
+def find_lowe_bol(list_values, mul):
+    """
+    Computes lower Bollinger Band.
+
+    Lower band = SMA - (k * StdDev), indicating statistically likely support level.
+    When price falls below lower band, it's an extreme move suggesting mean reversion.
+
+    Parameters:
+        list_values (list): Historical closing prices for the band period
+        mul (float): Standard deviation multiplier (typically 1.5 or 2.0)
+
+    Returns:
+        float: Lower band value
+    """
+    dev = statistics.pstdev(list_values)  # Population std dev
+    avg = sum(list_values) / len(list_values)  # Simple moving average
+    dev = dev * mul  # Scale std dev by multiplier
+    avg = avg - dev  # Lower band = mean - k*std
+    return avg
+
+
+def average(lst):
+    if len(lst)==0:
+        return 0
+    return sum(lst) / len(lst)
+
+
+def list_of_list_k(raw_list, k):
+    tmp = []
+    df1 = raw_list[:]
+    for i in range(len(raw_list) - k):
+        tmp.append(find_k_days_list(df1, k))
+        df1 = df1[1:]
+    return tmp
+
+
+def list_of_bols(raw_list, mul, with_index=True):
+    """
+    Computes lower Bollinger Band for each window in a list of price windows.
+
+    Parameters:
+        raw_list (list): List of price windows, each containing k-day history
+        mul (float): Standard deviation multiplier for band width
+        with_index (bool): If True, return (band_value, index); if False, just values
+
+    Returns:
+        list: Lower band values, optionally tagged with their position/date index
+    """
+    tmp = []
+    for i in range(len(raw_list)):
+        if with_index:
+            tmp.append((find_lowe_bol(raw_list[i], mul), i))
+        else:
+            tmp.append(find_lowe_bol(raw_list[i], mul))
+    return tmp
+
+
+def add_zeros(list_bol):
+    list_zero = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+    list_zero.extend(list_bol)
+    return list_zero
+
+
+def check_open_behind_history(list_close, list_bol, list_open, date_list, k):
+    """
+    Backtests mean reversion on days when open falls below lower Bollinger Band.
+
+    Tests hypothesis: when open price is below the k-period lower Bollinger Band,
+    price tends to bounce back above opening price within 10 days (mean reversion).
+    Measures success rate: % of overshoots that recovered.
+
+    Parameters:
+        list_close (list): Historical closing prices
+        list_bol (list): Bollinger band values with index tuples
+        list_open (list): Historical opening prices
+        date_list (list): Dates for each price (for logging)
+        k (int): Bollinger band period
+
+    Returns:
+        float: Success rate (went_up / all_opened) as percentage of overshoots that recovered
+    """
+    went_up = 0  # Count of successful mean reversions
+    all_opened = 0  # Count of total overshoots
+    tmp_suc = []  # Successful mean reversions (date, recovery day)
+    tmp_no_suc = []  # Failed mean reversions
+    delta_change = []  # Magnitudes of successful recoveries
+
+    for i in range(k, len(list_bol) - k):
+        if list_bol[i][0] > list_open[i]:
+            all_opened += 1
+            for j in range(10):
+                if list_close[i + j] > list_open[i]:
+                    delta_change.append(list_close[i + j] - list_open[i])
+                    tmp_suc.append((date_list[i], i + 2))
+                    went_up += 1
+                    break
+                else:
+                    if j == 9:
+                        tmp_no_suc.append((date_list[i], i + 2))
+
+    if(list_open[-1] < 5):
+        return 0
+
+    print(len(tmp_suc))
+    print(tmp_suc)
+    print(tmp_no_suc)
+    print(all_opened)
+    print("Number Of incidents :" + str(len(tmp_suc) + len(tmp_no_suc)))
+    print("Stock Price :" + str(list_open[-1]))
+    print(average(delta_change))
+    g = average(list_close)
+    print("stock avg=" + str(g))
+    print("Avrage change :" + str((average(delta_change) + list_open[-1]) / list_open[-1]))
+
+    if all_opened == 0:
+        return 0
+    return went_up / all_opened
+
+
+def check_open_NOW(list_close, list_bol, list_open, k):
+    if list_bol[-1] > list_open[-1]:
+        return True
+
+
+def bol_finder(data_frame, bol_range, mul, path):
+    close_list, open_list, date_list = data_frame_file_to_lists(data_frame, path)
+    list_of_lists = list_of_list_k(close_list, bol_range)
+    list_bols = list_of_bols(list_of_lists, mul)
+    list_bols_with_zeros = add_zeros(list_bols)
+    print("Average success :"+str(check_open_behind_history(fix_list(close_list), list_bols_with_zeros, fix_list(open_list), date_list,
+                                    bol_range)*100))
+
+
+def lower_bol(data_frame, bol_range, mul, path):
+    close_list, open_list, date_list = data_frame_file_to_lists(data_frame, path)
+    list_bols = list_of_bols(close_list[-bol_range:], mul, with_index=False)
+    cur_low_bol = find_lowe_bol(list_bols, mul)
+    return cur_low_bol
+
+
+def check_under_bol1(data_frame, bol_range, mul, check_if_file=True):
+    low_bol = lower_bol(data_frame, bol_range, mul)
+    close_list, open_list, date_list = data_frame_file_to_lists(data_frame)
+    if close_list[-1][0] < low_bol:
+        return True
+    return False
+
+def check_under_bol2(data_frame, bol_range, mul, path, check_if_file=True):
+    low_bol = lower_bol(data_frame, bol_range, mul, path)
+    close_list, open_list, date_list = data_frame_file_to_lists(data_frame, path)
+    if (close_list[-2][0] < low_bol) and (open_list[-1][0] < low_bol):
+        return True
+    return False
+
+
+
+def df_from_name(stock_name, URL):
+    s1 = URL[:53]
+    s2 = URL[-91:]
+    s3 = s1 + stock_name + s2
+    return pd.read_csv(s3)
+
+
+
+def df_to_csv(data_frame, stock_name,path):
+    name = path+stock_name+'.csv'
+    data_frame.to_csv(name, index=False)
+

@@ -1,0 +1,231 @@
+
+> 策略名称
+
+海龟量化工具-海龟原版E-比率计算
+
+> 策略作者
+
+道长
+
+
+
+
+
+> 源码 (javascript)
+
+``` javascript
+
+
+
+function _ATR(records, period) {
+     var acount = 0;
+     var len = records.length;
+
+     for (var i = len-1; i >= len-period; i--) {
+          var decide = Math.abs(records[i].High - records[i].Low);
+          acount += decide;
+     }
+
+     return (acount / period);
+}
+
+
+function randomNum(minNum,maxNum){
+     switch(arguments.length){
+          case 1:
+               return parseInt(Math.random()*minNum+1,10);
+          case 2:
+               return parseInt(Math.random()*(maxNum-minNum+1)+minNum,10);
+          default:
+               return 0;
+     }
+}
+
+
+function getTimeInter(periodTime, periodType) {
+     if("day" == periodType) {
+          return (1000 * 60 * 60 * 24) * parseInt(periodTime);
+     }else if("hour" == periodType) {
+          return (1000 * 60 * 60) * parseInt(periodTime);
+     }else {
+          return (1000 * 60) * parseInt(periodTime);
+     }
+}
+
+
+function _Enter_Market_Record(ex, price, direction, kPeriod, atrPeriod) {
+     
+     var records = ex.GetRecords(kPeriod);
+     var atr = _ATR(records, atrPeriod);
+
+     var now = new Date().getTime();
+     var enterMarketRecord = {"enterId" : randomNum(1000000, 9999999), "date" : now, "dateStr": _D(now), "price" : price, "direction" : direction, "atr" : atr};
+     Log("入市点：" + JSON.stringify(enterMarketRecord));
+
+     var enterMarketRecords = _G("enterMarketRecords");
+     if(enterMarketRecords == null) {
+          enterMarketRecords = new Array();
+     }
+     enterMarketRecords.push(enterMarketRecord);
+
+     _G("enterMarketRecords", enterMarketRecords);
+}
+
+
+function _E(periodTime, periodType, ex) {
+     var enterMarketRecords = _G("enterMarketRecords");
+
+     if (enterMarketRecords != null && enterMarketRecords.length > 0) {
+
+          var ticker = ex.GetTicker();
+          var currPrice = parseFloat(ticker.Last);
+
+          
+          var timeInter = getTimeInter(periodTime, periodType);
+          
+          var now = new Date().getTime();
+
+          
+          for (var i=0; i<enterMarketRecords.length; i++) {
+               var enterMarketRec = enterMarketRecords[i];
+               var inter = now - parseInt(enterMarketRec.date);
+               if (inter < timeInter) {
+                    
+                    var high_low = _G((enterMarketRec.enterId+""));
+                    if (high_low == null) {
+                         var high = currPrice > enterMarketRec.price ? currPrice : enterMarketRec.price;
+                         var low = currPrice < enterMarketRec.price ? currPrice : enterMarketRec.price;
+
+                         high_low = {"highest" : high, "lowest" : low};
+                         _G((enterMarketRec.enterId+""), high_low);
+                    } else {
+                         var high = currPrice > high_low.highest ? currPrice : high_low.highest;
+                         var low = currPrice < high_low.lowest ? currPrice : high_low.lowest;
+
+                         high_low = {"highest" : high, "lowest" : low};
+                         _G((enterMarketRec.enterId+""), high_low);
+                    }
+                    
+               }
+          }
+
+          
+          var enterMarketRecord0 = enterMarketRecords[0];
+
+          if (now - enterMarketRecord0.date >= timeInter) {
+               
+               var l_h = _G((enterMarketRecord0.enterId+""));
+
+               var mae = 0;
+               var mfe = 0;
+               if (enterMarketRecord0.direction == 'UP') {
+                    if (l_h.highest > enterMarketRecord0.price) {
+                         mae = l_h.highest - enterMarketRecord0.price;
+                    }
+                    if (l_h.lowest < enterMarketRecord0.price) {
+                         mfe = enterMarketRecord0.price - l_h.lowest;
+                    }
+               }
+               if (enterMarketRecord0.direction == 'DOWN') {
+                    if (l_h.lowest < enterMarketRecord0.price) {
+                         mae = enterMarketRecord0.price - l_h.lowest;
+                    }
+                    if (l_h.highest > enterMarketRecord0.price) {
+                         mfe = l_h.highest - enterMarketRecord0.price;
+                    }
+               }
+
+               
+               mae = parseFloat(mae/enterMarketRecord0.atr);
+               mfe = parseFloat(mfe/enterMarketRecord0.atr);
+
+               
+               var mae_avg = _G("mae_avg");
+               var mfe_avg = _G("mfe_avg");
+
+               if (mae_avg == null) {
+                    mae_avg = {"mae":mae, "times":1};
+               } else {
+                    mae = parseFloat((mae_avg.mae + mae)/2);
+                    mae_avg = {"mae":mae, "times":mae_avg.times+1};
+               }
+               if (mfe_avg == null) {
+                    mfe_avg = {"mfe":mfe, "times":1};
+               } else {
+                    mfe = parseFloat((mfe_avg.mfe + mfe)/2);
+                    mfe_avg = {"mfe":mfe, "times":mfe_avg.times+1};
+               }
+
+               var E_ = parseFloat(mae_avg.mae/mfe_avg.mfe);
+               Log("E-比率=" + E_ + "计算最新入市点：" + JSON.stringify(enterMarketRecord0) + "后,[总入市点数量]" + mfe_avg.times + ",[记录的高低点]" + JSON.stringify(l_h) + "#ff0000");
+
+               
+               _G("mae_avg", mae_avg);
+               _G("mfe_avg", mfe_avg);
+               enterMarketRecords.shift();
+
+               
+               _G((enterMarketRecord0.enterId+""), null);
+               _G((enterMarketRecord0.enterId+""), null);
+          }
+     }
+}
+
+
+function tqaTest(ex) {
+     
+     var records = ex.GetRecords(PERIOD_D1);
+     var highest = TA.Highest(records, 20, 'High');
+     var lowest = TA.Lowest(records, 20, 'Low');
+     
+
+     var ticker = ex.GetTicker();
+     var currPrice = parseFloat(ticker.Last);
+
+     var times = 0;
+
+     if (currPrice > highest || currPrice < lowest) {
+          var ma50 = TA.MA(records, 50);
+          var ma300 = TA.MA(records, 300);
+
+          var lastDirection = _G("lastDirection");
+
+          if (currPrice > highest && ma50[ma50.length-1] > ma300[ma300.length-1]) {
+               
+               if (lastDirection == null || lastDirection == "DOWN") {
+                    _Enter_Market_Record(ex, currPrice, "UP", PERIOD_D1, 20);
+                    _G("lastDirection", "UP");
+               }
+          }
+          if (currPrice < lowest && ma50[ma50.length-1] < ma300[ma300.length-1]) {
+               
+               if (lastDirection == null || lastDirection == "UP"){
+                    _Enter_Market_Record(ex, currPrice, "DOWN", PERIOD_D1, 20);
+                    _G("lastDirection", "DOWN");
+               }
+          }
+     }
+
+     
+     _E(70, "day", ex);
+
+}
+
+function main() {
+
+     while (true) {
+
+          tqaTest(exchanges[0]);
+
+          Sleep(500);
+     }
+}
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2021-03-05 15:49:20

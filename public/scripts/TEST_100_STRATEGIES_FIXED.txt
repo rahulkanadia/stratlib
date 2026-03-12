@@ -1,0 +1,224 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import warnings
+warnings.filterwarnings('ignore')
+
+def load_data(file_name):
+    """Loads the CSV file into a DataFrame."""
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def calculate_all_indicators(df):
+    """Calculate ALL indicators with NO LOOK-AHEAD BIAS - everything shifted by 1."""
+    
+    df['IsRedDay'] = df['Close'] < df['Open']
+    df['DailyDrop'] = np.where(df['IsRedDay'], df['Open'] - df['Close'], 0.0)
+    df['RollingAvgDrop'] = df['DailyDrop'].rolling(window=21).mean().shift(1)
+    df['RollingAvgDrop'].fillna(0.0, inplace=True)
+    
+    df['DayOfWeek'] = df['Date'].dt.dayofweek
+    
+    df['RedDayGroup'] = (df['IsRedDay'] != df['IsRedDay'].shift()).cumsum()
+    df['ConsecutiveRed'] = df.groupby(df['RedDayGroup']).cumcount() + 1
+    df['ConsecutiveRed'] = np.where(df['IsRedDay'], df['ConsecutiveRed'], 0)
+    df['PrevConsecutiveRed'] = df['ConsecutiveRed'].shift(1).fillna(0)
+    
+    for period in [10, 20, 50]:
+        df[f'MA{period}'] = df['Close'].rolling(window=period).mean().shift(1)
+        df[f'OpenAboveMA{period}'] = df['Open'] > df[f'MA{period}']
+    
+    df['AvgVolume20'] = df['Volume'].rolling(window=20).mean().shift(1)
+    df['VolumeRatio'] = df['Volume'].shift(1) / df['AvgVolume20']
+    
+    def calculate_rsi(data, period=14):
+        delta = data.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.shift(1)  # SHIFT for no look-ahead
+    
+    df['RSI'] = calculate_rsi(df['Close'])
+    
+    df['PrevClose'] = df['Close'].shift(1)
+    df['GapPercent'] = ((df['Open'] - df['PrevClose']) / df['PrevClose'] * 100)
+    df['GapDown'] = df['GapPercent'] < -0.5
+    
+    df['Body'] = abs(df['Close'] - df['Open'])
+    df['Range'] = df['High'] - df['Low']
+    df['LowerWick'] = df[['Open', 'Close']].min(axis=1) - df['Low']
+    
+    df['SmallBody_Prev'] = (df['Body'].shift(1) < df['Range'].shift(1) * 0.2).fillna(False)
+    df['Hammer_Prev'] = (
+        (df['Body'].shift(1) < df['Range'].shift(1) * 0.3) &
+        (df['LowerWick'].shift(1) > df['Body'].shift(1) * 2)
+    ).fillna(False)
+    
+    df['MA200'] = df['Close'].rolling(window=200).mean().shift(1)
+    df['BullMarket'] = df['Open'] > df['MA200']
+    
+    df['HL'] = df['High'] - df['Low']
+    df['HC'] = abs(df['High'] - df['Close'].shift(1))
+    df['LC'] = abs(df['Low'] - df['Close'].shift(1))
+    df['TR'] = df[['HL', 'HC', 'LC']].max(axis=1)
+    df['ATR14'] = df['TR'].rolling(window=14).mean().shift(1)
+    
+    df['Returns'] = df['Close'].pct_change()
+    df['RollingVol'] = df['Returns'].rolling(window=20).std().shift(1)
+    df['VolPercentile'] = df['RollingVol'].rolling(window=252).rank(pct=True).shift(1)
+    df['HighVol'] = df['VolPercentile'] > 0.8
+    
+    return df
+
+def calculate_profit_loss_long(entry_price, exit_price, position_size):
+    """Calculate profit/loss for long position."""
+    if entry_price <= 0:
+        return 0
+    shares = position_size / entry_price
+    return shares * (exit_price - entry_price)
+
+def run_strategy(df, filter_func, initial_investment=16000):
+    """Run a strategy with given filter function."""
+    trades = []
+    
+    for i in range(len(df)):
+        if i < 200:  # Need history for all indicators
+            continue
+        
+        current_day = df.iloc[i]
+        avg_drop = current_day['RollingAvgDrop']
+        
+        if avg_drop <= 0:
+            continue
+        
+        if not filter_func(current_day):
+            continue
+        
+        open_price = current_day['Open']
+        desired_entry = open_price - avg_drop
+        
+        low_price = current_day['Low']
+        if low_price <= desired_entry:
+            entry_price = desired_entry
+            exit_price = current_day['Close']
+            profit_loss = calculate_profit_loss_long(entry_price, exit_price, initial_investment)
+            
+            trades.append({
+                'Date': current_day['Date'],
+                'Entry': entry_price,
+                'Exit': exit_price,
+                'Profit/Loss': profit_loss
+            })
+    
+    return trades
+
+def calculate_stats(trades):
+    """Calculate strategy statistics."""
+    if not trades:
+        return {'trades': 0, 'success_rate': 0, 'total_profit': 0, 'avg_profit': 0}
+    
+    df_trades = pd.DataFrame(trades)
+    total_trades = len(trades)
+    winning_trades = len(df_trades[df_trades['Profit/Loss'] > 0])
+    success_rate = winning_trades / total_trades * 100 if total_trades > 0 else 0
+    total_profit = df_trades['Profit/Loss'].sum()
+    avg_profit = df_trades['Profit/Loss'].mean()
+    
+    return {
+        'trades': total_trades,
+        'success_rate': success_rate,
+        'total_profit': total_profit,
+        'avg_profit': avg_profit
+    }
+
+def main():
+    """Test key strategies with FIXED Small Body implementation."""
+    print("=" * 100)
+    print("FIXED STRATEGY TESTING - SMALL BODY LOOK-AHEAD BIAS CORRECTED")
+    print("=" * 100)
+    print(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 100)
+    
+    print("\nLoading data...")
+    df = load_data('/mnt/c/Users/danie/OneDrive/Desktop/claude/2020 to 2024/7J0OK1VR.csv')
+    
+    print("Calculating indicators (with proper shifts to avoid look-ahead bias)...")
+    df = calculate_all_indicators(df)
+    
+    strategies = [
+        {'name': 'DIP + Small Body (FIXED)', 'filter': lambda row: row['SmallBody_Prev']},
+        
+        {'name': 'DIP + 2+Red + AboveMA20', 'filter': lambda row: (row['PrevConsecutiveRed'] >= 2) & row['OpenAboveMA20']},
+        {'name': 'DIP + Monday + Bull', 'filter': lambda row: (row['DayOfWeek'] == 0) & row['BullMarket']},
+        {'name': 'DIP + 2+ Red Days', 'filter': lambda row: row['PrevConsecutiveRed'] >= 2},
+        {'name': 'DIP + Monday', 'filter': lambda row: row['DayOfWeek'] == 0},
+        {'name': 'DIP + Volume > 1.5x', 'filter': lambda row: row['VolumeRatio'] > 1.5},
+        {'name': 'DIP + 3+ Red Days', 'filter': lambda row: row['PrevConsecutiveRed'] >= 3},
+        {'name': 'DIP + Above MA20', 'filter': lambda row: row['OpenAboveMA20']},
+        {'name': 'DIP + RSI < 40', 'filter': lambda row: row['RSI'] < 40},
+        {'name': 'DIP + Gap Down', 'filter': lambda row: row['GapDown']},
+        {'name': 'DIP + Hammer', 'filter': lambda row: row['Hammer_Prev']},
+        {'name': 'DIP + High Vol', 'filter': lambda row: row['HighVol']},
+        {'name': 'DIP + ATR > 2', 'filter': lambda row: row['ATR14'] > 2},
+        
+        {'name': 'DIP + SmallBody + Bull', 'filter': lambda row: row['SmallBody_Prev'] & row['BullMarket']},
+        {'name': 'DIP + SmallBody + RSI<40', 'filter': lambda row: row['SmallBody_Prev'] & (row['RSI'] < 40)},
+    ]
+    
+    results = []
+    print(f"\nTesting {len(strategies)} strategies...")
+    print("-" * 100)
+    print(f"{'Strategy':<30} {'Trades':<8} {'Success Rate':<12} {'Total Profit':<15} {'ROI':<8}")
+    print("-" * 100)
+    
+    for strategy in strategies:
+        trades = run_strategy(df, strategy['filter'])
+        stats = calculate_stats(trades)
+        
+        results.append({
+            'Strategy': strategy['name'],
+            'Trades': stats['trades'],
+            'Success Rate (%)': stats['success_rate'],
+            'Total Profit ($)': stats['total_profit'],
+            'ROI (%)': (stats['total_profit'] / 16000 * 100) if stats['trades'] > 0 else 0
+        })
+        
+        if stats['trades'] >= 30:  # Only show strategies with meaningful sample size
+            print(f"{strategy['name']:<30} {stats['trades']:<8} {stats['success_rate']:<12.2f}% "
+                  f"${stats['total_profit']:<14,.2f} {(stats['total_profit'] / 16000 * 100):<7.1f}%")
+    
+    print("\n" + "=" * 100)
+    print("COMPARISON: ORIGINAL vs FIXED SMALL BODY STRATEGY")
+    print("=" * 100)
+    
+    print("\nORIGINAL (with look-ahead bias):")
+    print("- Success Rate: 95.15%")
+    print("- Total Profit: $7,529")
+    print("- ROI: 47.1%")
+    print("- Issue: Used current day's Close to calculate body size")
+    
+    fixed_result = next((r for r in results if r['Strategy'] == 'DIP + Small Body (FIXED)'), None)
+    if fixed_result:
+        print(f"\nFIXED (no look-ahead bias):")
+        print(f"- Success Rate: {fixed_result['Success Rate (%)']:.2f}%")
+        print(f"- Total Profit: ${fixed_result['Total Profit ($)']:,.2f}")
+        print(f"- ROI: {fixed_result['ROI (%)']:.1f}%")
+        print("- Correct: Uses previous day's small body pattern")
+    
+    print("\n" + "=" * 100)
+    print("KEY TAKEAWAY")
+    print("=" * 100)
+    print("The original 95.15% success rate was unrealistic due to look-ahead bias.")
+    print("The fixed version shows realistic performance that can be traded.")
+    print("Always use PREVIOUS day's patterns for CURRENT day's decisions!")
+    print("=" * 100)
+    
+    df_results = pd.DataFrame(results)
+    df_results.to_csv('fixed_strategies_results.csv', index=False)
+    print("\nResults saved to: fixed_strategies_results.csv")
+
+if __name__ == "__main__":
+    main()

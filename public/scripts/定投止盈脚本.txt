@@ -1,0 +1,58 @@
+
+> 策略名称
+
+定投止盈脚本
+
+> 策略作者
+
+Zer3192
+
+
+
+> 策略参数
+
+
+
+|参数|默认值|描述|
+|----|----|----|
+|v_input_1|5|最大损失百分比|
+|v_input_2|3|止盈值|
+
+
+> 源码 (PineScript)
+
+``` javascript
+
+
+strategy("定投止盈", overlay=true)
+
+
+maxLossPercent = input(title="最大损失百分比", type=float,defval=5)
+
+
+stopProfitVal = input(title="止盈值", type=float, defval=3) 
+
+
+longCondition = crossover(open, close) 
+
+if (longCondition)
+    strategy.entry("Long", strategy.long, comment="Open Long") 
+
+
+
+    
+
+
+profitExit = strategy.position_avg_price + stopProfitVal
+if (strategy.position_size > 0)
+     strategy.exit("Exit long", limit = profitExit)
+
+```
+
+> 策略出处
+
+https:
+
+> 更新时间
+
+2023-01-29 09:49:34

@@ -1,0 +1,258 @@
+
+import pandas as pd
+import numpy as np
+from itertools import product
+import warnings
+from multiprocessing import Pool, cpu_count
+
+warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
+
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+pd.set_option('display.max_colwidth', None)
+
+def load_data(file_name):
+    df = pd.read_csv(file_name, parse_dates=['Date'])
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+def load_vix_data(vix_file):
+    vix_df = pd.read_csv(vix_file, parse_dates=['DATE'], dayfirst=True)
+    vix_df.rename(columns={'DATE': 'Date'}, inplace=True)
+    vix_df['Date'] = pd.to_datetime(vix_df['Date'], dayfirst=True, errors='coerce')
+    vix_df.dropna(subset=['Date'], inplace=True)
+    vix_df.sort_values('Date', inplace=True)
+    vix_df.reset_index(drop=True, inplace=True)
+    return vix_df
+
+def load_intraday_data(intraday_file):
+    """
+    Load intraday data which includes 30-min bars.
+    We'll assume columns: Time, Open, High, Low, Last (Close), etc.
+    Format of 'Time': 'MM/DD/YYYY HH:MM' (e.g., '11/29/2024 13:00').
+
+    We will parse the Time column with the correct format.
+    """
+    df_intra = pd.read_csv(intraday_file)
+    df_intra['Time'] = pd.to_datetime(df_intra['Time'], format='%m/%d/%Y %H:%M', errors='coerce')
+    df_intra.dropna(subset=['Time'], inplace=True)
+    df_intra.sort_values('Time', inplace=True)
+    df_intra.reset_index(drop=True, inplace=True)
+    df_intra['Date'] = df_intra['Time'].dt.date
+    return df_intra
+
+def calculate_day_range(day):
+    return day['High'] - day['Low']
+
+def calculate_gap(prev_close, curr_open):
+    return curr_open - prev_close
+
+def is_gap_valid(gap, prev_range):
+    gap_abs = abs(gap)
+    if gap_abs < 0.20 or prev_range == 0:
+        return False
+    gap_percentage = gap_abs / prev_range
+    return 0.15 <= gap_percentage <= 0.85
+
+def determine_trade_direction(gap):
+    return 'Short' if gap > 0 else 'Long'
+
+def check_gap_closure_intraday(trade_direction, prev_close, intraday_data_after_entry):
+    """
+    Checks if the gap is closed during the trading day using intraday data.
+    intraday_data_after_entry: intraday bars after we have entered (i.e., after 10:00 bar)
+    """
+    if trade_direction == 'Short':
+        gap_closure_bars = intraday_data_after_entry[intraday_data_after_entry['Low'] <= prev_close]
+        if not gap_closure_bars.empty:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = intraday_data_after_entry.iloc[-1]['Last']
+            gap_closed = False
+    else:
+        gap_closure_bars = intraday_data_after_entry[intraday_data_after_entry['High'] >= prev_close]
+        if not gap_closure_bars.empty:
+            exit_price = prev_close
+            gap_closed = True
+        else:
+            exit_price = intraday_data_after_entry.iloc[-1]['Last']
+            gap_closed = False
+    return exit_price, gap_closed
+
+def calculate_profit_loss(trade_direction, entry_price, exit_price, position_size):
+    number_of_shares = position_size / entry_price
+    if trade_direction == 'Long':
+        profit_loss = number_of_shares * (exit_price - entry_price)
+    else:
+        profit_loss = number_of_shares * (entry_price - exit_price)
+    return profit_loss
+
+def precompute_trades_with_intraday(df_daily, vix_df, intraday_df, initial_investment):
+    trades = []
+    total_days = len(df_daily)
+
+    vix_open_dict = {}
+    for current_date in df_daily['Date']:
+        prev_date = current_date - pd.Timedelta(days=1)
+        while prev_date not in vix_df['Date'].values and prev_date > vix_df['Date'].min():
+            prev_date -= pd.Timedelta(days=1)
+        if prev_date in vix_df['Date'].values:
+            vix_open = vix_df.loc[vix_df['Date'] == prev_date, 'OPEN'].values[0]
+            vix_open_dict[current_date] = vix_open
+        else:
+            vix_open_dict[current_date] = np.nan
+
+    for i_day in range(1, total_days):
+        prev_day = df_daily.iloc[i_day - 1]
+        curr_day = df_daily.iloc[i_day]
+        current_date = curr_day['Date']
+        vix_open = vix_open_dict.get(current_date, np.nan)
+        if pd.isna(vix_open):
+            continue
+
+        prev_range = calculate_day_range(prev_day)
+        if prev_range == 0:
+            continue
+
+        gap = calculate_gap(prev_day['Close'], curr_day['Open'])
+        if not is_gap_valid(gap, prev_range):
+            continue
+
+        trade_direction = determine_trade_direction(gap)
+
+        day_intra_data = intraday_df[intraday_df['Date'] == current_date.date()]
+        if day_intra_data.empty:
+            continue
+        
+        ten_am_bars = day_intra_data[(day_intra_data['Time'].dt.hour == 10) & (day_intra_data['Time'].dt.minute == 0)]
+        if ten_am_bars.empty:
+            continue
+
+        entry_price = ten_am_bars.iloc[0]['Open']
+
+        intraday_data_after_entry = day_intra_data[day_intra_data['Time'] >= ten_am_bars.iloc[0]['Time']]
+
+        exit_price, gap_closed = check_gap_closure_intraday(trade_direction, prev_day['Close'], intraday_data_after_entry)
+        profit_loss = calculate_profit_loss(trade_direction, entry_price, exit_price, initial_investment)
+
+        trades.append({
+            'Date': current_date,
+            'Trade Direction': trade_direction,
+            'Entry Price': entry_price,
+            'Exit Price': exit_price,
+            'Gap Closed': gap_closed,
+            'VIX_Open': vix_open,
+            'Profit/Loss': profit_loss
+        })
+
+    trades_df = pd.DataFrame(trades)
+    return trades_df
+
+def find_best_vix_conditions_optimized(trades_df, i_min=10.0, i_max=30.0, j_min=10.0, j_max=30.0, step=0.1):
+    i_values = np.round(np.arange(i_min, j_max + step, step), 1)
+    j_values = np.round(np.arange(j_min, j_max + step, step), 1)
+
+    i_grid, j_grid = np.meshgrid(i_values, j_values)
+    i_flat = i_grid.flatten()
+    j_flat = j_grid.flatten()
+    valid_pairs_mask = i_flat < j_flat
+    i_valid = i_flat[valid_pairs_mask]
+    j_valid = j_flat[valid_pairs_mask]
+
+    vix_open_array = trades_df['VIX_Open'].values
+    profit_loss_array = trades_df['Profit/Loss'].values
+
+    sorted_indices = np.argsort(vix_open_array)
+    sorted_vix = vix_open_array[sorted_indices]
+    sorted_profits = profit_loss_array[sorted_indices]
+
+    cumulative_profits = np.cumsum(sorted_profits)
+
+    def compute_profit(i, j):
+        left = np.searchsorted(sorted_vix, i, side='right')
+        right = np.searchsorted(sorted_vix, j, side='left')
+        if right > 0:
+            return cumulative_profits[right - 1] - (cumulative_profits[left - 1] if left > 0 else 0)
+        else:
+            return 0.0
+
+    vectorized_compute_profit = np.vectorize(compute_profit)
+    total_profits = vectorized_compute_profit(i_valid, j_valid)
+
+    results_df = pd.DataFrame({
+        'i': i_valid,
+        'j': j_valid,
+        'Total Profit': total_profits
+    })
+
+    best_idx = results_df['Total Profit'].idxmax()
+    best_i = results_df.loc[best_idx, 'i']
+    best_j = results_df.loc[best_idx, 'j']
+    best_profit = results_df.loc[best_idx, 'Total Profit']
+
+    results_df_sorted = results_df.sort_values(by='Total Profit', ascending=False).reset_index(drop=True)
+
+    print("\n=== Optimization Complete ===")
+    print(f"Best VIX Conditions: i={best_i}, j={best_j} with Total Profit: ${best_profit:,.2f}\n")
+
+    print("Top 10 VIX Conditions by Total Profit:")
+    print(results_df_sorted.head(10).to_string(index=False))
+
+    return best_i, best_j, results_df_sorted
+
+def analyze_spy_gaps_with_intraday(main_file, vix_file, intraday_file, initial_investment):
+    print("Loading daily and VIX data...")
+    df = load_data(main_file)
+    vix_df = load_vix_data(vix_file)
+
+    print("Loading intraday data...")
+    intraday_df = load_intraday_data(intraday_file)
+
+    df.sort_values('Date', inplace=True)
+    df.reset_index(drop=True, inplace=True)
+
+    print("Precomputing trades with 30-minute delayed entry...")
+    trades_df = precompute_trades_with_intraday(df, vix_df, intraday_df, initial_investment)
+
+    if trades_df.empty:
+        print("No valid trades found based on the criteria.")
+        return None, None
+
+    print(f"Total Valid Trades: {len(trades_df)}")
+
+    best_i, best_j, all_results = find_best_vix_conditions_optimized(
+        trades_df=trades_df,
+        i_min=10.0,
+        i_max=30.0,
+        j_min=10.0,
+        j_max=30.0,
+        step=0.1
+    )
+
+    all_results.to_csv('vix_optimization_results_intraday.csv', index=False)
+
+    print(f"\nBest VIX Conditions for Maximum Profit:")
+    best_profit = all_results[(all_results['i'] == best_i) & (all_results['j'] == best_j)]['Total Profit'].values[0]
+    print(f"i = {best_i}, j = {best_j} with Total Profit = ${best_profit:,.2f}")
+
+    print("\nTrade Details:")
+    print(trades_df.to_string(index=False))
+
+    num_winning_trades = (trades_df['Profit/Loss'] > 0).sum()
+    num_losing_trades = (trades_df['Profit/Loss'] < 0).sum()
+
+    print(f"\nNumber of Winning Trades: {num_winning_trades}")
+    print(f"Number of Losing Trades: {num_losing_trades}")
+
+    return trades_df, all_results
+
+if __name__ == "__main__":
+    initial_investment = 16000
+    main_file = 'D6CK32X6.csv'      # Replace with your daily data CSV
+    vix_file = 'VIX_History.csv'    # Replace with your VIX data CSV
+    intraday_file = '30_MINUTES_DATA.csv'  # Replace with your intraday data CSV
+
+    trades, all_results = analyze_spy_gaps_with_intraday(main_file, vix_file, intraday_file, initial_investment)

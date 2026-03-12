@@ -1,0 +1,189 @@
+"""
+VIX + ATR Combined Filter Strategy
+
+This strategy combines VIX (market volatility) and ATR (price volatility):
+- Only trades when both VIX and ATR are in optimal ranges
+- Fades gaps when volatility conditions are favorable
+- Uses multiple timeframes for confirmation
+
+Great for learning multi-indicator strategies!
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import sys
+import os
+
+current_file = Path(os.path.abspath(__file__))
+project_root = current_file.parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from utils.base_strategy_fixed import BaseStrategy
+
+class VIXATRStrategy(BaseStrategy):
+    """
+    Combined VIX and ATR filtering strategy
+    """
+    
+    def __init__(self, spy_data_path=None, vix_data_path=None):
+        super().__init__(
+            name="VIX ATR Combined",
+            description="Gap fade with VIX and ATR filters",
+            required_data=['Date', 'Open', 'High', 'Low', 'Close']
+        )
+        
+        self.vix_low_threshold = 15
+        self.vix_high_threshold = 30
+        
+        self.atr_period = 14
+        self.atr_multiplier = 1.5
+        
+        self.min_gap_percent = 0.5  # Minimum gap as % of price
+        
+        self.vix_data = None
+        
+        if spy_data_path:
+            self.load_data(spy_data_path)
+        if vix_data_path:
+            self.load_vix_data(vix_data_path)
+    
+    def load_vix_data(self, vix_path):
+        """Load and merge VIX data"""
+        try:
+            vix_df = pd.read_csv(vix_path, parse_dates=['Date'])
+            vix_df = vix_df[['Date', 'Close']].rename(columns={'Close': 'VIX'})
+            self.vix_data = vix_df
+            
+            if self.data is not None:
+                self.data = pd.merge(self.data, vix_df, on='Date', how='inner')
+        except Exception as e:
+            print(f"Warning: Could not load VIX data: {e}")
+    
+    def calculate_indicators(self):
+        """Calculate ATR and other indicators"""
+        df = self.data.copy()
+        
+        high_low = df['High'] - df['Low']
+        high_close = np.abs(df['High'] - df['Close'].shift())
+        low_close = np.abs(df['Low'] - df['Close'].shift())
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = true_range.rolling(window=self.atr_period).mean()
+        
+        df['ATR_Percent'] = (df['ATR'] / df['Close']) * 100
+        
+        df['Gap'] = df['Open'] - df['Close'].shift()
+        df['Gap_Percent'] = (df['Gap'] / df['Close'].shift()) * 100
+        
+        return df
+    
+    def calculate_signals(self):
+        """Find trading opportunities with combined filters"""
+        if self.data is None:
+            raise ValueError("No data loaded. Please load data first.")
+        
+        df = self.calculate_indicators()
+        signals = []
+        
+        has_vix = 'VIX' in df.columns
+        
+        for i in range(self.atr_period + 1, len(df)):
+            curr_day = df.iloc[i]
+            prev_day = df.iloc[i-1]
+            
+            if has_vix:
+                vix = curr_day['VIX']
+                if vix < self.vix_low_threshold or vix > self.vix_high_threshold:
+                    continue
+            
+            atr = curr_day['ATR']
+            atr_percent = curr_day['ATR_Percent']
+            
+            if pd.isna(atr) or atr_percent < 0.5 or atr_percent > 3.0:
+                continue
+            
+            gap_percent = curr_day['Gap_Percent']
+            
+            if abs(gap_percent) < self.min_gap_percent:
+                continue
+            
+            if gap_percent > 0:  # Gap up - SHORT
+                direction = 'SHORT'
+                entry_price = curr_day['Open']
+                
+                target = prev_day['Close']
+                stop = entry_price + (atr * self.atr_multiplier)
+                
+                if curr_day['Low'] <= target:
+                    exit_price = target
+                elif curr_day['High'] >= stop:
+                    exit_price = stop
+                else:
+                    exit_price = curr_day['Close']
+                    
+            else:  # Gap down - LONG
+                direction = 'LONG'
+                entry_price = curr_day['Open']
+                
+                target = prev_day['Close']
+                stop = entry_price - (atr * self.atr_multiplier)
+                
+                if curr_day['High'] >= target:
+                    exit_price = target
+                elif curr_day['Low'] <= stop:
+                    exit_price = stop
+                else:
+                    exit_price = curr_day['Close']
+            
+            signal = {
+                'date': curr_day['Date'],
+                'direction': direction,
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                'gap_percent': gap_percent,
+                'atr': atr,
+                'atr_percent': atr_percent,
+                'signal_strength': min(abs(gap_percent) / 2.0, 1.0)
+            }
+            
+            if has_vix:
+                signal['vix'] = vix
+            
+            signals.append(signal)
+        
+        self.signals = pd.DataFrame(signals)
+        return self.signals
+
+def main():
+    """Example usage"""
+    print("=" * 60)
+    print("VIX + ATR COMBINED STRATEGY")
+    print("=" * 60)
+    print("\nFades gaps when both market and price volatility")
+    print("are in optimal ranges for mean reversion.")
+    print("=" * 60)
+    
+    spy_path = Path(__file__).parent.parent.parent / "data" / "7J0OK1VR.csv"
+    vix_path = Path(__file__).parent.parent.parent / "data" / "VIX_History.csv"
+    
+    strategy = VIXATRStrategy(spy_path, vix_path)
+    
+    print("\nAnalyzing volatility conditions...")
+    signals = strategy.calculate_signals()
+    print(f"Found {len(signals)} opportunities with optimal volatility")
+    
+    print("\nRunning backtest...")
+    strategy.run_backtest(initial_capital=10000)
+    
+    metrics = strategy.get_summary_metrics()
+    
+    print("\n" + "=" * 60)
+    print("RESULTS")
+    print("=" * 60)
+    print(f"Total Trades: {metrics['total_trades']}")
+    print(f"Win Rate: {metrics['win_rate']:.1f}%")
+    print(f"Total Profit: ${metrics['total_profit']:.2f}")
+    print(f"Max Drawdown: {metrics['max_drawdown']:.1f}%")
+
+if __name__ == "__main__":
+    main()
