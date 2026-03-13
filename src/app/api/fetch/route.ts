@@ -2,7 +2,17 @@ import { NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
 import Fuse from 'fuse.js';
-import metadataList from '@/data/metadata.json';
+import rawMetadata from '@/data/metadata.json';
+
+// Add the interface and cast the JSON
+interface MetadataItem {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+  content: string;
+}
+const metadataList = rawMetadata as MetadataItem[];
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);

@@ -50,23 +50,20 @@ export default function Header({ totalFiles, query, setQuery, activeFilter, setA
       {/* Right Divider */}
       <div className="h-8 w-px bg-[var(--border-color)] shrink-0"></div>
 
-      {/* Right: Quick Filters (Exact width of Right Sidebar: w-80/320px) */}
-      <div className="w-80 flex items-center px-5 shrink-0 justify-start">
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-[var(--text-muted)] font-medium mr-1">Filters:</span>
-          {['PineScript', 'Python'].map(tag => (
-            <button 
-              key={tag}
-              onClick={() => setActiveFilter(activeFilter === tag ? null : tag)}
-              className={`px-3 py-1.5 rounded-full border transition ${
-                activeFilter === tag 
-                  ? 'bg-[var(--accent)] border-[var(--accent)] text-white font-bold shadow-md' 
-                  : 'border-[var(--border-color)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
-              }`}
-            >
-              {tag}
-            </button>
-          ))}
+      {/* Right: API Usage Blob (Width of Right Sidebar: w-80/320px) */}
+      <div className="w-80 flex flex-col justify-center px-5 shrink-0 min-w-0">
+        <div className="flex justify-center items-baseline gap-1 mb-1 w-full overflow-hidden">
+          <span className="text-[12px] text-[var(--text-muted)] font-bold uppercase tracking-widest shrink-0">
+            CLI
+          </span>
+          <span className="text-[10px] text-[var(--text-muted)] opacity-75 truncate">
+            | curl -s (for Linux/MacOS) or irm (for PowerShell)
+          </span>
+        </div>
+        <div className="bg-[var(--bg-main)] border border-[var(--border-color)] rounded-md p-1.5 flex items-center w-full overflow-hidden cursor-text">
+          <code className="text-[10px] text-white font-mono truncate w-full">
+            "https://stratlib.vercel.app/api/fetch?query=moving+average"
+          </code>
         </div>
       </div>
 
