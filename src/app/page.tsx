@@ -1,4 +1,4 @@
-// src/app/page.tsx
+
 "use client";
 
 import React, { useState, useEffect, useMemo } from 'react';
@@ -8,12 +8,14 @@ import Header from '@/components/Header';
 import LeftSidebar from '@/components/LeftSidebar';
 import CodeViewer from '@/components/CodeViewer';
 import RightSidebar from '@/components/RightSidebar';
+import MobileApp from '@/components/MobileApp';
 import { MetadataItem } from '@/types';
 import rawMetadata from '@/data/metadata.json';
 
 const metadataList = rawMetadata as MetadataItem[];
 
 export default function StratLibIDE() {
+  // --- DESKTOP STATE ---
   const [query, setQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<MetadataItem | null>(null);
@@ -60,10 +62,9 @@ export default function StratLibIDE() {
       });
   }, []);
 
-  // Search Engine
+  // Search Engine (Desktop)
   const fuse = useMemo(() => new Fuse(metadataList, { keys: ['name', 'content', 'description'], threshold: 0.3 }), []);
 
-  // SLUGGISHNESS FIX: Memoized display results so it doesn't recalculate unnecessarily
   const displayResults = useMemo(() => {
     let results = query ? fuse.search(query).map(r => r.item) : metadataList;
     if (activeFilter) {
@@ -75,14 +76,14 @@ export default function StratLibIDE() {
     return results;
   }, [query, activeFilter, fuse]);
 
-  // Escape to clear
+  // Escape to clear search
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setQuery(""); };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Handlers
+  // Handlers (Desktop)
   const handleSelectFile = (file: MetadataItem) => {
     setSelectedFile(file);
     fetch(file.path).then(res => res.text()).then(text => setFileContent(text)).catch(() => setFileContent("Error loading file content."));
@@ -94,6 +95,7 @@ export default function StratLibIDE() {
   };
 
   const toggleSelection = (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    e.stopPropagation();
     setSelectedIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
@@ -132,27 +134,36 @@ export default function StratLibIDE() {
   };
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
-      <Header 
-        totalFiles={metadataList.length} query={query} setQuery={setQuery} 
-        activeFilter={activeFilter} setActiveFilter={setActiveFilter} 
-      />
-      
-      <main className="flex-1 flex overflow-hidden">
-        <LeftSidebar 
-          isSidebarOpen={isSidebarOpen} totalFiles={metadataList.length} displayResults={displayResults} 
-          history={history} setHistory={setHistory} selectedIds={selectedIds} toggleSelection={toggleSelection} 
-          selectedFile={selectedFile} handleSelectFile={handleSelectFile} activeFilter={activeFilter} setActiveFilter={setActiveFilter}
-          setQuery={setQuery} /* NEW: Passed setQuery down */
-          handleSelectAll={handleSelectAll} handleUnselectAll={handleUnselectAll} handleDownloadZip={handleDownloadZip}
+    <>
+      {/* 1. MOBILE APP (Shown on phones and portrait tablets < 1024px) */}
+      <div className="lg:hidden">
+        <MobileApp wordCloud={wordCloud} />
+      </div>
+
+      {/* 2. THE MAIN DESKTOP IDE (Shown on landscape tablets and laptops >= 1024px) */}
+      <div className="hidden lg:flex h-screen flex-col overflow-hidden">
+        <Header 
+          totalFiles={metadataList.length} query={query} setQuery={setQuery} 
+          activeFilter={activeFilter} setActiveFilter={setActiveFilter} 
         />
-        <CodeViewer 
-          selectedFile={selectedFile} fileContent={fileContent} setSelectedFile={setSelectedFile} 
-          isSidebarOpen={isSidebarOpen} setIsSidebarOpen={setIsSidebarOpen} wordCloud={wordCloud} 
-          setActiveFilter={setActiveFilter} setQuery={setQuery} 
-        />
-        <RightSidebar />
-      </main>
-    </div>
+        
+        <main className="flex-1 flex overflow-hidden">
+          <LeftSidebar 
+            isSidebarOpen={isSidebarOpen} totalFiles={metadataList.length} displayResults={displayResults} 
+            history={history} setHistory={setHistory} selectedIds={selectedIds} toggleSelection={toggleSelection} 
+            selectedFile={selectedFile} handleSelectFile={handleSelectFile} activeFilter={activeFilter} setActiveFilter={setActiveFilter}
+            setQuery={setQuery}
+            handleSelectAll={handleSelectAll} handleUnselectAll={handleUnselectAll} handleDownloadZip={handleDownloadZip}
+          />
+          <CodeViewer 
+            selectedFile={selectedFile} fileContent={fileContent} setSelectedFile={setSelectedFile} 
+            isSidebarOpen={isSidebarOpen} setIsSidebarOpen={setIsSidebarOpen} wordCloud={wordCloud} 
+            setActiveFilter={setActiveFilter} setQuery={setQuery} 
+          />
+          <RightSidebar />
+        </main>
+      </div>
+    </>
   );
 }
+
