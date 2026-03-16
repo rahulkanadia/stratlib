@@ -4,17 +4,19 @@
 
 :root {
   /* --- MASTER COLOR THEME --- */
-  --bg-main: #0f172a;
-  --bg-panel: #1e293b;
-  --bg-hover: #334155;
-  --bg-active: #1e293b;
-  --border-color: #334155;
-  --text-main: #f8fafc;
-  --text-muted: #94a3b8;
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
+
+  --bg-main: #151218;
+  --bg-panel: #1e1a23;
+  --bg-hover: #2a2531;
+  --bg-active: #1e1a23;
+
+  --border-color: #374151;
+  --text-main: #f3f4f6;
+  --text-muted: #f3f4f6;
+  --accent: #f59e0b;
+  --accent-hover: #d97706;
   --danger: #ef4444;
-  
+
   /* --- FONTS --- */
   --font-ui: 'Inter', sans-serif;
   --font-heading: 'Outfit', sans-serif;
